@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Flows</h2>
+<table class="runs">
+  <tr><th>Name</th><th>Status</th><th>Finished Ago</th><th>Completed in</th></tr>
+  {% for flow in flows %}
+  <tr class="status-{{ flow.status }}">
+    <td>
+      <a hx-get="/ui/flows/{{ flow.name }}/runs" hx-target="#content" hx-swap="innerHTML">
+      {{ flow.name }}
+      </a>
+    </td>
+    <td>{{ flow.last_status }}</td>
+    <td>{{ flow.finished_ago }}</td>
+    <td>{{ flow.duration }} sec</td>
+  </tr>
+  {% endfor %}
+</ul>
+<div id="content" class="pane"></div>
+{% endblock %}

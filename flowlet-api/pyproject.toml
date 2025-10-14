@@ -1,0 +1,273 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flowlet"
+version = "0.1.0"
+description = "A lightweight flow orchestration framework with execution tracking"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["workflow", "orchestration", "flow", "task", "pipeline", "execution"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.6.0",
+    "httpx>=0.25.0",  # For testing FastAPI
+]
+
+# Database adapters
+postgres = [
+    "psycopg2-binary>=2.9.0",
+]
+mysql = [
+    "pymysql>=1.1.0",
+]
+
+# Observability
+observability = [
+    "structlog>=23.2.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "prometheus-client>=0.18.0",
+]
+
+# Async support
+async = [
+    "asyncio>=3.4.3",
+]
+
+# All extras
+all = [
+    "flowlet[dev,postgres,mysql,observability,async]",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/flowlet"
+Documentation = "https://github.com/yourusername/flowlet#readme"
+Repository = "https://github.com/yourusername/flowlet"
+Issues = "https://github.com/yourusername/flowlet/issues"
+
+[project.scripts]
+flowlet = "flowlet.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowlet"]
+
+# Include package data (static files, templates, etc.)
+[tool.hatch.build.targets.wheel.shared-data]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/MANIFEST.in",
+]
+
+# Force inclusion of static and templates directories
+[tool.hatch.build]
+include = [
+    "src/flowlet/**/*.py",
+    "src/flowlet/static/**/*",
+    "src/flowlet/templates/**/*",
+]
+
+[tool.hatch.version]
+path = "src/flowlet/__init__.py"
+
+# =============================================================================
+# Testing with pytest
+# =============================================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=flowlet",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+    "asyncio: Async tests",
+]
+asyncio_mode = "auto"
+
+# =============================================================================
+# Code formatting and linting with Ruff
+# =============================================================================
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+indent-width = 4
+
+src = ["src", "tests"]
+exclude = [
+    ".git",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Do not perform function calls in argument defaults
+    "B904",   # Use raise from to chain exceptions
+    "UP007",  # Use X | Y for type annotations (Python 3.10+)
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+"tests/**/*.py" = [
+    "ARG",    # Allow unused arguments in tests
+    "S101",   # Allow assert in tests
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["flowlet"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
+# =============================================================================
+# Type checking with mypy
+# =============================================================================
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # Set to true for strict typing
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+ignore_missing_imports = true
+strict_optional = true
+strict_equality = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# =============================================================================
+# Coverage
+# =============================================================================
+
+[tool.coverage.run]
+source = ["src/flowlet"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+# =============================================================================
+# Additional tools
+# =============================================================================
+
+[tool.bandit]
+exclude_dirs = ["tests", "venv", ".venv"]
+skips = ["B101"]  # Allow assert in tests
