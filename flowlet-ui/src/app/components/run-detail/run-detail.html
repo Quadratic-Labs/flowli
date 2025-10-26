@@ -1,0 +1,96 @@
+<div class="container mt-4">
+  <div class="mb-4">
+    <a routerLink="/" class="btn btn-outline-secondary">
+      <i class="bi bi-arrow-left"></i> Back to Flows
+    </a>
+  </div>
+
+  <div *ngIf="loading" class="text-center">
+    <div class="spinner-border" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <div *ngIf="error" class="alert alert-danger" role="alert">
+    {{ error }}
+  </div>
+
+  <div *ngIf="!loading && !error && run">
+    <div class="card mb-4">
+      <div class="card-header">
+        <h2>Flow Run Details</h2>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-6">
+            <p><strong>Flow Name:</strong> {{ run.flow_name }}</p>
+            <p><strong>Run ID:</strong> {{ run.flow_id }}</p>
+            <p><strong>Status:</strong>
+              <span class="badge"
+                    [ngClass]="{
+                      'bg-success': run.status === 'completed',
+                      'bg-danger': run.status === 'failed',
+                      'bg-warning': run.status === 'running',
+                      'bg-secondary': run.status === 'pending'
+                    }">
+                {{ run.status }}
+              </span>
+            </p>
+          </div>
+          <div class="col-md-6">
+            <p><strong>Started At:</strong> {{ run.started_at | date:'medium' }}</p>
+            <p><strong>Finished At:</strong> {{ run.finished_at ? (run.finished_at | date:'medium') : 'N/A' }}</p>
+            <p *ngIf="run.error"><strong>Error:</strong> <span class="text-danger">{{ run.error }}</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3>Tasks</h3>
+      </div>
+      <div class="card-body">
+        <div *ngIf="tasks.length === 0" class="alert alert-info">
+          No tasks found for this run.
+        </div>
+
+        <div class="table-responsive" *ngIf="tasks.length > 0">
+          <table class="table table-striped">
+            <thead>
+              <tr>
+                <th>Task Name</th>
+                <th>Status</th>
+                <th>Started At</th>
+                <th>Finished At</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let task of tasks">
+                <td><strong>{{ task.task_name }}</strong></td>
+                <td>
+                  <span class="badge"
+                        [ngClass]="{
+                          'bg-success': task.status === 'completed',
+                          'bg-danger': task.status === 'failed',
+                          'bg-warning': task.status === 'running',
+                          'bg-secondary': task.status === 'pending'
+                        }">
+                    {{ task.status }}
+                  </span>
+                </td>
+                <td>{{ task.started_at | date:'medium' }}</td>
+                <td>{{ task.finished_at ? (task.finished_at | date:'medium') : 'N/A' }}</td>
+                <td>
+                  <span *ngIf="task.result">{{ task.result }}</span>
+                  <span *ngIf="task.error" class="text-danger">{{ task.error }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

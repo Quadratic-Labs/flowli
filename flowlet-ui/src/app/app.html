@@ -1,0 +1,17 @@
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" routerLink="/">
+      <strong>Flowlet</strong> - Workflow Orchestration
+    </a>
+    <div class="navbar-nav">
+      <a class="nav-link" routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">
+        Flows
+      </a>
+      <a class="nav-link" routerLink="/runs" routerLinkActive="active">
+        Runs
+      </a>
+    </div>
+  </div>
+</nav>
+
+<router-outlet></router-outlet>
