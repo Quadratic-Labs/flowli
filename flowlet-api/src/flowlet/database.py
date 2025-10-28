@@ -1,32 +1,18 @@
+import functools
 from datetime import datetime, UTC
 from uuid import UUID
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import create_engine
+import sqlalchemy
 from sqlalchemy import (
-    Integer,
     String,
     DateTime,
     Text,
     ForeignKey,
-    Boolean,
     Uuid,
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-
-class DatabaseSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix='ARGOS_FLOWLET_DATABASE_')
-    url: str
-
-
-def get_engine(configs):
-    return create_engine(configs.url)
-
-
-def get_db_session_factory(engine):
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 class Base(DeclarativeBase):
@@ -42,7 +28,7 @@ class Base(DeclarativeBase):
         return self
 
     def __repr__(self):
-        params = ", ".join(f"{k}={v}" for k, v in self.todict().items())
+        params = ", ".join(f"{k}={v}" for k, v in self.to_dict().items())
         return f"{self.__class__.__name__}({params})"
 
     def to_dict(self):
@@ -61,12 +47,6 @@ class FlowRun(Base):
     tasks = relationship("TaskRun", back_populates="flow", foreign_keys="TaskRun.flow_run_id")
 
 
-class LastFlowRun(Base):
-    __tablename__ = "last_flow_runs"
-    flow_name: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.run_id))
-
-
 class TaskRun(Base):
     __tablename__ = "task_runs"
     task_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
@@ -82,6 +62,29 @@ class TaskRun(Base):
     flow = relationship("FlowRun", back_populates="tasks", foreign_keys="TaskRun.flow_run_id")
 
 
-def init_database(engine):
-    for table in Base.metadata.sorted_tables:
-        table.create(bind=engine, checkfirst=True)
+class DatabaseSettings(BaseSettings):
+    """
+    Database configuration settings.
+
+    Can be loaded from environment variables with FLOWLET_DATABASE_ prefix
+    or instantiated directly.
+    """
+    model_config = SettingsConfigDict(env_prefix='FLOWLET_DATABASE_')
+    url: str
+
+    @functools.cached_property
+    def engine(self):
+        return sqlalchemy.create_engine(self.url)
+
+    @functools.cached_property
+    def db_session_factory(self):
+        """
+        Create a SQLAlchemy sessionmaker from an engine.
+        Returns:
+            sessionmaker configured for the engine
+        """
+        return sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
+
+    def init_database(self):
+        for table in Base.metadata.sorted_tables:
+            table.create(bind=self.engine, checkfirst=True)

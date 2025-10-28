@@ -1,36 +1,20 @@
-from functools import wraps
+import functools
 from typing import Callable, Dict
 
 from .context import FlowContext, TaskContext
-from .database import get_db_session_factory
 
 
-class FlowManager():
-    _FLOWS: Dict[str, Callable] = {}
-
-    def __init__(self, db_session_factory):
+class FlowRegister:
+    def __init__(self, *, db_session_factory, **_):
         self.db_session_factory = db_session_factory
+        self.flows: Dict[str, Callable] = {}
+        self.tasks: Dict[str, Callable] = {}
 
-    def __getitem__(self, key):
-        return self._FLOWS[key]
+    def list_flows(self):
+        return list(self.flows.keys())
 
-    def __setitem__(self, key, value):
-        self._FLOWS[key] = value
-
-    def __delitem__(self, key):
-        del self._FLOWS[key]
-
-    def __contains__(self, key):
-        return key in self._FLOWS
-
-    def keys(self):
-        return self._FLOWS.keys()
-
-    def values(self):
-        return self._FLOWS.values()
-
-    def items(self):
-        return self._FLOWS.items()
+    def list_tasks(self):
+        return list(self.tasks.keys())
 
     def flow(self, name: str | None=None):
         """
@@ -39,18 +23,18 @@ class FlowManager():
         """
         def _decorator(fn: Callable):
             flow_name = name or fn.__name__
-            if flow_name in self._FLOWS:
-                raise RuntimeError(f"Flow {flow_name!r} already registered")
-            self._FLOWS[flow_name] = fn
-            tracker = FlowContext(flow_name, self.db_session_factory)
+            if flow_name in self.list_flows():
+                raise ValueError(f"Flow {flow_name!r} already registered")
+            tracker = FlowContext(flow_name, db_session_factory=self.db_session_factory)
 
-            @wraps(fn)
+            @functools.wraps(fn)
             def wrapper(*args, **kwargs):
                 with tracker:
                     result = fn(*args, **kwargs)
                 return result
 
             wrapper.__flow_name__ = flow_name
+            self.flows[flow_name] = wrapper
             return wrapper
 
         return _decorator
@@ -64,14 +48,17 @@ class FlowManager():
         """
         def _decorator(fn: Callable):
             task_name = name or fn.__name__
-            tracker = TaskContext(task_name, self.db_session_factory)
+            if task_name in self.list_tasks():
+                raise ValueError(f"Task {task_name!r} already registered")
+            tracker = TaskContext(task_name, db_session_factory=self.db_session_factory)
 
-            @wraps(fn)
+            @functools.wraps(fn)
             def wrapper(*args, **kwargs):
                 with tracker:
                     return fn(*args, **kwargs)
 
             wrapper.__task_name__ = task_name
+            self.tasks[task_name] = wrapper
             return wrapper
 
         return _decorator
