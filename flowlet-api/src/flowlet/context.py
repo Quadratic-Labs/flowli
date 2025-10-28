@@ -20,8 +20,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from .database import FlowRun, TaskRun, LastFlowRun
+from .database import FlowRun, TaskRun
+
 
 logger = logging.getLogger()
 # ============================================================================
@@ -75,12 +77,12 @@ class FlowContext:
     Thread-safe and async-safe via contextvars.
     """
 
-    def __init__(self, flow_name: str, db_session_factory):
+    def __init__(self, flow_name: str, *, db_session_factory: Session, **_):
         self.flow_name = flow_name
         self.db_session_factory = db_session_factory
 
         # Create unique flow run ID
-        self.flow_run_id = str(uuid4())
+        self.flow_run_id = uuid4()
 
         # Session and model will be initialized in __enter__
         self.session = None
@@ -96,18 +98,18 @@ class FlowContext:
 
         # Create flow run record
         self.flow_run = FlowRun(
-            id=self.flow_run_id,
+            run_id=self.flow_run_id,
             flow_name=self.flow_name,
             started_at=datetime.now(UTC),
             status="running",
         )
-        last_flow_run = LastFlowRun(
-            id=self.flow_run_id,
-            flow_name=self.flow_name,
-        )
+        # last_flow_run = LastFlowRun(
+        #     run_id=self.flow_run_id,
+        #     flow_name=self.flow_name,
+        # )
 
         self.session.add(self.flow_run)
-        self.session.add(last_flow_run)
+        # self.session.add(last_flow_run)
         self.session.commit()
 
         # Set contextvars for child tasks - CRITICAL for thread/async safety
@@ -130,20 +132,18 @@ class FlowContext:
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
 
-                if self.logger:
-                    self.logger.error(
-                        f"Flow '{self.flow_name}' failed: {exc_value}",
-                        exc_info=(exc_type, exc_value, exc_traceback)
-                    )
+                logger.error(
+                    f"Flow '{self.flow_name}' failed: {exc_value}",
+                    exc_info=(exc_type, exc_value, exc_traceback)
+                )
             else:
                 # Flow succeeded
                 self.flow_run.finished_at = datetime.now(UTC)
                 self.flow_run.status = "success"
 
-                if self.logger:
-                    self.logger.info(
-                        f"Flow '{self.flow_name}' completed successfully"
-                    )
+                logger.info(
+                    f"Flow '{self.flow_name}' completed successfully"
+                )
 
             self.session.add(self.flow_run)
             self.session.commit()
@@ -186,17 +186,15 @@ class TaskContext:
     def __init__(
         self,
         task_name: str,
-        flow_run_id: str,
         db_session_factory,
         logger=None
     ):
         self.task_name = task_name
-        self.flow_run_id = flow_run_id
         self.db_session_factory = db_session_factory
         self.logger = logger
 
         # Create unique task run ID
-        self.task_run_id = str(uuid4())
+        self.task_run_id = uuid4()
 
         # Session and model will be initialized in __enter__
         self.session = None
@@ -210,11 +208,12 @@ class TaskContext:
         self.session = self.db_session_factory()
 
         # Create task run record
+        flow_ids = current_flow_ids.get()
         self.task_run = TaskRun(
-            id=self.task_run_id,
-            flow_run_id=self.flow_run_id,
+            run_id=self.task_run_id,
+            flow_run_id=flow_ids.run_id,
             task_name=self.task_name,
-            flow_name=self.flow_name,
+            flow_name=flow_ids.name,
             started_at=datetime.now(UTC),
             status="running",
         )
@@ -242,20 +241,18 @@ class TaskContext:
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
 
-                if self.logger:
-                    self.logger.error(
-                        f"Task '{self.task_name}' failed: {exc_value}",
-                        exc_info=(exc_type, exc_value, exc_traceback)
-                    )
+                logger.error(
+                    f"Task '{self.task_name}' failed: {exc_value}",
+                    exc_info=(exc_type, exc_value, exc_traceback)
+                )
             else:
                 # Task succeeded
                 self.task_run.finished_at = datetime.now(UTC)
                 self.task_run.status = "success"
 
-                if self.logger:
-                    self.logger.info(
-                        f"Task '{self.task_name}' completed successfully"
-                    )
+                logger.info(
+                    f"Task '{self.task_name}' completed successfully"
+                )
 
             self.session.add(self.task_run)
             self.session.commit()
