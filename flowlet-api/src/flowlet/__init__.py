@@ -27,8 +27,11 @@ FastAPI Integration:
     >>> app.include_router(flowlet.get_router())
 """
 from .core import Flowlet, configure
+from .repository import FlowRun, TaskRun
 
 __all__ = [
     "Flowlet",
     "configure",
+    "FlowRun",
+    "TaskRun",
 ]
