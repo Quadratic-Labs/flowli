@@ -5,10 +5,10 @@ Provides a factory function to create routers with custom or default FlowManager
 """
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated,  Any, Dict, List
+from typing import Annotated, Any
 
 from fastapi import HTTPException
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from .repository import FlowRepository
 
@@ -34,33 +34,37 @@ def humanize_timedelta(td: timedelta) -> str:
 HumanDuration = Annotated[timedelta, AfterValidator(humanize_timedelta)]
 
 
-class FlowListItem(BaseModel):
+class FlowSummaryModel(BaseModel):
     name: str
     last_status: str | None = Field(default=None)
     finished_ago: HumanDuration | None = Field(default=None)
     duration: HumanDuration | None = Field(default=None)
-    doc: str | None = None
+    doc: str | None = Field(default=None)
 
 
-class StartFlowRequest(BaseModel):
+class FlowInputModel(BaseModel):
     # arguments are simply JSON serializable and passed as positional/keyword args.
     # For simplicity we accept an object of kwargs only.
-    kwargs: Dict[str, Any] | None = []
+    kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
-class FlowRunInfo(BaseModel):
-    flow_id: uuid.UUID
+class FlowRunModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     flow_name: str
+    run_id: uuid.UUID
     started_at: datetime
     finished_at: datetime | None
     status: str
     error: str | None = None
 
 
-class TaskRunInfo(BaseModel):
-    task_id: uuid.UUID
+class TaskRunModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: uuid.UUID
     task_name: str
-    flow_id: uuid.UUID
+    flow_run_id: uuid.UUID
     flow_name: str
     started_at: datetime
     finished_at: datetime | None = None
@@ -103,7 +107,7 @@ class FlowController:
         self.repository = repository
         self.register = repository.register
 
-    def run_flow(self, flow_name: str, payload: StartFlowRequest) -> None:
+    def run_flow(self, flow_name: str, payload: FlowInputModel) -> None:
         if flow_name not in self.register.list_flows():
             raise HTTPException(status_code=404, detail="Flow not found")
         fn = self.register.flows[flow_name]
@@ -113,27 +117,23 @@ class FlowController:
         # TODO: add azure job to execution and PubSub sockets
         _ = fn(**kwargs)
 
-    def list_flows(self) -> List[FlowListItem]:
-        with self.repository as repo:
-            result = repo.read_flow_many()
-        return result
+    def list_flows(self) -> list[FlowSummaryModel]:
+        result = self.repository.read_flow_many()
+        return [FlowSummaryModel.model_validate(res) for res in result]
 
-    def list_runs(self, offset: int = 0, limit: int = 50) -> List[FlowRunInfo]:
-        with self.repository as repo:
-            rows = repo.read_flow_run_many(offset=offset, limit=limit)
-        return rows
+    def list_runs(self, offset: int = 0, limit: int = 50) -> list[FlowRunModel]:
+        rows = self.repository.read_flow_run_many(offset=offset, limit=limit)
+        return [FlowRunModel.model_validate(row) for row in rows]
 
-    def get_run(self, run_id: uuid.UUID) -> FlowRunInfo:
-        with self.repository as repo:
-            run = repo.read_flow_run(run_id=run_id)
-            if not run:
-                raise HTTPException(status_code=404, detail="Run not found")
-        return run
+    def get_run(self, run_id: uuid.UUID) -> FlowRunModel:
+        run = self.repository.read_flow_run(run_id=run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return FlowRunModel.model_validate(run)
 
-    def get_run_tasks(self, run_id: uuid.UUID) -> List[TaskRunInfo]:
-        with self.repository as repo:
-            tasks = self.repository.read_run_tasks(run_id=run_id)
-        return tasks
+    def get_run_tasks(self, run_id: uuid.UUID) -> list[TaskRunModel]:
+        tasks = self.repository.read_run_task_many(run_id=run_id)
+        return [TaskRunModel.model_validate(task) for task in tasks]
 
 # ============================================================================
 # endregion

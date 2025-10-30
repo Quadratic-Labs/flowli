@@ -39,8 +39,8 @@ class FlowRun(Base):
     __tablename__ = "flow_runs"
     run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     flow_name: Mapped[str] = mapped_column(String, index=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
-    finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String, default="running")
     error: Mapped[str] = mapped_column(Text, nullable=True)
 
@@ -49,12 +49,12 @@ class FlowRun(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_runs"
-    task_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     task_name: Mapped[str] = mapped_column(String, index=True)
     flow_run_id: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.run_id), index=True)
-    flow_name: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.flow_name), index=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    flow_name: Mapped[str] = mapped_column(ForeignKey(FlowRun.flow_name), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String, default="running")  # running, success, failed
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

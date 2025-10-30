@@ -33,7 +33,7 @@ class FlowRegister:
                     result = fn(*args, **kwargs)
                 return result
 
-            wrapper.__flow_name__ = flow_name
+            wrapper.__flow_name__ = flow_name  # type: ignore
             self.flows[flow_name] = wrapper
             return wrapper
 
@@ -57,7 +57,7 @@ class FlowRegister:
                 with tracker:
                     return fn(*args, **kwargs)
 
-            wrapper.__task_name__ = task_name
+            wrapper.__task_name__ = task_name  # type: ignore
             self.tasks[task_name] = wrapper
             return wrapper
 

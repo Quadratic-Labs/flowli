@@ -1,4 +1,4 @@
-from typing import Mapping, TypedDict
+from typing import Mapping, TypedDict, Unpack
 
 from fastapi import APIRouter
 import sqlalchemy.orm
@@ -21,9 +21,12 @@ class FlowletDependencies(TypedDict):
 
 
 class Flowlet:
-    def __init__(self, **deps: FlowletDependencies):
-        for k, v in deps.items():
-            setattr(self, k, v)
+    def __init__(self, **deps: Unpack[FlowletDependencies]):
+        self.configs = deps["configs"]
+        self.db_session_factory = deps["db_session_factory"]
+        self.register = deps["register"]
+        self.repository = deps["repository"]
+        self.controller = deps["controller"]
 
     def get_router(self):
         router = APIRouter()
@@ -33,6 +36,9 @@ class Flowlet:
         router.get("/runs/{run_id}")(self.controller.get_run)
         router.get("/runs/{run_id}/tasks")(self.controller.get_run_tasks)
         return router
+
+    def init_database(self):
+        self.configs.database.init_database()
 
     def list_flows(self):
         return self.register.list_flows()
@@ -57,12 +63,13 @@ class Flowlet:
         return self.register.task(name=name)
 
 
-def configure(configs: FlowletConfig | Mapping | None=None) -> FlowletDependencies:
+def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     if configs is None:
         configs = FlowletConfig()
     elif isinstance(configs, Mapping):
         configs = FlowletConfig.model_validate(configs)
     deps = {}
+    deps["configs"] = configs
     deps["db_session_factory"] = configs.database.db_session_factory
     deps["register"] = FlowRegister(**deps)
     deps["repository"] = FlowRepository(**deps)
