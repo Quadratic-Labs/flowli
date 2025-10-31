@@ -71,7 +71,11 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     deps = {}
     deps["configs"] = configs
     deps["db_session_factory"] = configs.database.db_session_factory
-    deps["register"] = FlowRegister(**deps)
+    # Create repository first (without register)
     deps["repository"] = FlowRepository(**deps)
+    # Create register (which depends on repository)
+    deps["register"] = FlowRegister(**deps)
+    # Now set the register on repository to complete the circular dependency
+    deps["repository"].register = deps["register"]
     deps["controller"] = FlowController(**deps)
     return Flowlet(**deps)

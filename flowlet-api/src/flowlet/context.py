@@ -16,13 +16,13 @@ import contextvars
 import logging
 import traceback
 from datetime import datetime, UTC
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
-from .database import FlowRun as FlowRunORM, TaskRun as TaskRunORM
+if TYPE_CHECKING:
+    from .repository import FlowRepository
 
 
 logger = logging.getLogger()
@@ -55,9 +55,9 @@ class FlowContext:
     )
     """Current flow execution identifiers"""
 
-    def __init__(self, flow_name: str, *, db_session_factory, **_):
+    def __init__(self, flow_name: str, *, repository: "FlowRepository", **_):
         self.flow_name = flow_name
-        self.db_session_factory = db_session_factory
+        self.repository = repository
 
         # variables initialized in __enter__
         self.session = None
@@ -75,18 +75,16 @@ class FlowContext:
         run_id = uuid4()
 
         # Create database session
-        self.session = self.db_session_factory()
+        self.session = self.repository.db_session_factory()
 
-        # Create flow run record
-        self.flow_run = FlowRunORM(
+        # Create flow run record using repository
+        self.flow_run = self.repository.create_flow_run(
             run_id=run_id,
             flow_name=self.flow_name,
             started_at=datetime.now(UTC),
             status="running",
+            db=self.session
         )
-
-        self.session.add(self.flow_run)
-        self.session.commit()
 
         # Set context variable with token for proper cleanup
         ids = Ids(run_id=run_id, name=self.flow_name)
@@ -102,26 +100,34 @@ class FlowContext:
         assert self.flow_run is not None
         assert self.session is not None
         try:
-            # Update flow run status
-            self.flow_run.finished_at = datetime.now(UTC)
+            # Update flow run status using repository
+            finished_at = datetime.now(UTC)
 
             if exc_type is not None:
-                self.flow_run.status = "failed"
-                self.flow_run.error = "".join(
+                error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                self.repository.update_flow_run(
+                    self.flow_run,
+                    finished_at=finished_at,
+                    status="failed",
+                    error=error,
+                    db=self.session
                 )
                 logger.error(
                     f"Flow '{self.flow_name}' failed: {exc_value}",
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.flow_run.status = "success"
+                self.repository.update_flow_run(
+                    self.flow_run,
+                    finished_at=finished_at,
+                    status="success",
+                    db=self.session
+                )
                 logger.info(
                     f"Flow '{self.flow_name}' completed successfully"
                 )
-
-            self.session.add(self.flow_run)
-            self.session.commit()
 
         finally:
             # Always reset contextvar using token and close session
@@ -140,18 +146,16 @@ class FlowContext:
         run_id = uuid4()
 
         # Create database session
-        self.session = self.db_session_factory()
+        self.session = self.repository.db_session_factory()
 
-        # Create flow run record
-        self.flow_run = FlowRunORM(
+        # Create flow run record using repository
+        self.flow_run = self.repository.create_flow_run(
             run_id=run_id,
             flow_name=self.flow_name,
             started_at=datetime.now(UTC),
             status="running",
+            db=self.session
         )
-
-        self.session.add(self.flow_run)
-        self.session.commit()
 
         # Set context variable with token for proper cleanup
         ids = Ids(run_id=run_id, name=self.flow_name)
@@ -167,26 +171,34 @@ class FlowContext:
         assert self.flow_run is not None
         assert self.session is not None
         try:
-            # Update flow run status
-            self.flow_run.finished_at = datetime.now(UTC)
+            # Update flow run status using repository
+            finished_at = datetime.now(UTC)
 
             if exc_type is not None:
-                self.flow_run.status = "failed"
-                self.flow_run.error = "".join(
+                error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                self.repository.update_flow_run(
+                    self.flow_run,
+                    finished_at=finished_at,
+                    status="failed",
+                    error=error,
+                    db=self.session
                 )
                 logger.error(
                     f"Flow '{self.flow_name}' failed: {exc_value}",
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.flow_run.status = "success"
+                self.repository.update_flow_run(
+                    self.flow_run,
+                    finished_at=finished_at,
+                    status="success",
+                    db=self.session
+                )
                 logger.info(
                     f"Flow '{self.flow_name}' completed successfully"
                 )
-
-            self.session.add(self.flow_run)
-            self.session.commit()
 
         finally:
             # Always reset contextvar using token and close session
@@ -223,9 +235,9 @@ class TaskContext:
         "current_task_ids", default=None
     )
 
-    def __init__(self, task_name: str, *, db_session_factory, **_):
+    def __init__(self, task_name: str, *, repository: "FlowRepository", **_):
         self.task_name = task_name
-        self.db_session_factory = db_session_factory
+        self.repository = repository
 
         # variables initialized in __enter__
         self.session = None
@@ -243,7 +255,7 @@ class TaskContext:
         task_run_id = uuid4()
 
         # Create database session
-        self.session = self.db_session_factory()
+        self.session = self.repository.db_session_factory()
 
         # Get flow context
         flow_ids = FlowContext.get_current_ids()
@@ -252,18 +264,16 @@ class TaskContext:
                 f"TaskContext '{self.task_name}' must be used within a FlowContext"
             )
 
-        # Create task run record
-        self.task_run = TaskRunORM(
+        # Create task run record using repository
+        self.task_run = self.repository.create_task_run(
             run_id=task_run_id,
-            flow_run_id=flow_ids.run_id,
             task_name=self.task_name,
+            flow_run_id=flow_ids.run_id,
             flow_name=flow_ids.name,
             started_at=datetime.now(UTC),
             status="running",
+            db=self.session
         )
-
-        self.session.add(self.task_run)
-        self.session.commit()
 
         # Set task context with token for proper cleanup
         ids = Ids(run_id=task_run_id, name=self.task_name)
@@ -280,26 +290,34 @@ class TaskContext:
         assert self.task_run is not None
         assert self.session is not None
         try:
-            # Update task run status
-            self.task_run.finished_at = datetime.now(UTC)
+            # Update task run status using repository
+            finished_at = datetime.now(UTC)
 
             if exc_type is not None:
-                self.task_run.status = "failed"
-                self.task_run.error = "".join(
+                error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                self.repository.update_task_run(
+                    self.task_run,
+                    finished_at=finished_at,
+                    status="failed",
+                    error=error,
+                    db=self.session
                 )
                 logger.error(
                     f"Task '{self.task_name}' failed: {exc_value}",
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.task_run.status = "success"
+                self.repository.update_task_run(
+                    self.task_run,
+                    finished_at=finished_at,
+                    status="success",
+                    db=self.session
+                )
                 logger.info(
                     f"Task '{self.task_name}' completed successfully"
                 )
-
-            self.session.add(self.task_run)
-            self.session.commit()
 
         finally:
             # Always reset contextvar using token and close session
@@ -318,7 +336,7 @@ class TaskContext:
         task_run_id = uuid4()
 
         # Create database session
-        self.session = self.db_session_factory()
+        self.session = self.repository.db_session_factory()
 
         # Get flow context
         flow_ids = FlowContext.get_current_ids()
@@ -327,18 +345,16 @@ class TaskContext:
                 f"TaskContext '{self.task_name}' must be used within a FlowContext"
             )
 
-        # Create task run record
-        self.task_run = TaskRunORM(
+        # Create task run record using repository
+        self.task_run = self.repository.create_task_run(
             run_id=task_run_id,
-            flow_run_id=flow_ids.run_id,
             task_name=self.task_name,
+            flow_run_id=flow_ids.run_id,
             flow_name=flow_ids.name,
             started_at=datetime.now(UTC),
             status="running",
+            db=self.session
         )
-
-        self.session.add(self.task_run)
-        self.session.commit()
 
         # Set task context with token for proper cleanup
         ids = Ids(run_id=task_run_id, name=self.task_name)
@@ -355,26 +371,34 @@ class TaskContext:
         assert self.task_run is not None
         assert self.session is not None
         try:
-            # Update task run status
-            self.task_run.finished_at = datetime.now(UTC)
+            # Update task run status using repository
+            finished_at = datetime.now(UTC)
 
             if exc_type is not None:
-                self.task_run.status = "failed"
-                self.task_run.error = "".join(
+                error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                self.repository.update_task_run(
+                    self.task_run,
+                    finished_at=finished_at,
+                    status="failed",
+                    error=error,
+                    db=self.session
                 )
                 logger.error(
                     f"Task '{self.task_name}' failed: {exc_value}",
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.task_run.status = "success"
+                self.repository.update_task_run(
+                    self.task_run,
+                    finished_at=finished_at,
+                    status="success",
+                    db=self.session
+                )
                 logger.info(
                     f"Task '{self.task_name}' completed successfully"
                 )
-
-            self.session.add(self.task_run)
-            self.session.commit()
 
         finally:
             # Always reset contextvar using token and close session

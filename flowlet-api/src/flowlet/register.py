@@ -1,12 +1,16 @@
 import functools
-from typing import Callable, Dict
+from typing import Callable, Dict, TYPE_CHECKING
 
 from .context import FlowContext, TaskContext
 
+if TYPE_CHECKING:
+    from .repository import FlowRepository
+
 
 class FlowRegister:
-    def __init__(self, *, db_session_factory, **_):
-        self.db_session_factory = db_session_factory
+    def __init__(self, *, repository: "FlowRepository", **_):
+        self.repository = repository
+        self.db_session_factory = repository.db_session_factory
         self.flows: Dict[str, Callable] = {}
         self.tasks: Dict[str, Callable] = {}
 
@@ -25,7 +29,7 @@ class FlowRegister:
             flow_name = name or fn.__name__
             if flow_name in self.list_flows():
                 raise ValueError(f"Flow {flow_name!r} already registered")
-            tracker = FlowContext(flow_name, db_session_factory=self.db_session_factory)
+            tracker = FlowContext(flow_name, repository=self.repository)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
@@ -50,7 +54,7 @@ class FlowRegister:
             task_name = name or fn.__name__
             if task_name in self.list_tasks():
                 raise ValueError(f"Task {task_name!r} already registered")
-            tracker = TaskContext(task_name, db_session_factory=self.db_session_factory)
+            tracker = TaskContext(task_name, repository=self.repository)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
