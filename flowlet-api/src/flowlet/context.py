@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from .repository import FlowRepository
+    from .repository import FlowTracker
 
 
 logger = logging.getLogger()
@@ -55,9 +55,9 @@ class FlowContext:
     )
     """Current flow execution identifiers"""
 
-    def __init__(self, flow_name: str, *, repository: "FlowRepository", **_):
+    def __init__(self, flow_name: str, *, tracker: "FlowTracker", **_):
         self.flow_name = flow_name
-        self.repository = repository
+        self.tracker = tracker
 
         # variables initialized in __enter__
         self.session = None
@@ -75,10 +75,10 @@ class FlowContext:
         run_id = uuid4()
 
         # Create database session
-        self.session = self.repository.db_session_factory()
+        self.session = self.tracker.db_session_factory()
 
-        # Create flow run record using repository
-        self.flow_run = self.repository.create_flow_run(
+        # Create flow run record using tracker
+        self.flow_run = self.tracker.create_flow_run(
             run_id=run_id,
             flow_name=self.flow_name,
             started_at=datetime.now(UTC),
@@ -107,7 +107,7 @@ class FlowContext:
                 error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
-                self.repository.update_flow_run(
+                self.tracker.update_flow_run(
                     self.flow_run,
                     finished_at=finished_at,
                     status="failed",
@@ -119,7 +119,7 @@ class FlowContext:
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.repository.update_flow_run(
+                self.tracker.update_flow_run(
                     self.flow_run,
                     finished_at=finished_at,
                     status="success",
@@ -146,10 +146,10 @@ class FlowContext:
         run_id = uuid4()
 
         # Create database session
-        self.session = self.repository.db_session_factory()
+        self.session = self.tracker.db_session_factory()
 
-        # Create flow run record using repository
-        self.flow_run = self.repository.create_flow_run(
+        # Create flow run record using tracker
+        self.flow_run = self.tracker.create_flow_run(
             run_id=run_id,
             flow_name=self.flow_name,
             started_at=datetime.now(UTC),
@@ -178,7 +178,7 @@ class FlowContext:
                 error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
-                self.repository.update_flow_run(
+                self.tracker.update_flow_run(
                     self.flow_run,
                     finished_at=finished_at,
                     status="failed",
@@ -190,7 +190,7 @@ class FlowContext:
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.repository.update_flow_run(
+                self.tracker.update_flow_run(
                     self.flow_run,
                     finished_at=finished_at,
                     status="success",
@@ -235,9 +235,9 @@ class TaskContext:
         "current_task_ids", default=None
     )
 
-    def __init__(self, task_name: str, *, repository: "FlowRepository", **_):
+    def __init__(self, task_name: str, *, tracker: "FlowTracker", **_):
         self.task_name = task_name
-        self.repository = repository
+        self.tracker = tracker
 
         # variables initialized in __enter__
         self.session = None
@@ -255,7 +255,7 @@ class TaskContext:
         task_run_id = uuid4()
 
         # Create database session
-        self.session = self.repository.db_session_factory()
+        self.session = self.tracker.db_session_factory()
 
         # Get flow context
         flow_ids = FlowContext.get_current_ids()
@@ -265,7 +265,7 @@ class TaskContext:
             )
 
         # Create task run record using repository
-        self.task_run = self.repository.create_task_run(
+        self.task_run = self.tracker.create_task_run(
             run_id=task_run_id,
             task_name=self.task_name,
             flow_run_id=flow_ids.run_id,
@@ -297,7 +297,7 @@ class TaskContext:
                 error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
-                self.repository.update_task_run(
+                self.tracker.update_task_run(
                     self.task_run,
                     finished_at=finished_at,
                     status="failed",
@@ -309,7 +309,7 @@ class TaskContext:
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.repository.update_task_run(
+                self.tracker.update_task_run(
                     self.task_run,
                     finished_at=finished_at,
                     status="success",
@@ -336,7 +336,7 @@ class TaskContext:
         task_run_id = uuid4()
 
         # Create database session
-        self.session = self.repository.db_session_factory()
+        self.session = self.tracker.db_session_factory()
 
         # Get flow context
         flow_ids = FlowContext.get_current_ids()
@@ -346,7 +346,7 @@ class TaskContext:
             )
 
         # Create task run record using repository
-        self.task_run = self.repository.create_task_run(
+        self.task_run = self.tracker.create_task_run(
             run_id=task_run_id,
             task_name=self.task_name,
             flow_run_id=flow_ids.run_id,
@@ -378,7 +378,7 @@ class TaskContext:
                 error = "".join(
                     traceback.format_exception(exc_type, exc_value, exc_traceback)
                 )
-                self.repository.update_task_run(
+                self.tracker.update_task_run(
                     self.task_run,
                     finished_at=finished_at,
                     status="failed",
@@ -390,7 +390,7 @@ class TaskContext:
                     exc_info=(exc_type, exc_value, exc_traceback)
                 )
             else:
-                self.repository.update_task_run(
+                self.tracker.update_task_run(
                     self.task_run,
                     finished_at=finished_at,
                     status="success",

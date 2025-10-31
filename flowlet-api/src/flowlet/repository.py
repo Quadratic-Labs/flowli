@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import Self
+from typing import Protocol, Self
 from uuid import UUID
 
 from attrs import define, field
@@ -7,7 +7,23 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy import bindparam, func, select
 
 from .database import FlowRun as FlowRunORM, TaskRun as TaskRunORM
-from .register import FlowRegister
+
+
+class FlowRegisterProtocol(Protocol):
+    """Protocol defining the interface for flow registration.
+
+    This protocol breaks the circular dependency between FlowRepository
+    and FlowRegister by defining only the interface that FlowRepository
+    needs, without importing FlowRegister directly.
+    """
+
+    def list_flows(self) -> list[str]:
+        """Return list of registered flow names."""
+        ...
+
+    def list_tasks(self) -> list[str]:
+        """Return list of registered task names."""
+        ...
 
 
 @define(slots=True)
@@ -107,13 +123,20 @@ class SQL:
     )
 
 
-class FlowRepository:
-    def __init__(self, *, register: FlowRegister | None = None, db_session_factory=None, **_):
-        self.register = register
-        if db_session_factory is None and register is not None:
-            self.db_session_factory = register.db_session_factory
-        else:
-            self.db_session_factory = db_session_factory
+class FlowTracker:
+    """
+    Repository for tracking flow and task execution (write operations only).
+
+    Used exclusively by decorators (FlowContext, TaskContext) to record
+    execution lifecycle events. Has no dependencies on FlowRegister.
+
+    Responsibilities:
+    - Create flow/task run records
+    - Update flow/task run status, timing, and errors
+    """
+
+    def __init__(self, *, db_session_factory, **_):
+        self.db_session_factory = db_session_factory
 
     def create_flow_run(self, run_id: UUID, flow_name: str, started_at: datetime,
                        status: str = "running", db: Session | None = None) -> FlowRunORM:
@@ -220,6 +243,24 @@ class FlowRepository:
 
         db.add(task_run)
         db.commit()
+
+
+class FlowQueryRepository:
+    """
+    Repository for querying flow and task execution data (read operations only).
+
+    Used by API endpoints and UI to retrieve execution history and statistics.
+    Depends on FlowRegisterProtocol to combine registered flows with their runs.
+
+    Responsibilities:
+    - Query flow runs and summaries
+    - Query task runs
+    - Aggregate execution statistics
+    """
+
+    def __init__(self, *, register: FlowRegisterProtocol, db_session_factory, **_):
+        self.register = register
+        self.db_session_factory = db_session_factory
 
     def read_flow_many(self, limit: int=1, db: Session | None=None) -> list[FlowSummary]:
         if db is None:

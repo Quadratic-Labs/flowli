@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-from .repository import FlowRepository
+from .repository import FlowQueryRepository
 
 
 # region Controllers' Models
@@ -103,9 +103,9 @@ class FlowController:
         >>> custom_flowlet = FlowManager(my_session_factory)
         >>> app.include_router(create_router(flowlet=custom_flowlet))
     """
-    def __init__(self, *, repository: FlowRepository, **_):
-        self.repository = repository
-        self.register = repository.register
+    def __init__(self, *, query_repository: FlowQueryRepository, **_):
+        self.query_repository = query_repository
+        self.register = query_repository.register
 
     def run_flow(self, flow_name: str, payload: FlowInputModel) -> None:
         if flow_name not in self.register.list_flows():
@@ -118,21 +118,21 @@ class FlowController:
         _ = fn(**kwargs)
 
     def list_flows(self) -> list[FlowSummaryModel]:
-        result = self.repository.read_flow_many()
+        result = self.query_repository.read_flow_many()
         return [FlowSummaryModel.model_validate(res) for res in result]
 
     def list_runs(self, offset: int = 0, limit: int = 50) -> list[FlowRunModel]:
-        rows = self.repository.read_flow_run_many(offset=offset, limit=limit)
+        rows = self.query_repository.read_flow_run_many(offset=offset, limit=limit)
         return [FlowRunModel.model_validate(row) for row in rows]
 
     def get_run(self, run_id: uuid.UUID) -> FlowRunModel:
-        run = self.repository.read_flow_run(run_id=run_id)
+        run = self.query_repository.read_flow_run(run_id=run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         return FlowRunModel.model_validate(run)
 
     def get_run_tasks(self, run_id: uuid.UUID) -> list[TaskRunModel]:
-        tasks = self.repository.read_run_task_many(run_id=run_id)
+        tasks = self.query_repository.read_run_task_many(run_id=run_id)
         return [TaskRunModel.model_validate(task) for task in tasks]
 
 # ============================================================================
