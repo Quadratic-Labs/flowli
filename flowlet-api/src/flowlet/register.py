@@ -4,13 +4,13 @@ from typing import Callable, Dict, TYPE_CHECKING
 from .context import FlowContext, TaskContext
 
 if TYPE_CHECKING:
-    from .repository import FlowRepository
+    from .repository import FlowTracker
 
 
 class FlowRegister:
-    def __init__(self, *, repository: "FlowRepository", **_):
-        self.repository = repository
-        self.db_session_factory = repository.db_session_factory
+    def __init__(self, *, tracker: "FlowTracker", **_):
+        self.tracker = tracker
+        self.db_session_factory = tracker.db_session_factory
         self.flows: Dict[str, Callable] = {}
         self.tasks: Dict[str, Callable] = {}
 
@@ -29,11 +29,11 @@ class FlowRegister:
             flow_name = name or fn.__name__
             if flow_name in self.list_flows():
                 raise ValueError(f"Flow {flow_name!r} already registered")
-            tracker = FlowContext(flow_name, repository=self.repository)
+            context = FlowContext(flow_name, tracker=self.tracker)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
-                with tracker:
+                with context:
                     result = fn(*args, **kwargs)
                 return result
 
@@ -54,11 +54,11 @@ class FlowRegister:
             task_name = name or fn.__name__
             if task_name in self.list_tasks():
                 raise ValueError(f"Task {task_name!r} already registered")
-            tracker = TaskContext(task_name, repository=self.repository)
+            context = TaskContext(task_name, tracker=self.tracker)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
-                with tracker:
+                with context:
                     return fn(*args, **kwargs)
 
             wrapper.__task_name__ = task_name  # type: ignore

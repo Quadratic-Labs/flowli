@@ -7,16 +7,15 @@ from .config import FlowletConfig
 from .controllers import FlowController
 from .database import DatabaseSettings
 from .register import FlowRegister
-from .repository import FlowRepository
-
-from .controllers import FlowController
+from .repository import FlowTracker, FlowQueryRepository
 
 
 class FlowletDependencies(TypedDict):
     configs: FlowletConfig
     db_session_factory: sqlalchemy.orm.Session
+    tracker: FlowTracker
     register: FlowRegister
-    repository: FlowRepository
+    query_repository: FlowQueryRepository
     controller: FlowController
 
 
@@ -24,8 +23,9 @@ class Flowlet:
     def __init__(self, **deps: Unpack[FlowletDependencies]):
         self.configs = deps["configs"]
         self.db_session_factory = deps["db_session_factory"]
+        self.tracker = deps["tracker"]
         self.register = deps["register"]
-        self.repository = deps["repository"]
+        self.query_repository = deps["query_repository"]
         self.controller = deps["controller"]
 
     def get_router(self):
@@ -71,11 +71,17 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     deps = {}
     deps["configs"] = configs
     deps["db_session_factory"] = configs.database.db_session_factory
-    # Create repository first (without register)
-    deps["repository"] = FlowRepository(**deps)
-    # Create register (which depends on repository)
+
+    # Create tracker first (no dependencies on register)
+    deps["tracker"] = FlowTracker(**deps)
+
+    # Create register (depends on tracker)
     deps["register"] = FlowRegister(**deps)
-    # Now set the register on repository to complete the circular dependency
-    deps["repository"].register = deps["register"]
+
+    # Create query repository (depends on register)
+    deps["query_repository"] = FlowQueryRepository(**deps)
+
+    # Create controller (depends on query_repository)
     deps["controller"] = FlowController(**deps)
+
     return Flowlet(**deps)
