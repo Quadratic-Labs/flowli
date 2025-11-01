@@ -1,14 +1,18 @@
-name: Claude Code Review
+name: Claude Code Review (DISABLED - Use @claude in PR comments instead)
+
+# Disabled: Use @claude tagging in PR comments via .github/workflows/claude.yml instead
+# on:
+#   pull_request:
+#     types: [opened, synchronize]
+#     # Optional: Only run on specific file changes
+#     # paths:
+#     #   - "src/**/*.ts"
+#     #   - "src/**/*.tsx"
+#     #   - "src/**/*.js"
+#     #   - "src/**/*.jsx"
 
 on:
-  pull_request:
-    types: [opened, synchronize]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+  workflow_dispatch:  # Only allow manual triggering
 
 jobs:
   claude-review:
