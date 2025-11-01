@@ -1,6 +1,6 @@
 import functools
 from datetime import datetime, UTC
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from attr import asdict
 from pydantic_settings import BaseSettings, SettingsConfigDict 
@@ -43,49 +43,47 @@ class Base(DeclarativeBase):
         return {str(k): getattr(self, k) for k in self.__table__.columns.keys()}
 
 
-class FlowRun(Base):
-    """Identifying immutable attributes for a flow run."""
-    __tablename__ = "flow_runs"
+class Run(Base):
+    """Unified model for both flow and task runs."""
+    __tablename__ = "runs"
     run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    flow_name: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    run_type: Mapped[str] = mapped_column(String, index=True)  # "flow" or "task"
 
-    tasks = relationship("TaskRun", back_populates="flow_run", foreign_keys="TaskRun.flow_run_id")
-    logs = relationship("FlowRunLog", back_populates="run")
+    # Relationships
+    logs = relationship("RunLog", back_populates="run", foreign_keys="RunLog.run_id")
+    links = relationship("RunLink", back_populates="parent_run", foreign_keys="RunLink.parent_run_id")
+    parent_links = relationship("RunLink", back_populates="child_run", foreign_keys="RunLink.child_run_id")
 
 
-class FlowRunLog(Base):
-    """Append only logs for a flow run."""
-    __tablename__ = "flow_run_logs"
+class RunLog(Base):
+    """Append only logs for a run (flow or task)."""
+    __tablename__ = "run_logs"
     log_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.run_id), index=True)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
     status: Mapped[str] = mapped_column(String)
     log: Mapped[str] = mapped_column(Unicode)
 
-    run = relationship("FlowRun", back_populates="logs")
+    run = relationship("Run", back_populates="logs", foreign_keys=[run_id])
 
 
-class TaskRun(Base):
-    """Identifying immutable attributes for a task run."""
-    __tablename__ = "task_runs"
-    run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    flow_run_id: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.run_id), index=True)
-    task_name: Mapped[str] = mapped_column(String, index=True)
+class RunLink(Base):
+    """Links between runs (e.g., flow-task relationships)."""
+    __tablename__ = "run_links"
+    link_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True, default_factory=uuid4)
+    parent_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
+    child_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
 
-    flow_run = relationship("FlowRun", back_populates="tasks", foreign_keys="TaskRun.flow_run_id")
-    logs = relationship("TaskRunLog", back_populates="run")
+    parent_run = relationship("Run", back_populates="links", foreign_keys=[parent_run_id])
+    child_run = relationship("Run", back_populates="parent_links", foreign_keys=[child_run_id])
 
 
-class TaskRunLog(Base):
-    """Append only logs for a flow run."""
-    __tablename__ = "task_run_logs"
-    log_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    run_id: Mapped[UUID] = mapped_column(ForeignKey(TaskRun.run_id), index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
-    status: Mapped[str] = mapped_column(String)
-    log: Mapped[str] = mapped_column(Unicode)
-
-    run = relationship("TaskRun", back_populates="logs")
+# Backward compatibility aliases
+FlowRun = Run
+TaskRun = Run
+FlowRunLog = RunLog
+TaskRunLog = RunLog
 
 
 class DatabaseSettings(BaseSettings):

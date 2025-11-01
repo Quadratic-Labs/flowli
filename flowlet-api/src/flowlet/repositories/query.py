@@ -6,6 +6,7 @@ from attrs import define, field
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import bindparam, func, select
 
+from ..database import Run as RunORM, RunLog as RunLogORM, RunLink as RunLinkORM
 from ..database import FlowRun as FlowRunORM, FlowRunLog as FlowRunLogORM
 from ..database import TaskRun as TaskRunORM, TaskRunLog as TaskRunLogORM
 from ..interfaces.register import FlowRegisterProtocol
@@ -13,94 +14,79 @@ from ..interfaces.repository import models
 
 
 class SQL:
-    # CTE to get flow run time ranges from logs
-    flow_times = (
+    # CTE to get run time ranges from logs
+    run_times = (
         select(
-            FlowRunLogORM.run_id.label("run_id"),
-            func.min(FlowRunLogORM.timestamp).label("created_at"),
-            func.max(FlowRunLogORM.timestamp).label("latest_at"),
+            RunLogORM.run_id.label("run_id"),
+            func.min(RunLogORM.timestamp).label("created_at"),
+            func.max(RunLogORM.timestamp).label("latest_at"),
         )
-        .group_by(FlowRunLogORM.run_id)
-        .cte("flow_times")
+        .group_by(RunLogORM.run_id)
+        .cte("run_times")
     )
 
-    # CTE to get the latest status for each flow run
-    latest_flow_status = (
+    # CTE to get the latest status for each run
+    latest_run_status = (
         select(
-            FlowRunLogORM.run_id.label("run_id"),
-            FlowRunLogORM.status.label("status"),
-            FlowRunLogORM.log.label("error"),
-            FlowRunLogORM.timestamp.label("status_at"),
+            RunLogORM.run_id.label("run_id"),
+            RunLogORM.status.label("status"),
+            RunLogORM.log.label("log"),
+            RunLogORM.timestamp.label("status_at"),
         )
-        .distinct(FlowRunLogORM.run_id)
-        .order_by(FlowRunLogORM.run_id, FlowRunLogORM.timestamp.desc())
-        .cte("latest_flow_status")
+        .distinct(RunLogORM.run_id)
+        .order_by(RunLogORM.run_id, RunLogORM.timestamp.desc())
+        .cte("latest_run_status")
     )
 
-    # CTE to get task run time ranges from logs
-    task_times = (
-        select(
-            TaskRunLogORM.run_id.label("run_id"),
-            func.min(TaskRunLogORM.timestamp).label("created_at"),
-            func.max(TaskRunLogORM.timestamp).label("latest_at"),
-        )
-        .group_by(TaskRunLogORM.run_id)
-        .cte("task_times")
-    )
-
-    # CTE to get the latest status for each task run
-    latest_task_status = (
-        select(
-            TaskRunLogORM.run_id.label("run_id"),
-            TaskRunLogORM.status.label("status"),
-            TaskRunLogORM.log.label("log"),
-            TaskRunLogORM.timestamp.label("status_at"),
-        )
-        .distinct(TaskRunLogORM.run_id)
-        .order_by(TaskRunLogORM.run_id, TaskRunLogORM.timestamp.desc())
-        .cte("latest_task_status")
-    )
+    # Backward compatibility aliases
+    flow_times = run_times
+    latest_flow_status = latest_run_status
+    task_times = run_times
+    latest_task_status = latest_run_status
 
     # CTE to rank flows by recency within each flow name
     ranked_flows = (
         select(
-            FlowRunORM.run_id,
-            FlowRunORM.flow_name,
-            flow_times.c.created_at,
-            flow_times.c.latest_at,
-            latest_flow_status.c.status,
-            latest_flow_status.c.error,
+            RunORM.run_id,
+            RunORM.name.label("flow_name"),
+            run_times.c.created_at,
+            run_times.c.latest_at,
+            latest_run_status.c.status,
+            latest_run_status.c.log.label("error"),
             func.row_number()
             .over(
-                partition_by=FlowRunORM.flow_name,
-                order_by=flow_times.c.created_at.desc(),
+                partition_by=RunORM.name,
+                order_by=run_times.c.created_at.desc(),
             )
             .label("rnk"),
         )
-        .join(flow_times, FlowRunORM.run_id == flow_times.c.run_id)
-        .join(latest_flow_status, FlowRunORM.run_id == latest_flow_status.c.run_id)
+        .where(RunORM.run_type == "flow")
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
         .cte("ranked_flows")
     )
 
     # CTE to rank tasks by recency within each task name
     ranked_tasks = (
         select(
-            TaskRunORM.run_id,
-            TaskRunORM.task_name,
-            TaskRunORM.flow_run_id,
-            task_times.c.created_at,
-            task_times.c.latest_at,
-            latest_task_status.c.status,
-            latest_task_status.c.log,
+            RunORM.run_id,
+            RunORM.name.label("task_name"),
+            RunLinkORM.parent_run_id.label("flow_run_id"),
+            run_times.c.created_at,
+            run_times.c.latest_at,
+            latest_run_status.c.status,
+            latest_run_status.c.log,
             func.row_number()
             .over(
-                partition_by=TaskRunORM.task_name,
-                order_by=task_times.c.created_at.desc(),
+                partition_by=RunORM.name,
+                order_by=run_times.c.created_at.desc(),
             )
             .label("rnk"),
         )
-        .join(task_times, TaskRunORM.run_id == task_times.c.run_id)
-        .join(latest_task_status, TaskRunORM.run_id == latest_task_status.c.run_id)
+        .where(RunORM.run_type == "task")
+        .join(RunLinkORM, RunORM.run_id == RunLinkORM.child_run_id)
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
         .cte("ranked_tasks")
     )
 
@@ -109,86 +95,95 @@ class SQL:
 
     read_flow_run = (
         select(
-            FlowRunORM.run_id,
-            FlowRunORM.flow_name,
-            flow_times.c.created_at.label("started_at"),
-            flow_times.c.latest_at.label("finished_at"),
-            latest_flow_status.c.status,
-            latest_flow_status.c.error,
+            RunORM.run_id,
+            RunORM.name.label("flow_name"),
+            run_times.c.created_at.label("started_at"),
+            run_times.c.latest_at.label("finished_at"),
+            latest_run_status.c.status,
+            latest_run_status.c.log.label("error"),
         )
-        .join(flow_times, FlowRunORM.run_id == flow_times.c.run_id)
-        .join(latest_flow_status, FlowRunORM.run_id == latest_flow_status.c.run_id)
-        .where(FlowRunORM.run_id == bindparam("run_id"))
+        .where(RunORM.run_type == "flow")
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
+        .where(RunORM.run_id == bindparam("run_id"))
     )
 
     read_flow_run_many = (
         select(
-            FlowRunORM.run_id,
-            FlowRunORM.flow_name,
-            flow_times.c.created_at.label("started_at"),
-            flow_times.c.latest_at.label("finished_at"),
-            latest_flow_status.c.status,
-            latest_flow_status.c.error,
+            RunORM.run_id,
+            RunORM.name.label("flow_name"),
+            run_times.c.created_at.label("started_at"),
+            run_times.c.latest_at.label("finished_at"),
+            latest_run_status.c.status,
+            latest_run_status.c.log.label("error"),
         )
-        .join(flow_times, FlowRunORM.run_id == flow_times.c.run_id)
-        .join(latest_flow_status, FlowRunORM.run_id == latest_flow_status.c.run_id)
+        .where(RunORM.run_type == "flow")
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
         .select_from(ranked_flows)
-        .where(FlowRunORM.run_id == ranked_flows.c.run_id)
-        .order_by(flow_times.c.created_at.desc())
+        .where(RunORM.run_id == ranked_flows.c.run_id)
+        .order_by(run_times.c.created_at.desc())
         .limit(bindparam("limit"))
         .offset(bindparam("offset"))
     )
 
     # Task queries
+    FlowRunAlias = aliased(RunORM)
     read_flow_task_run_many = (
         select(
-            TaskRunORM.run_id,
-            TaskRunORM.task_name,
-            TaskRunORM.flow_run_id,
-            FlowRunORM.flow_name,
-            task_times.c.created_at.label("started_at"),
-            task_times.c.latest_at.label("finished_at"),
-            latest_task_status.c.status,
-            latest_task_status.c.log,
+            RunORM.run_id,
+            RunORM.name.label("task_name"),
+            RunLinkORM.parent_run_id.label("flow_run_id"),
+            FlowRunAlias.name.label("flow_name"),
+            run_times.c.created_at.label("started_at"),
+            run_times.c.latest_at.label("finished_at"),
+            latest_run_status.c.status,
+            latest_run_status.c.log,
         )
-        .join(FlowRunORM, TaskRunORM.flow_run_id == FlowRunORM.run_id)
-        .join(task_times, TaskRunORM.run_id == task_times.c.run_id)
-        .join(latest_task_status, TaskRunORM.run_id == latest_task_status.c.run_id)
-        .where(TaskRunORM.flow_run_id == bindparam("run_id"))
+        .where(RunORM.run_type == "task")
+        .join(RunLinkORM, RunORM.run_id == RunLinkORM.child_run_id)
+        .join(FlowRunAlias, RunLinkORM.parent_run_id == FlowRunAlias.run_id)
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
+        .where(RunLinkORM.parent_run_id == bindparam("run_id"))
     )
 
     read_task_many = select(ranked_tasks).where(ranked_tasks.c.rnk <= bindparam("n_last"))
 
     read_task_run = (
         select(
-            TaskRunORM.run_id,
-            TaskRunORM.task_name,
-            TaskRunORM.flow_run_id,
-            task_times.c.created_at.label("started_at"),
-            task_times.c.latest_at.label("finished_at"),
-            latest_task_status.c.status,
-            latest_task_status.c.log,
+            RunORM.run_id,
+            RunORM.name.label("task_name"),
+            RunLinkORM.parent_run_id.label("flow_run_id"),
+            run_times.c.created_at.label("started_at"),
+            run_times.c.latest_at.label("finished_at"),
+            latest_run_status.c.status,
+            latest_run_status.c.log,
         )
-        .join(task_times, TaskRunORM.run_id == task_times.c.run_id)
-        .join(latest_task_status, TaskRunORM.run_id == latest_task_status.c.run_id)
-        .where(TaskRunORM.run_id == bindparam("run_id"))
+        .where(RunORM.run_type == "task")
+        .join(RunLinkORM, RunORM.run_id == RunLinkORM.child_run_id)
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
+        .where(RunORM.run_id == bindparam("run_id"))
     )
 
     read_task_run_many = (
         select(
-            TaskRunORM.run_id,
-            TaskRunORM.task_name,
-            TaskRunORM.flow_run_id,
-            task_times.c.created_at.label("started_at"),
-            task_times.c.latest_at.label("finished_at"),
-            latest_task_status.c.status,
-            latest_task_status.c.log,
+            RunORM.run_id,
+            RunORM.name.label("task_name"),
+            RunLinkORM.parent_run_id.label("flow_run_id"),
+            run_times.c.created_at.label("started_at"),
+            run_times.c.latest_at.label("finished_at"),
+            latest_run_status.c.status,
+            latest_run_status.c.log,
         )
-        .join(task_times, TaskRunORM.run_id == task_times.c.run_id)
-        .join(latest_task_status, TaskRunORM.run_id == latest_task_status.c.run_id)
+        .where(RunORM.run_type == "task")
+        .join(RunLinkORM, RunORM.run_id == RunLinkORM.child_run_id)
+        .join(run_times, RunORM.run_id == run_times.c.run_id)
+        .join(latest_run_status, RunORM.run_id == latest_run_status.c.run_id)
         .select_from(ranked_tasks)
-        .where(TaskRunORM.run_id == ranked_tasks.c.run_id)
-        .order_by(task_times.c.created_at.desc())
+        .where(RunORM.run_id == ranked_tasks.c.run_id)
+        .order_by(run_times.c.created_at.desc())
         .limit(bindparam("limit"))
         .offset(bindparam("offset"))
     )

@@ -1,7 +1,11 @@
+from datetime import datetime, UTC
+from uuid import UUID
+
 from sqlalchemy.orm import Session
 
 from ..interfaces.repository.models import FlowRun, FlowRunLog
-from ..database import FlowRunLog as FlowRunLogORM
+from ..database import Run as RunORM, RunLog as RunLogORM, RunLink as RunLinkORM
+from ..database import FlowRunLog as FlowRunLogORM, TaskRun as TaskRunORM
 
 
 class FlowTracker:
@@ -18,20 +22,42 @@ class FlowTracker:
     def __init__(self, *, db_session_factory, **_):
         self.db_session_factory = db_session_factory
 
-    def log_flow_run(self, data: FlowRunLog, db: Session | None = None) -> FlowRun:
+    def create_flow_run(self, run_id: UUID, flow_name: str, started_at: datetime,
+                       status: str = "running", db: Session | None = None) -> RunORM:
         """Create a new flow run record."""
         if db is None:
             with self.db_session_factory() as db:
-                flow_run = self.log_flow_run(data, db)
+                flow_run = self.create_flow_run(
+                    run_id=run_id,
+                    flow_name=flow_name,
+                    started_at=started_at,
+                    status=status,
+                    db=db
+                )
             return flow_run
+
+        flow_run = RunORM(
+            run_id=run_id,
+            name=flow_name,
+            run_type="flow",
+        )
         db.add(flow_run)
+
+        # Create initial log entry
+        log_entry = RunLogORM(
+            run_id=run_id,
+            timestamp=started_at,
+            status=status,
+            log="",
+        )
+        db.add(log_entry)
         db.commit()
         return flow_run
 
-    def update_flow_run(self, flow_run: FlowRunORM, finished_at: datetime | None = None,
+    def update_flow_run(self, flow_run: RunORM, finished_at: datetime | None = None,
                        status: str | None = None, error: str | None = None,
                        db: Session | None = None) -> None:
-        """Update an existing flow run record."""
+        """Update an existing flow run record by adding a log entry."""
         if db is None:
             with self.db_session_factory() as db:
                 self.update_flow_run(
@@ -43,19 +69,20 @@ class FlowTracker:
                 )
             return
 
-        if finished_at is not None:
-            flow_run.finished_at = finished_at
-        if status is not None:
-            flow_run.status = status
-        if error is not None:
-            flow_run.error = error
-
-        db.add(flow_run)
-        db.commit()
+        # Create a log entry for the update
+        if status is not None or error is not None:
+            log_entry = RunLogORM(
+                run_id=flow_run.run_id,
+                timestamp=finished_at or datetime.now(UTC),
+                status=status or "",
+                log=error or "",
+            )
+            db.add(log_entry)
+            db.commit()
 
     def create_task_run(self, run_id: UUID, task_name: str, flow_run_id: UUID,
                        flow_name: str, started_at: datetime, status: str = "running",
-                       db: Session | None = None) -> TaskRunORM:
+                       db: Session | None = None) -> RunORM:
         """Create a new task run record."""
         if db is None:
             with self.db_session_factory() as db:
@@ -70,22 +97,36 @@ class FlowTracker:
                 )
             return task_run
 
-        task_run = TaskRunORM(
+        task_run = RunORM(
             run_id=run_id,
-            task_name=task_name,
-            flow_run_id=flow_run_id,
-            flow_name=flow_name,
-            started_at=started_at,
-            status=status,
+            name=task_name,
+            run_type="task",
         )
         db.add(task_run)
+
+        # Create initial log entry
+        log_entry = RunLogORM(
+            run_id=run_id,
+            timestamp=started_at,
+            status=status,
+            log="",
+        )
+        db.add(log_entry)
+
+        # Create link between task and flow
+        link = RunLinkORM(
+            parent_run_id=flow_run_id,
+            child_run_id=run_id,
+        )
+        db.add(link)
+
         db.commit()
         return task_run
 
-    def update_task_run(self, task_run: TaskRunORM, finished_at: datetime | None = None,
+    def update_task_run(self, task_run: RunORM, finished_at: datetime | None = None,
                        status: str | None = None, result: str | None = None,
                        error: str | None = None, db: Session | None = None) -> None:
-        """Update an existing task run record."""
+        """Update an existing task run record by adding a log entry."""
         if db is None:
             with self.db_session_factory() as db:
                 self.update_task_run(
@@ -98,14 +139,14 @@ class FlowTracker:
                 )
             return
 
-        if finished_at is not None:
-            task_run.finished_at = finished_at
-        if status is not None:
-            task_run.status = status
-        if result is not None:
-            task_run.result = result
-        if error is not None:
-            task_run.error = error
-
-        db.add(task_run)
-        db.commit()
+        # Create a log entry for the update
+        if status is not None or error is not None or result is not None:
+            log_text = error or result or ""
+            log_entry = RunLogORM(
+                run_id=task_run.run_id,
+                timestamp=finished_at or datetime.now(UTC),
+                status=status or "",
+                log=log_text,
+            )
+            db.add(log_entry)
+            db.commit()
