@@ -58,7 +58,7 @@ class FlowRunLog(Base):
     __tablename__ = "flow_run_logs"
     log_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     run_id: Mapped[UUID] = mapped_column(ForeignKey(FlowRun.run_id), index=True)
-    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
     status: Mapped[str] = mapped_column(String)
     log: Mapped[str] = mapped_column(Unicode)
 
@@ -81,7 +81,7 @@ class TaskRunLog(Base):
     __tablename__ = "task_run_logs"
     log_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     run_id: Mapped[UUID] = mapped_column(ForeignKey(TaskRun.run_id), index=True)
-    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
     status: Mapped[str] = mapped_column(String)
     log: Mapped[str] = mapped_column(Unicode)
 
