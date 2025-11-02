@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Self
 from uuid import UUID, uuid4
 
 from attrs import Factory, define, field
 
 
-@define(slots=True)
+@define(slots=True, kw_only=True)
 class FlowSummary:
     """Domain model for a flow runs' summary."""
     name: str
@@ -15,47 +15,26 @@ class FlowSummary:
     doc: str | None = field(default=None)
 
 
-@define(slots=True)
-class FlowRun:
+@define(slots=True, kw_only=True)
+class RunAttrModel:
+    """Unified model for both flow and task runs."""
+    name: str
+    run_type: str
+    run_id: UUID = Factory(uuid4)
+
+
+@define(slots=True, kw_only=True)
+class RunLogAttrModel:
     """Domain model for a flow run."""
     run_id: UUID
-    flow_name: str
     status: str
-    started_at: datetime
-    finished_at: datetime | None = field(default=None)
-    error: str | None = field(default=None)
-
-
-@define(slots=True)
-class TaskRun:
-    """Domain model for a task run."""
-    run_id: UUID
-    task_name: str
-    flow_run_id: UUID
-    flow_name: str
-    started_at: datetime
-    finished_at: datetime | None
-    status: str
-    result: str | None
-    error: str | None
-
-
-@define
-class FlowRunLog:
-    run_id: UUID
-    flow_name: str
-    status: str
-    at: datetime = Factory(lambda: datetime.now(UTC))
     log: str = field(default="")
+    timestamp: datetime = Factory(lambda: datetime.now(UTC))
     log_id: UUID = Factory(uuid4)
 
 
-@define
-class TaskRunLog:
-    run_id: UUID
-    flow_name: str
-    task_name: str
-    status: str
-    at: datetime = Factory(lambda: datetime.now(UTC))
-    log: str = field(default="")
-    log_id: UUID = Factory(uuid4)
+@define(slots=True, kw_only=True)
+class RunModel:
+    run: RunAttrModel
+    logs: list[RunLogAttrModel] = Factory(list)
+    parent: RunAttrModel | None = field(default=None)

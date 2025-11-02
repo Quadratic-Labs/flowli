@@ -4,7 +4,7 @@ from typing import Callable, Dict, TYPE_CHECKING
 from .context import FlowContext, TaskContext
 
 if TYPE_CHECKING:
-    from .repository import FlowTracker
+    from .repositories.tracker import FlowTracker
 
 
 class FlowRegister:

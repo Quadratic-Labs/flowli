@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 class FlowRegisterProtocol(Protocol):
@@ -8,6 +8,9 @@ class FlowRegisterProtocol(Protocol):
     and FlowRegister by defining only the interface that FlowRepository
     needs, without importing FlowRegister directly.
     """
+    flows: dict[str, Callable]
+    tasks: dict[str, Callable]
+
     def list_flows(self) -> list[str]:
         """Return list of registered flow names."""
         ...

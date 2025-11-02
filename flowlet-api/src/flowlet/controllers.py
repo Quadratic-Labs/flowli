@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-from .repository import FlowQueryRepository
+from .repositories.query import FlowQueryRepository
 
 
 # region Controllers' Models
@@ -34,7 +34,11 @@ def humanize_timedelta(td: timedelta) -> str:
 HumanDuration = Annotated[timedelta, AfterValidator(humanize_timedelta)]
 
 
-class FlowSummaryModel(BaseModel):
+class Base(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FlowSummaryModel(Base):
     name: str
     last_status: str | None = Field(default=None)
     finished_ago: HumanDuration | None = Field(default=None)
@@ -42,15 +46,13 @@ class FlowSummaryModel(BaseModel):
     doc: str | None = Field(default=None)
 
 
-class FlowInputModel(BaseModel):
+class FlowInputModel(Base):
     # arguments are simply JSON serializable and passed as positional/keyword args.
     # For simplicity we accept an object of kwargs only.
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
-class FlowRunModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class FlowRunModel(Base):
     flow_name: str
     run_id: uuid.UUID
     started_at: datetime
@@ -59,9 +61,7 @@ class FlowRunModel(BaseModel):
     error: str | None = None
 
 
-class TaskRunModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class TaskRunModel(Base):
     run_id: uuid.UUID
     task_name: str
     flow_run_id: uuid.UUID
