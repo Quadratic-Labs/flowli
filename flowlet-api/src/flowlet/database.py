@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy import DateTime, String, Unicode, Uuid
 from sqlalchemy import ForeignKey
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass, sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -47,13 +47,13 @@ class Run(Base):
     """Unified model for both flow and task runs."""
     __tablename__ = "runs"
     run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String, index=True)
     run_type: Mapped[str] = mapped_column(String, index=True)  # "flow" or "task"
+    name: Mapped[str] = mapped_column(String, index=True)
 
     # Relationships
-    logs = relationship("RunLog", back_populates="run", foreign_keys="RunLog.run_id")
-    links = relationship("RunLink", back_populates="parent_run", foreign_keys="RunLink.parent_run_id")
-    parent_links = relationship("RunLink", back_populates="child_run", foreign_keys="RunLink.child_run_id")
+    logs: Mapped[list["RunLog"]] = relationship("RunLog", back_populates="run", foreign_keys="RunLog.run_id")
+    links: Mapped[list["RunLink"]] = relationship("RunLink", back_populates="parent_run", foreign_keys="RunLink.parent_run_id")
+    parent_links: Mapped[list["RunLink"]] = relationship("RunLink", back_populates="child_run", foreign_keys="RunLink.child_run_id")
 
 
 class RunLog(Base):
@@ -61,22 +61,22 @@ class RunLog(Base):
     __tablename__ = "run_logs"
     log_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default_factory=lambda: datetime.now(UTC))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String)
     log: Mapped[str] = mapped_column(Unicode)
 
-    run = relationship("Run", back_populates="logs", foreign_keys=[run_id])
+    run: Mapped[Run] = relationship("Run", back_populates="logs", foreign_keys=[run_id])
 
 
 class RunLink(Base):
     """Links between runs (e.g., flow-task relationships)."""
     __tablename__ = "run_links"
-    link_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True, default_factory=uuid4)
+    link_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     parent_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
     child_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
 
-    parent_run = relationship("Run", back_populates="links", foreign_keys=[parent_run_id])
-    child_run = relationship("Run", back_populates="parent_links", foreign_keys=[child_run_id])
+    parent_run: Mapped[Run] = relationship("Run", back_populates="links", foreign_keys=[parent_run_id])
+    child_run: Mapped[Run] = relationship("Run", back_populates="parent_links", foreign_keys=[child_run_id])
 
 
 # Backward compatibility aliases

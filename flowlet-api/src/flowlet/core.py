@@ -7,8 +7,8 @@ from .config import FlowletConfig
 from .controllers import FlowController
 from .database import DatabaseSettings
 from .register import FlowRegister
-from .repository import FlowTracker, FlowQueryRepository
-
+from .repositories.query import FlowQueryRepository
+from .repositories.tracker import FlowTracker
 
 class FlowletDependencies(TypedDict):
     configs: FlowletConfig
