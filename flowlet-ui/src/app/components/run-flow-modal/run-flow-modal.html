@@ -1,0 +1,89 @@
+<div class="modal-header">
+  <h5 class="modal-title">Run Flow: {{ flowName }}</h5>
+  <button type="button" class="btn-close" aria-label="Close" (click)="cancel()"></button>
+</div>
+
+<div class="modal-body">
+  <p class="text-muted">Configure the arguments for this flow run:</p>
+
+  <div *ngIf="arguments.length === 0" class="alert alert-info">
+    No arguments configured. Click "Add Argument" to add parameters, or click "Run" to execute with default values.
+  </div>
+
+  <div *ngFor="let arg of arguments; let i = index" class="argument-row mb-3">
+    <div class="row g-2">
+      <div class="col-4">
+        <input
+          type="text"
+          class="form-control"
+          placeholder="Argument name"
+          [(ngModel)]="arg.key"
+          name="key-{{i}}"
+        />
+      </div>
+      <div class="col-3">
+        <select
+          class="form-select"
+          [(ngModel)]="arg.type"
+          (change)="onTypeChange(arg)"
+          name="type-{{i}}"
+        >
+          <option value="string">String</option>
+          <option value="number">Number</option>
+          <option value="boolean">Boolean</option>
+        </select>
+      </div>
+      <div class="col-4">
+        <input
+          *ngIf="arg.type === 'string'"
+          type="text"
+          class="form-control"
+          placeholder="Value"
+          [(ngModel)]="arg.value"
+          name="value-{{i}}"
+        />
+        <input
+          *ngIf="arg.type === 'number'"
+          type="number"
+          class="form-control"
+          placeholder="Value"
+          [(ngModel)]="arg.value"
+          name="value-{{i}}"
+        />
+        <div *ngIf="arg.type === 'boolean'" class="form-check form-switch mt-2">
+          <input
+            type="checkbox"
+            class="form-check-input"
+            [(ngModel)]="arg.value"
+            name="value-{{i}}"
+            id="checkbox-{{i}}"
+          />
+          <label class="form-check-label" for="checkbox-{{i}}">
+            {{ arg.value ? 'true' : 'false' }}
+          </label>
+        </div>
+      </div>
+      <div class="col-1">
+        <button
+          type="button"
+          class="btn btn-sm btn-danger"
+          (click)="removeArgument(i)"
+          title="Remove argument"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <button type="button" class="btn btn-sm btn-outline-primary" (click)="addArgument()">
+    <i class="bi bi-plus-circle"></i> Add Argument
+  </button>
+</div>
+
+<div class="modal-footer">
+  <button type="button" class="btn btn-secondary" (click)="cancel()">Cancel</button>
+  <button type="button" class="btn btn-primary" (click)="submit()">
+    <i class="bi bi-play-fill"></i> Run Flow
+  </button>
+</div>

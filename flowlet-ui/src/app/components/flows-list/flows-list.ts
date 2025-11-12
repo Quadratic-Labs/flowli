@@ -1,7 +1,9 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
+import { NgbModal } from '@ng-bootstrap/ng-bootstrap';
 import { FlowletApi, FlowListItem } from '../../services/flowlet-api';
+import { RunFlowModal } from '../run-flow-modal/run-flow-modal';
 
 @Component({
   selector: 'app-flows-list',
@@ -14,7 +16,10 @@ export class FlowsList implements OnInit {
   loading = true;
   error: string | null = null;
 
-  constructor(private flowletApi: FlowletApi) {}
+  constructor(
+    private flowletApi: FlowletApi,
+    private modalService: NgbModal
+  ) {}
 
   ngOnInit(): void {
     this.loadFlows();
@@ -36,13 +41,29 @@ export class FlowsList implements OnInit {
   }
 
   runFlow(flowName: string): void {
-    this.flowletApi.runFlow(flowName).subscribe({
-      next: (run) => {
-        alert(`Flow "${flowName}" started with run ID: ${run.flow_id}`);
-      },
-      error: (err) => {
-        alert('Failed to start flow: ' + err.message);
-      }
+    const modalRef = this.modalService.open(RunFlowModal, {
+      size: 'lg',
+      centered: true
     });
+    modalRef.componentInstance.flowName = flowName;
+
+    modalRef.result.then(
+      (kwargs) => {
+        // User clicked "Run Flow"
+        this.flowletApi.runFlow(flowName, { kwargs }).subscribe({
+          next: (run) => {
+            alert(`Flow "${flowName}" started with run ID: ${run.flow_id}`);
+            this.loadFlows(); // Refresh the list
+          },
+          error: (err) => {
+            alert('Failed to start flow: ' + err.message);
+          }
+        });
+      },
+      (reason) => {
+        // User dismissed the modal (clicked cancel or close)
+        console.log('Modal dismissed:', reason);
+      }
+    );
   }
 }

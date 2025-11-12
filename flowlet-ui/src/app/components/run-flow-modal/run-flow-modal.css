@@ -1,0 +1,10 @@
+.argument-row {
+  padding: 0.5rem;
+  background-color: #f8f9fa;
+  border-radius: 0.25rem;
+}
+
+.modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}

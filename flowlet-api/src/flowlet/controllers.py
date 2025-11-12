@@ -49,10 +49,10 @@ class FlowInputModel(BaseModel):
 
 
 class FlowRunModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     flow_name: str
-    run_id: uuid.UUID
+    run_id: uuid.UUID = Field(alias="flow_id", serialization_alias="flow_id")
     started_at: datetime
     finished_at: datetime | None
     status: str
@@ -107,7 +107,7 @@ class FlowController:
         self.query_repository = query_repository
         self.register = query_repository.register
 
-    def run_flow(self, flow_name: str, payload: FlowInputModel) -> None:
+    def run_flow(self, flow_name: str, payload: FlowInputModel) -> FlowRunModel:
         if flow_name not in self.register.list_flows():
             raise HTTPException(status_code=404, detail="Flow not found")
         fn = self.register.flows[flow_name]
@@ -116,6 +116,13 @@ class FlowController:
         # TODO: schedule background task, get immediate status
         # TODO: add azure job to execution and PubSub sockets
         _ = fn(**kwargs)
+
+        # Get the most recent run for this flow
+        runs = self.query_repository.read_flow_run_many(offset=0, limit=1)
+        if not runs:
+            raise HTTPException(status_code=500, detail="Failed to create flow run")
+
+        return FlowRunModel.model_validate(runs[0])
 
     def list_flows(self) -> list[FlowSummaryModel]:
         result = self.query_repository.read_flow_many()
