@@ -2,7 +2,7 @@ import functools
 from datetime import datetime, UTC
 from uuid import UUID, uuid4
 
-from attr import asdict
+from attrs import asdict
 from pydantic_settings import BaseSettings, SettingsConfigDict 
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -18,7 +18,7 @@ class Base(DeclarativeBase):
         return cls(**data.model_dump())
 
     @classmethod
-    def from_attr(cls, data):
+    def from_attrs(cls, data):
         return cls(**asdict(data))
 
     def update_from_pydantic(self, data):
@@ -28,7 +28,7 @@ class Base(DeclarativeBase):
             setattr(self, key, value)
         return self
 
-    def update_from_attr(self, data):
+    def update_from_attrs(self, data):
         for key, value in asdict(data).items():
             if not hasattr(self, key):
                 raise AttributeError(key)
@@ -44,7 +44,7 @@ class Base(DeclarativeBase):
 
 
 class Run(Base):
-    """Unified model for both flow and task runs."""
+    """A flow or task run."""
     __tablename__ = "runs"
     run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
     run_type: Mapped[str] = mapped_column(String, index=True)  # "flow" or "task"
@@ -54,6 +54,22 @@ class Run(Base):
     logs: Mapped[list["RunLog"]] = relationship("RunLog", back_populates="run", foreign_keys="RunLog.run_id")
     links: Mapped[list["RunLink"]] = relationship("RunLink", back_populates="parent_run", foreign_keys="RunLink.parent_run_id")
     parent_links: Mapped[list["RunLink"]] = relationship("RunLink", back_populates="child_run", foreign_keys="RunLink.child_run_id")
+    children: Mapped[list["Run"]] = relationship(
+        "Run",
+        secondary="run_links",
+        primaryjoin="Run.run_id == RunLink.parent_run_id",
+        secondaryjoin="Run.run_id == RunLink.child_run_id",
+        foreign_keys="[RunLink.parent_run_id, RunLink.child_run_id]",
+        viewonly=True
+    )
+    parent: Mapped["Run"] = relationship(
+        "Run",
+        secondary="run_links",
+        primaryjoin="Run.run_id == RunLink.child_run_id",
+        secondaryjoin="Run.run_id == RunLink.parent_run_id",
+        foreign_keys="[RunLink.parent_run_id, RunLink.child_run_id]",
+        viewonly=True
+    )
 
 
 class RunLog(Base):
@@ -77,13 +93,6 @@ class RunLink(Base):
 
     parent_run: Mapped[Run] = relationship("Run", back_populates="links", foreign_keys=[parent_run_id])
     child_run: Mapped[Run] = relationship("Run", back_populates="parent_links", foreign_keys=[child_run_id])
-
-
-# Backward compatibility aliases
-FlowRun = Run
-TaskRun = Run
-FlowRunLog = RunLog
-TaskRunLog = RunLog
 
 
 class DatabaseSettings(BaseSettings):

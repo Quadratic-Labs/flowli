@@ -2,13 +2,11 @@ import functools
 from typing import Callable, Dict, TYPE_CHECKING
 
 from .context import FlowContext, TaskContext
-
-if TYPE_CHECKING:
-    from .repositories.tracker import FlowTracker
+from .interfaces.repository.protocols import FlowTrackerProtocol
 
 
 class FlowRegister:
-    def __init__(self, *, tracker: "FlowTracker", **_):
+    def __init__(self, *, tracker: FlowTrackerProtocol, **_):
         self.tracker = tracker
         self.db_session_factory = tracker.db_session_factory
         self.flows: Dict[str, Callable] = {}

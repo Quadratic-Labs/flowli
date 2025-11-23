@@ -5,10 +5,10 @@ Provides a factory function to create routers with custom or default FlowManager
 """
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import HTTPException
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
 from .repositories.query import FlowQueryRepository
 
@@ -38,39 +38,63 @@ class Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class FlowSummaryModel(Base):
-    name: str
-    last_status: str | None = Field(default=None)
-    finished_ago: HumanDuration | None = Field(default=None)
-    duration: HumanDuration | None = Field(default=None)
-    doc: str | None = Field(default=None)
-
-
 class FlowInputModel(Base):
     # arguments are simply JSON serializable and passed as positional/keyword args.
     # For simplicity we accept an object of kwargs only.
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
+class FlowSummaryModel(Base):
+    name: str
+    status: str | None = Field(default=None)
+    started_at: datetime | None = Field(default=None)
+    last_at: datetime | None = Field(default=None)
+    doc: str | None = Field(default=None)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def finished_ago(self) -> str | None:
+        """Compute time since last_at relative to now."""
+        if self.last_at is None:
+            return None
+        delta = datetime.now(UTC) - self.last_at
+        return humanize_timedelta(delta)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def duration(self) -> str | None:
+        """Compute duration from started_at to last_at."""
+        if self.started_at is None or self.last_at is None:
+            return None
+        delta = self.last_at - self.started_at
+        return humanize_timedelta(delta)
+
+
 class FlowRunModel(Base):
-    flow_name: str
-    run_id: uuid.UUID
-    started_at: datetime
-    finished_at: datetime | None
-    status: str
-    error: str | None = None
+    name: str
+    run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    status: str | None = Field(default=None)
+    ended_at: datetime | None = Field(default=None)
 
 
-class TaskRunModel(Base):
+class RunAttrModel(Base):
+    name: str
+    run_type: str
     run_id: uuid.UUID
-    task_name: str
-    flow_run_id: uuid.UUID
-    flow_name: str
-    started_at: datetime
-    finished_at: datetime | None = None
+
+
+class RunLogModel(Base):
     status: str
-    result: str | None = None
-    error: str | None = None
+    log: str = Field(default="")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    log_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+
+
+class RunModel(Base):
+    run: RunAttrModel
+    logs: list[RunLogModel] = Field(default_factory=list)
+    parent: RunAttrModel | None = Field(default=None)
+    children: list[Self] = Field(default_factory=list)
 
 # ============================================================================
 # endregion
@@ -118,22 +142,28 @@ class FlowController:
         _ = fn(**kwargs)
 
     def list_flows(self) -> list[FlowSummaryModel]:
-        result = self.query_repository.read_flow_many()
-        return [FlowSummaryModel.model_validate(res) for res in result]
+        flows = self.query_repository.list_flows()
+        result = []
+        for flow in flows:
+            result.append(FlowSummaryModel.model_validate(flow))
+        return result
 
     def list_runs(self, offset: int = 0, limit: int = 50) -> list[FlowRunModel]:
-        rows = self.query_repository.read_flow_run_many(offset=offset, limit=limit)
+        rows = self.query_repository.list_runs(offset=offset, limit=limit)
         return [FlowRunModel.model_validate(row) for row in rows]
 
-    def get_run(self, run_id: uuid.UUID) -> FlowRunModel:
-        run = self.query_repository.read_flow_run(run_id=run_id)
+    def get_run(self, run_id: uuid.UUID) -> RunModel:
+        run = self.query_repository.get_run_by_id(run_id=run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        return FlowRunModel.model_validate(run)
+        return RunModel.model_validate(run)
 
-    def get_run_tasks(self, run_id: uuid.UUID) -> list[TaskRunModel]:
-        tasks = self.query_repository.read_run_task_many(run_id=run_id)
-        return [TaskRunModel.model_validate(task) for task in tasks]
+    def list_flow_runs(self, name: str) -> list[FlowRunModel]:
+        runs = self.query_repository.list_runs_by_flow_name(name=name)
+        result = []
+        for run in runs:
+            result.append(FlowRunModel.model_validate(run))
+        return result
 
 # ============================================================================
 # endregion

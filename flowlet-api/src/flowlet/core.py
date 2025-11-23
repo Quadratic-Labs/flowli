@@ -10,6 +10,7 @@ from .register import FlowRegister
 from .repositories.query import FlowQueryRepository
 from .repositories.tracker import FlowTracker
 
+
 class FlowletDependencies(TypedDict):
     configs: FlowletConfig
     db_session_factory: sqlalchemy.orm.Session
@@ -31,10 +32,10 @@ class Flowlet:
     def get_router(self):
         router = APIRouter()
         router.get("/flows")(self.controller.list_flows)
-        router.post("/flows/{flow_name}/run")(self.controller.run_flow)
+        router.post("/flows/{flow_name}/execute")(self.controller.run_flow)
+        router.get("/flows/{flow_name}/runs")(self.controller.list_flow_runs)
         router.get("/runs")(self.controller.list_runs)
         router.get("/runs/{run_id}")(self.controller.get_run)
-        router.get("/runs/{run_id}/tasks")(self.controller.get_run_tasks)
         return router
 
     def init_database(self):

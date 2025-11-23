@@ -2,11 +2,12 @@ from typing import Callable, Protocol
 
 
 class FlowRegisterProtocol(Protocol):
-    """Protocol defining the interface for flow registration.
-
-    This protocol breaks the circular dependency between FlowRepository
-    and FlowRegister by defining only the interface that FlowRepository
-    needs, without importing FlowRegister directly.
+    """
+    Protocol defining the interface for flow registration.
+    
+    Attributes:
+        flows: flows' register, mapping name to the flow's callable.
+        tasks: tasks' register, mapping name to the task's callable.
     """
     flows: dict[str, Callable]
     tasks: dict[str, Callable]
