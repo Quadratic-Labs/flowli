@@ -220,7 +220,7 @@ class FlowQueryRepository:
         runs = db.execute(SQL.list_flows, {"n_last": n_last_runs}).all()
         runs_idx = {}
         for row in runs:
-            name = row.flow_name
+            name = row.name
             runs_idx[name] = runs_idx.get(name, [])
             runs_idx[name].append(row)
 
