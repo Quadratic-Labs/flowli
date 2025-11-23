@@ -7,17 +7,50 @@ from attrs import Factory, define, field
 
 @define(slots=True, kw_only=True)
 class FlowSummary:
-    """Domain model for a flow runs' summary."""
+    """
+    A flow's runs' summary. Used to view many flows.
+
+    Attributes:
+        name: FLow's name.
+        status: Status of the recent flow's run(s).
+        started_at: Datetime at which the latest flow's run started.
+        ended_at: Datetime at which the latest flow's run ended.
+    """
     name: str
-    last_status: str | None = field(default=None)
-    finished_ago: timedelta | None = field(default=None)
-    duration: timedelta | None = field(default=None)
+    status: str | None = field(default=None)
+    started_at: datetime | None = field(default=None)
+    ended_at: datetime | None = field(default=None)
     doc: str | None = field(default=None)
+
+    @property
+    def duration(self) -> timedelta | None:
+        """Duration of the latest flow run."""
+        if self.started_at is None or self.ended_at is None:
+            return None
+        return self.ended_at - self.started_at 
+
+
+@define(slots=True, kw_only=True)
+class FlowRunSummary:
+    """
+    A flow run's summary. Used to view many runs for a flow.
+
+    Attributes:
+        name: flow's name.
+        run_id: flow run's id.
+        status: flow run's status.
+        started_at: datetime at which the run started.
+        ended_at: datetime at which the run ended.
+    """
+    name: str
+    run_id: UUID = Factory(uuid4)
+    status: str | None = field(default=None)
+    ended_at: datetime | None = field(default=None)
 
 
 @define(slots=True, kw_only=True)
 class RunAttrModel:
-    """Unified model for both flow and task runs."""
+    """A run's identifiers"""
     name: str
     run_type: str
     run_id: UUID = Factory(uuid4)
@@ -25,7 +58,7 @@ class RunAttrModel:
 
 @define(slots=True, kw_only=True)
 class RunLogAttrModel:
-    """Domain model for a flow run."""
+    """A run's log record"""
     run_id: UUID
     status: str
     log: str = field(default="")
@@ -35,6 +68,8 @@ class RunLogAttrModel:
 
 @define(slots=True, kw_only=True)
 class RunModel:
+    """Run's full record."""
     run: RunAttrModel
     logs: list[RunLogAttrModel] = Factory(list)
     parent: RunAttrModel | None = field(default=None)
+    children: list[Self]= Factory(list)

@@ -19,10 +19,7 @@ import traceback
 from typing import  Literal
 
 from .interfaces.repository.models import RunAttrModel, RunLogAttrModel
-
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .repositories.tracker import FlowTracker
+from .interfaces.repository.protocols import FlowTrackerProtocol
 
 
 logger = logging.getLogger()
@@ -53,7 +50,7 @@ class ExecutionContext:
     )
     """Stack of current execution runs (flows and tasks)"""
 
-    def __init__(self, name: str, run_type: Literal["flow", "task"], *, tracker: "FlowTracker", **_):
+    def __init__(self, name: str, run_type: Literal["flow", "task"], *, tracker: FlowTrackerProtocol, **_):
         self.name = name
         self.run_type = run_type
         self.tracker = tracker
@@ -192,13 +189,13 @@ class ExecutionContext:
 
 class FlowContext(ExecutionContext):
     """Convenience wrapper for flow execution tracking."""
-    def __init__(self, flow_name: str, *, tracker: "FlowTracker", **kwargs):
+    def __init__(self, flow_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
         super().__init__(name=flow_name, run_type="flow", tracker=tracker, **kwargs)
 
 
 class TaskContext(ExecutionContext):
     """Convenience wrapper for task execution tracking."""
-    def __init__(self, task_name: str, *, tracker: "FlowTracker", **kwargs):
+    def __init__(self, task_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
         super().__init__(name=task_name, run_type="task", tracker=tracker, **kwargs)
 
 # ============================================================================

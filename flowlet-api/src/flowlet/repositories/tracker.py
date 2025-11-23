@@ -1,11 +1,7 @@
-from uuid import UUID
-
 from ..database import Run as RunORM, RunLog as RunLogORM, RunLink as RunLinkORM
 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
-    from ..interfaces.repository.models import RunAttrModel, RunLogAttrModel
+from sqlalchemy.orm import Session
+from ..interfaces.repository.models import RunAttrModel, RunLogAttrModel
 
 
 class FlowTracker:
@@ -42,7 +38,7 @@ class FlowTracker:
             return run
 
         # Create run record
-        run = RunORM.from_attr(data)
+        run = RunORM.from_attrs(data)
         db.add(run)
         db.commit()
         return data
@@ -73,6 +69,6 @@ class FlowTracker:
                 result = self.log(data, db=db)
             return result
 
-        db.add(RunLogORM.from_attr(data))
+        db.add(RunLogORM.from_attrs(data))
         db.commit()
         return data
