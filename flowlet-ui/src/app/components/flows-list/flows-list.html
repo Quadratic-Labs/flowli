@@ -37,12 +37,12 @@
             <td>
               <span class="badge"
                     [ngClass]="{
-                      'bg-success': flow.last_status === 'completed',
-                      'bg-danger': flow.last_status === 'failed',
-                      'bg-warning': flow.last_status === 'running',
-                      'bg-secondary': flow.last_status === 'pending'
+                      'bg-success': flow.status === 'completed',
+                      'bg-danger': flow.status === 'failed',
+                      'bg-warning': flow.status === 'running',
+                      'bg-secondary': flow.status === 'pending'
                     }">
-                {{ flow.last_status }}
+                {{ flow.status || 'N/A' }}
               </span>
             </td>
             <td>{{ flow.finished_ago }}</td>

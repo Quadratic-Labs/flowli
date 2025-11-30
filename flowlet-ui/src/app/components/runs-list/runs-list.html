@@ -30,7 +30,7 @@
         </thead>
         <tbody>
           <tr *ngFor="let run of runs">
-            <td><strong>{{ run.flow_name }}</strong></td>
+            <td><strong>{{ run.name }}</strong></td>
             <td>
               <span class="badge"
                     [ngClass]="{
@@ -39,13 +39,13 @@
                       'bg-warning': run.status === 'running',
                       'bg-secondary': run.status === 'pending'
                     }">
-                {{ run.status }}
+                {{ run.status || 'N/A' }}
               </span>
             </td>
-            <td>{{ run.started_at | date:'medium' }}</td>
-            <td>{{ run.finished_at ? (run.finished_at | date:'medium') : 'Running...' }}</td>
+            <td>N/A</td>
+            <td>{{ run.ended_at ? (run.ended_at | date:'medium') : 'Running...' }}</td>
             <td>
-              <a [routerLink]="['/runs', run.flow_id]" class="btn btn-sm btn-info">
+              <a [routerLink]="['/runs', run.run_id]" class="btn btn-sm btn-info">
                 View Details
               </a>
             </td>

@@ -4,31 +4,39 @@ import { Observable } from 'rxjs';
 
 export interface FlowListItem {
   name: string;
-  last_status: string;
-  finished_ago: string;
-  duration: string;
-  doc?: string;
+  status: string | null;
+  started_at: string | null;
+  last_at: string | null;
+  finished_ago: string | null;
+  duration: string | null;
+  doc?: string | null;
 }
 
 export interface FlowRunInfo {
-  flow_id: string;
-  flow_name: string;
-  started_at: string;
-  finished_at?: string;
-  status: string;
-  error?: string;
+  name: string;
+  run_id: string;
+  status: string | null;
+  ended_at: string | null;
 }
 
-export interface TaskRunInfo {
-  task_id: string;
-  task_name: string;
-  flow_id: string;
-  flow_name: string;
-  started_at: string;
-  finished_at?: string;
+export interface RunAttrInfo {
+  name: string;
+  run_type: string;
+  run_id: string;
+}
+
+export interface RunLogInfo {
   status: string;
-  result?: string;
-  error?: string;
+  log: string;
+  timestamp: string;
+  log_id: string;
+}
+
+export interface RunDetailInfo {
+  run: RunAttrInfo;
+  logs: RunLogInfo[];
+  parent: RunAttrInfo | null;
+  children: RunDetailInfo[];
 }
 
 export interface StartFlowRequest {
@@ -50,8 +58,8 @@ export class FlowletApi {
   }
 
   // Run a flow
-  runFlow(flowName: string, payload: StartFlowRequest = {}): Observable<FlowRunInfo> {
-    return this.http.post<FlowRunInfo>(`${this.apiUrl}/flows/${flowName}/run`, payload);
+  runFlow(flowName: string, payload: StartFlowRequest = {}): Observable<void> {
+    return this.http.post<void>(`${this.apiUrl}/flows/${flowName}/execute`, payload);
   }
 
   // Get list of runs
@@ -62,12 +70,7 @@ export class FlowletApi {
   }
 
   // Get a specific run
-  getRun(runId: string): Observable<FlowRunInfo> {
-    return this.http.get<FlowRunInfo>(`${this.apiUrl}/runs/${runId}`);
-  }
-
-  // Get tasks for a run
-  getRunTasks(runId: string): Observable<TaskRunInfo[]> {
-    return this.http.get<TaskRunInfo[]>(`${this.apiUrl}/runs/${runId}/tasks`);
+  getRun(runId: string): Observable<RunDetailInfo> {
+    return this.http.get<RunDetailInfo>(`${this.apiUrl}/runs/${runId}`);
   }
 }

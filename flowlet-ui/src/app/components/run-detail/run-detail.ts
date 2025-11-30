@@ -1,7 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
-import { FlowletApi, FlowRunInfo, TaskRunInfo } from '../../services/flowlet-api';
+import { FlowletApi, RunDetailInfo } from '../../services/flowlet-api';
 
 @Component({
   selector: 'app-run-detail',
@@ -11,8 +11,7 @@ import { FlowletApi, FlowRunInfo, TaskRunInfo } from '../../services/flowlet-api
 })
 export class RunDetail implements OnInit {
   runId: string = '';
-  run: FlowRunInfo | null = null;
-  tasks: TaskRunInfo[] = [];
+  run: RunDetailInfo | null = null;
   loading = true;
   error: string | null = null;
 
@@ -25,7 +24,6 @@ export class RunDetail implements OnInit {
     this.route.params.subscribe(params => {
       this.runId = params['id'];
       this.loadRun();
-      this.loadTasks();
     });
   }
 
@@ -40,17 +38,6 @@ export class RunDetail implements OnInit {
       error: (err) => {
         this.error = 'Failed to load run: ' + err.message;
         this.loading = false;
-      }
-    });
-  }
-
-  loadTasks(): void {
-    this.flowletApi.getRunTasks(this.runId).subscribe({
-      next: (tasks) => {
-        this.tasks = tasks;
-      },
-      error: (err) => {
-        console.error('Failed to load tasks:', err);
       }
     });
   }
