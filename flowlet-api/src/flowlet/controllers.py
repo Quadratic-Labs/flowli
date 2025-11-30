@@ -5,7 +5,7 @@ Provides a factory function to create routers with custom or default FlowManager
 """
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 
 from fastapi import HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
@@ -94,7 +94,7 @@ class RunModel(Base):
     run: RunAttrModel
     logs: list[RunLogModel] = Field(default_factory=list)
     parent: RunAttrModel | None = Field(default=None)
-    children: list[Self] = Field(default_factory=list)
+    children: list["RunModel"] = Field(default_factory=list)
 
 # ============================================================================
 # endregion

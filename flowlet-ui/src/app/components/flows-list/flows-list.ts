@@ -37,8 +37,9 @@ export class FlowsList implements OnInit {
 
   runFlow(flowName: string): void {
     this.flowletApi.runFlow(flowName).subscribe({
-      next: (run) => {
-        alert(`Flow "${flowName}" started with run ID: ${run.flow_id}`);
+      next: () => {
+        alert(`Flow "${flowName}" started successfully`);
+        this.loadFlows();
       },
       error: (err) => {
         alert('Failed to start flow: ' + err.message);

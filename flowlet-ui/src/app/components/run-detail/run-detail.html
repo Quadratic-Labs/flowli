@@ -18,73 +18,86 @@
   <div *ngIf="!loading && !error && run">
     <div class="card mb-4">
       <div class="card-header">
-        <h2>Flow Run Details</h2>
+        <h2>Run Details</h2>
       </div>
       <div class="card-body">
         <div class="row">
           <div class="col-md-6">
-            <p><strong>Flow Name:</strong> {{ run.flow_name }}</p>
-            <p><strong>Run ID:</strong> {{ run.flow_id }}</p>
-            <p><strong>Status:</strong>
-              <span class="badge"
-                    [ngClass]="{
-                      'bg-success': run.status === 'completed',
-                      'bg-danger': run.status === 'failed',
-                      'bg-warning': run.status === 'running',
-                      'bg-secondary': run.status === 'pending'
-                    }">
-                {{ run.status }}
-              </span>
-            </p>
+            <p><strong>Name:</strong> {{ run.run.name }}</p>
+            <p><strong>Run ID:</strong> {{ run.run.run_id }}</p>
+            <p><strong>Type:</strong> {{ run.run.run_type }}</p>
           </div>
           <div class="col-md-6">
-            <p><strong>Started At:</strong> {{ run.started_at | date:'medium' }}</p>
-            <p><strong>Finished At:</strong> {{ run.finished_at ? (run.finished_at | date:'medium') : 'N/A' }}</p>
-            <p *ngIf="run.error"><strong>Error:</strong> <span class="text-danger">{{ run.error }}</span></p>
+            <p *ngIf="run.parent"><strong>Parent:</strong> {{ run.parent.name }} ({{ run.parent.run_id }})</p>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card mb-4">
       <div class="card-header">
-        <h3>Tasks</h3>
+        <h3>Logs</h3>
       </div>
       <div class="card-body">
-        <div *ngIf="tasks.length === 0" class="alert alert-info">
-          No tasks found for this run.
+        <div *ngIf="run.logs.length === 0" class="alert alert-info">
+          No logs found for this run.
         </div>
 
-        <div class="table-responsive" *ngIf="tasks.length > 0">
+        <div class="table-responsive" *ngIf="run.logs.length > 0">
           <table class="table table-striped">
             <thead>
               <tr>
-                <th>Task Name</th>
+                <th>Timestamp</th>
                 <th>Status</th>
-                <th>Started At</th>
-                <th>Finished At</th>
-                <th>Result</th>
+                <th>Log</th>
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let task of tasks">
-                <td><strong>{{ task.task_name }}</strong></td>
+              <tr *ngFor="let log of run.logs">
+                <td>{{ log.timestamp | date:'medium' }}</td>
                 <td>
                   <span class="badge"
                         [ngClass]="{
-                          'bg-success': task.status === 'completed',
-                          'bg-danger': task.status === 'failed',
-                          'bg-warning': task.status === 'running',
-                          'bg-secondary': task.status === 'pending'
+                          'bg-success': log.status === 'completed',
+                          'bg-danger': log.status === 'failed',
+                          'bg-warning': log.status === 'running',
+                          'bg-secondary': log.status === 'pending'
                         }">
-                    {{ task.status }}
+                    {{ log.status }}
                   </span>
                 </td>
-                <td>{{ task.started_at | date:'medium' }}</td>
-                <td>{{ task.finished_at ? (task.finished_at | date:'medium') : 'N/A' }}</td>
+                <td>{{ log.log }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" *ngIf="run.children.length > 0">
+      <div class="card-header">
+        <h3>Child Runs</h3>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-striped">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Run ID</th>
+                <th>Type</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let child of run.children">
+                <td><strong>{{ child.run.name }}</strong></td>
+                <td>{{ child.run.run_id }}</td>
+                <td>{{ child.run.run_type }}</td>
                 <td>
-                  <span *ngIf="task.result">{{ task.result }}</span>
-                  <span *ngIf="task.error" class="text-danger">{{ task.error }}</span>
+                  <a [routerLink]="['/runs', child.run.run_id]" class="btn btn-sm btn-info">
+                    View Details
+                  </a>
                 </td>
               </tr>
             </tbody>
