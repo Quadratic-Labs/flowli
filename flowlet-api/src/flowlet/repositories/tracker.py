@@ -1,6 +1,8 @@
-from ..database import Run as RunORM, RunLog as RunLogORM, RunLink as RunLinkORM
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
+
+from ..database import Run as RunORM, RunLink as RunLinkORM, RunLog as RunLogORM
 from ..interfaces.repository.models import RunAttrModel, RunLogAttrModel
 
 
@@ -52,6 +54,7 @@ class FlowTracker:
         if parent is None or child is None:
             return
         link = RunLinkORM(
+            link_id=uuid4(),
             parent_run_id=parent.run_id,
             child_run_id=child.run_id,
         )
