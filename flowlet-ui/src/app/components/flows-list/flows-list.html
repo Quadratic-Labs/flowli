@@ -1,64 +1,64 @@
-<div class="container mt-4">
-  <div class="d-flex justify-content-between align-items-center mb-4">
+<div style="padding: 24px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
     <h1>Flowlet Workflows</h1>
-    <button class="btn btn-primary" (click)="loadFlows()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
+    <button mat-raised-button color="primary" (click)="loadFlows()">
+      <mat-icon>refresh</mat-icon> Refresh
     </button>
   </div>
 
-  <div *ngIf="loading" class="text-center">
-    <div class="spinner-border" role="status">
-      <span class="visually-hidden">Loading...</span>
-    </div>
+  <div *ngIf="loading" style="display: flex; justify-content: center; padding: 40px;">
+    <mat-spinner></mat-spinner>
   </div>
 
-  <div *ngIf="error" class="alert alert-danger" role="alert">
+  <div *ngIf="error" style="color: #f44336; padding: 16px; background-color: #ffebee; border-radius: 4px; margin-bottom: 16px;">
     {{ error }}
   </div>
 
   <div *ngIf="!loading && !error">
-    <div class="table-responsive">
-      <table class="table table-striped table-hover">
-        <thead>
-          <tr>
-            <th>Flow Name</th>
-            <th>Last Status</th>
-            <th>Finished</th>
-            <th>Duration</th>
-            <th>Description</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr *ngFor="let flow of flows">
-            <td>
-              <strong>{{ flow.name }}</strong>
-            </td>
-            <td>
-              <span class="badge"
-                    [ngClass]="{
-                      'bg-success': flow.status === 'completed',
-                      'bg-danger': flow.status === 'failed',
-                      'bg-warning': flow.status === 'running',
-                      'bg-secondary': flow.status === 'pending'
-                    }">
-                {{ flow.status || 'N/A' }}
-              </span>
-            </td>
-            <td>{{ flow.finished_ago }}</td>
-            <td>{{ flow.duration }}</td>
-            <td>{{ flow.doc || 'N/A' }}</td>
-            <td>
-              <button class="btn btn-sm btn-primary me-2" (click)="runFlow(flow.name)">
-                Run
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <table mat-table [dataSource]="flows" class="mat-elevation-z2" style="width: 100%;">
+      <ng-container matColumnDef="name">
+        <th mat-header-cell *matHeaderCellDef>Flow Name</th>
+        <td mat-cell *matCellDef="let flow"><strong>{{ flow.name }}</strong></td>
+      </ng-container>
 
-    <div *ngIf="flows.length === 0" class="alert alert-info">
+      <ng-container matColumnDef="status">
+        <th mat-header-cell *matHeaderCellDef>Last Status</th>
+        <td mat-cell *matCellDef="let flow">
+          <mat-chip [color]="getStatusColor(flow.status)">
+            {{ flow.status || 'N/A' }}
+          </mat-chip>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="finished">
+        <th mat-header-cell *matHeaderCellDef>Finished</th>
+        <td mat-cell *matCellDef="let flow">{{ flow.finished_ago }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="duration">
+        <th mat-header-cell *matHeaderCellDef>Duration</th>
+        <td mat-cell *matCellDef="let flow">{{ flow.duration }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="description">
+        <th mat-header-cell *matHeaderCellDef>Description</th>
+        <td mat-cell *matCellDef="let flow">{{ flow.doc || 'N/A' }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>Actions</th>
+        <td mat-cell *matCellDef="let flow">
+          <button mat-raised-button color="primary" (click)="runFlow(flow.name)">
+            Run
+          </button>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+    </table>
+
+    <div *ngIf="flows.length === 0" style="padding: 16px; background-color: #e3f2fd; color: #1976d2; border-radius: 4px; margin-top: 16px;">
       No flows available.
     </div>
   </div>

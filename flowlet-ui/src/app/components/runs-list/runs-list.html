@@ -1,60 +1,59 @@
-<div class="container mt-4">
-  <div class="d-flex justify-content-between align-items-center mb-4">
+<div style="padding: 24px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
     <h1>Flow Runs</h1>
-    <button class="btn btn-primary" (click)="loadRuns()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh
+    <button mat-raised-button color="primary" (click)="loadRuns()">
+      <mat-icon>refresh</mat-icon> Refresh
     </button>
   </div>
 
-  <div *ngIf="loading" class="text-center">
-    <div class="spinner-border" role="status">
-      <span class="visually-hidden">Loading...</span>
-    </div>
+  <div *ngIf="loading" style="display: flex; justify-content: center; padding: 40px;">
+    <mat-spinner></mat-spinner>
   </div>
 
-  <div *ngIf="error" class="alert alert-danger" role="alert">
+  <div *ngIf="error" style="color: #f44336; padding: 16px; background-color: #ffebee; border-radius: 4px; margin-bottom: 16px;">
     {{ error }}
   </div>
 
   <div *ngIf="!loading && !error">
-    <div class="table-responsive">
-      <table class="table table-striped table-hover">
-        <thead>
-          <tr>
-            <th>Flow Name</th>
-            <th>Status</th>
-            <th>Started At</th>
-            <th>Finished At</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr *ngFor="let run of runs">
-            <td><strong>{{ run.name }}</strong></td>
-            <td>
-              <span class="badge"
-                    [ngClass]="{
-                      'bg-success': run.status === 'completed',
-                      'bg-danger': run.status === 'failed',
-                      'bg-warning': run.status === 'running',
-                      'bg-secondary': run.status === 'pending'
-                    }">
-                {{ run.status || 'N/A' }}
-              </span>
-            </td>
-            <td>N/A</td>
-            <td>{{ run.ended_at ? (run.ended_at | date:'medium') : 'Running...' }}</td>
-            <td>
-              <a [routerLink]="['/runs', run.run_id]" class="btn btn-sm btn-info">
-                View Details
-              </a>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <table mat-table [dataSource]="runs" class="mat-elevation-z2" style="width: 100%;">
+      <ng-container matColumnDef="name">
+        <th mat-header-cell *matHeaderCellDef>Flow Name</th>
+        <td mat-cell *matCellDef="let run"><strong>{{ run.name }}</strong></td>
+      </ng-container>
 
-    <div *ngIf="runs.length === 0" class="alert alert-info">
+      <ng-container matColumnDef="status">
+        <th mat-header-cell *matHeaderCellDef>Status</th>
+        <td mat-cell *matCellDef="let run">
+          <mat-chip [color]="getStatusColor(run.status)">
+            {{ run.status || 'N/A' }}
+          </mat-chip>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="started">
+        <th mat-header-cell *matHeaderCellDef>Started At</th>
+        <td mat-cell *matCellDef="let run">N/A</td>
+      </ng-container>
+
+      <ng-container matColumnDef="finished">
+        <th mat-header-cell *matHeaderCellDef>Finished At</th>
+        <td mat-cell *matCellDef="let run">{{ run.ended_at ? (run.ended_at | date:'medium') : 'Running...' }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>Actions</th>
+        <td mat-cell *matCellDef="let run">
+          <a mat-raised-button color="accent" [routerLink]="['/runs', run.run_id]">
+            View Details
+          </a>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+    </table>
+
+    <div *ngIf="runs.length === 0" style="padding: 16px; background-color: #e3f2fd; color: #1976d2; border-radius: 4px; margin-top: 16px;">
       No runs found.
     </div>
   </div>
