@@ -1,17 +1,14 @@
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-  <div class="container-fluid">
-    <a class="navbar-brand" routerLink="/">
-      <strong>Flowlet</strong> - Workflow Orchestration
-    </a>
-    <div class="navbar-nav">
-      <a class="nav-link" routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">
-        Flows
-      </a>
-      <a class="nav-link" routerLink="/runs" routerLinkActive="active">
-        Runs
-      </a>
-    </div>
-  </div>
-</nav>
+<mat-toolbar color="primary">
+  <span class="toolbar-title" routerLink="/" style="cursor: pointer;">
+    <strong>Flowlet</strong> - Workflow Orchestration
+  </span>
+  <span style="flex: 1 1 auto;"></span>
+  <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">
+    Flows
+  </a>
+  <a mat-button routerLink="/runs" routerLinkActive="active">
+    Runs
+  </a>
+</mat-toolbar>
 
 <router-outlet></router-outlet>
