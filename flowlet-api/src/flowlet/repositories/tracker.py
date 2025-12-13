@@ -1,3 +1,8 @@
+"""Repository for tracking flow and task execution lifecycle events.
+
+This module provides the FlowTracker class which handles all write operations
+for recording flow and task execution in the database.
+"""
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -7,32 +12,48 @@ from ..interfaces.repository.models import RunAttrModel, RunLogAttrModel
 
 
 class FlowTracker:
-    """
-    Repository for tracking flow and task execution (write operations only).
+    """Repository for tracking flow and task execution (write operations only).
 
-    Used exclusively by decorators (ExecutionContext, FlowContext, TaskContext) to record
-    execution lifecycle events. Has no dependencies on FlowRegister.
+    Used exclusively by execution context managers (ExecutionContext, FlowContext,
+    TaskContext) to record execution lifecycle events. Has no dependencies on
+    FlowRegister to maintain separation of concerns.
 
     Responsibilities:
-    - Create unified run records (flows and tasks)
-    - Update run status, timing, and errors
-    - Manage run links (parent-child relationships)
+        - Create run records for flows and tasks
+        - Log status changes and errors
+        - Manage parent-child relationships between runs
+
+    Attributes:
+        db_session_factory: SQLAlchemy session factory for database access.
+
+    Example:
+        >>> tracker = FlowTracker(db_session_factory=session_factory)
+        >>> run = tracker.create_run(RunAttrModel(name="my_flow", run_type="flow"))
+        >>> tracker.log(RunLogAttrModel(run_id=run.run_id, status="running"))
     """
     def __init__(self, *, db_session_factory, **_):
+        """Initialize the flow tracker.
+
+        Args:
+            db_session_factory: SQLAlchemy session factory.
+            **_: Additional unused dependencies (for flexible dependency injection).
+        """
         self.db_session_factory = db_session_factory
 
     def create_run(self, data: RunAttrModel, db: Session | None=None) -> RunAttrModel:
-        """
-        Create a new run record (flow or task).
+        """Create a new run record in the database.
 
         Args:
-            run_id: Unique identifier for the run
-            name: Name of the flow or task
-            run_type: "flow" or "task"
-            started_at: Start timestamp
-            parent_run_id: Optional parent run ID for nested contexts
-            status: Initial status (default "running")
-            db: Optional database session
+            data: Run attributes including name, type, and ID.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            RunAttrModel: The run attributes (same as input).
+
+        Example:
+            >>> run = tracker.create_run(
+            ...     RunAttrModel(name="my_flow", run_type="flow", run_id=uuid4())
+            ... )
         """
         if db is None:
             with self.db_session_factory() as db:
@@ -46,6 +67,19 @@ class FlowTracker:
         return data
 
     def link_runs(self, parent: RunAttrModel | None, child: RunAttrModel | None, db: Session | None=None) -> None:
+        """Create a parent-child relationship between two runs.
+
+        Links a task run to its parent flow run, or a nested task to its parent task.
+        Does nothing if either parent or child is None.
+
+        Args:
+            parent: Parent run attributes, or None.
+            child: Child run attributes, or None.
+            db: Optional existing database session. If None, creates a new session.
+
+        Example:
+            >>> tracker.link_runs(flow_run, task_run)
+        """
         if db is None:
             with self.db_session_factory() as db:
                 result = self.link_runs(parent, child, db=db)
@@ -62,10 +96,24 @@ class FlowTracker:
         db.commit()
 
     def log(self, data: RunLogAttrModel, db: Session | None = None) -> RunLogAttrModel:
-        """
-        Add a log record to an existing run record.
+        """Add a log entry to a run.
+
+        Records status changes and error messages for a run. Logs are append-only
+        and provide an audit trail of execution.
 
         Args:
+            data: Log entry data including run_id, status, timestamp, and optional log message.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            RunLogAttrModel: The log entry attributes (same as input).
+
+        Example:
+            >>> tracker.log(RunLogAttrModel(
+            ...     run_id=run.run_id,
+            ...     status="success",
+            ...     log="Flow completed successfully"
+            ... ))
         """
         if db is None:
             with self.db_session_factory() as db:

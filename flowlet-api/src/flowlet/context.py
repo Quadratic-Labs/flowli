@@ -1,18 +1,15 @@
-"""
-Execution Context and Tracking
+"""Execution context and tracking for flow and task runs.
 
 This module provides unified execution context tracking for both flows and tasks
 that is safe in both multithreaded and async environments.
-"""
-# region Imports
-# ============================================================================
-# Key Design Decisions:
-# - Uses contextvars for implicit context propagation (thread + async safe)
-# - Context managers for automatic lifecycle management
-# - Unified context for both flows and tasks
-# - Supports arbitrarily nested execution contexts
-# - Proper error handling and resource cleanup
 
+Key Design Decisions:
+    - Uses contextvars for implicit context propagation (thread + async safe)
+    - Context managers for automatic lifecycle management
+    - Unified context for both flows and tasks
+    - Supports arbitrarily nested execution contexts
+    - Proper error handling and resource cleanup
+"""
 import contextvars
 import logging
 import traceback
@@ -23,34 +20,55 @@ from .interfaces.repository.protocols import FlowTrackerProtocol
 
 
 logger = logging.getLogger()
-# ============================================================================
-# endregion
-
-# region Unified Execution Context
-# ============================================================================
 
 
 class ExecutionContext:
-    """
-    Unified context manager for both flow and task execution tracking.
+    """Unified context manager for flow and task execution tracking.
 
-    Automatically:
-    - Creates a new run record (flow or task)
-    - Maintains a stack of nested execution contexts
-    - Links child runs to parent runs automatically
-    - Tracks execution status and timing
-    - Handles errors and cleanup
+    Provides automatic lifecycle management for flow and task execution,
+    including database tracking, error handling, and hierarchical linking
+    of runs. Thread-safe and async-safe via contextvars.
 
-    Thread-safe and async-safe via contextvars.
-    Supports both sync (with) and async (async with) usage.
+    This class:
+        - Creates a new run record (flow or task) on entry
+        - Maintains a stack of nested execution contexts
+        - Links child runs to parent runs automatically
+        - Tracks execution status and timing
+        - Handles errors and cleanup
+
+    Supports both sync (with) and async (async with) usage patterns.
+
+    Attributes:
+        runs_stack: Class-level context variable maintaining the execution stack.
+        name: Name of the flow or task being tracked.
+        run_type: Type of run, either "flow" or "task".
+        tracker: Flow tracker for database operations.
+        session: Database session (initialized in __enter__).
+
+    Example:
+        >>> # Sync usage
+        >>> with ExecutionContext("my_flow", "flow", tracker=tracker):
+        ...     # Flow code here
+        ...     pass
+        >>>
+        >>> # Async usage
+        >>> async with ExecutionContext("my_task", "task", tracker=tracker):
+        ...     # Task code here
+        ...     pass
     """
-    # Stack of current execution contexts (supports arbitrary nesting)
     runs_stack: contextvars.ContextVar[list[RunAttrModel]] = contextvars.ContextVar(
         "runs_stack", default=[]
     )
-    """Stack of current execution runs (flows and tasks)"""
 
     def __init__(self, name: str, run_type: Literal["flow", "task"], *, tracker: FlowTrackerProtocol, **_):
+        """Initialize execution context.
+
+        Args:
+            name: Name of the flow or task.
+            run_type: Type of execution, either "flow" or "task".
+            tracker: Flow tracker for recording execution.
+            **_: Additional unused dependencies (for flexible dependency injection).
+        """
         self.name = name
         self.run_type = run_type
         self.tracker = tracker
@@ -62,23 +80,52 @@ class ExecutionContext:
 
     @classmethod
     def get_current_run(cls) -> RunAttrModel | None:
-        """Get the current (top of stack) execution IDs from context (thread-safe and async-safe)."""
+        """Get the current (top of stack) execution run from context.
+
+        Thread-safe and async-safe via contextvars.
+
+        Returns:
+            RunAttrModel | None: Current run attributes, or None if no run is active.
+        """
         stack = cls.runs_stack.get()
         return stack[-1] if stack else None
 
     @classmethod
     def get_parent_run(cls) -> RunAttrModel | None:
-        """Get the parent execution IDs from context (second from top of stack)."""
+        """Get the parent execution run from context.
+
+        Returns the second-from-top run in the stack, which is the parent
+        of the current run.
+
+        Returns:
+            RunAttrModel | None: Parent run attributes, or None if no parent exists.
+        """
         stack = cls.runs_stack.get()
         return stack[-2] if len(stack) >= 2 else None
 
     @classmethod
     def get_all_runs(cls) -> list[RunAttrModel]:
-        """Get all execution IDs in the current context stack."""
+        """Get all execution runs in the current context stack.
+
+        Returns a copy of the full execution hierarchy from root to current.
+
+        Returns:
+            list[RunAttrModel]: List of all runs in the current execution stack.
+        """
         return cls.runs_stack.get().copy()
 
     def __enter__(self):
-        """Start execution tracking (sync context manager)."""
+        """Start execution tracking (sync context manager).
+
+        Creates a run record, logs the start, links to parent if present,
+        and pushes onto the context stack.
+
+        Returns:
+            Self: This context instance.
+
+        Raises:
+            RuntimeError: If this is a task context but no parent context exists.
+        """
         self.session = self.tracker.db_session_factory()
         parent_run = self.get_current_run()
         if self.run_type == "task" and parent_run is None:
@@ -98,7 +145,18 @@ class ExecutionContext:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        """Complete execution tracking and cleanup (sync context manager)."""
+        """Complete execution tracking and cleanup (sync context manager).
+
+        Logs success or failure, cleans up the context stack and database session.
+
+        Args:
+            exc_type: Exception type if an exception occurred, None otherwise.
+            exc_value: Exception instance if an exception occurred, None otherwise.
+            exc_traceback: Traceback if an exception occurred, None otherwise.
+
+        Returns:
+            bool: Always False (does not suppress exceptions).
+        """
         assert self.session is not None
         run = self.get_current_run()
         assert run is not None
@@ -130,7 +188,17 @@ class ExecutionContext:
         return False
 
     async def __aenter__(self):
-        """Start execution tracking (sync context manager)."""
+        """Start execution tracking (async context manager).
+
+        Creates a run record, logs the start, links to parent if present,
+        and pushes onto the context stack.
+
+        Returns:
+            Self: This context instance.
+
+        Raises:
+            RuntimeError: If this is a task context but no parent context exists.
+        """
         self.session = self.tracker.db_session_factory()
         parent_run = self.get_current_run()
         if self.run_type == "task" and parent_run is None:
@@ -150,7 +218,18 @@ class ExecutionContext:
         return self
 
     async def __aexit__(self, exc_type, exc_value, exc_traceback):
-        """Complete execution tracking and cleanup (sync context manager)."""
+        """Complete execution tracking and cleanup (async context manager).
+
+        Logs success or failure, cleans up the context stack and database session.
+
+        Args:
+            exc_type: Exception type if an exception occurred, None otherwise.
+            exc_value: Exception instance if an exception occurred, None otherwise.
+            exc_traceback: Traceback if an exception occurred, None otherwise.
+
+        Returns:
+            bool: Always False (does not suppress exceptions).
+        """
         assert self.session is not None
         run = self.get_current_run()
         assert run is not None
@@ -181,22 +260,58 @@ class ExecutionContext:
         # Don't suppress exceptions
         return False
 
-# ============================================================================
-# endregion
-
-# region Convenience Wrappers
-# ============================================================================
 
 class FlowContext(ExecutionContext):
-    """Convenience wrapper for flow execution tracking."""
+    """Context manager for flow execution tracking.
+
+    Convenience wrapper around ExecutionContext that automatically sets
+    run_type to "flow". Used by the @flow decorator.
+
+    Args:
+        flow_name: Name of the flow being executed.
+        tracker: Flow tracker for database operations.
+        **kwargs: Additional arguments passed to ExecutionContext.
+
+    Example:
+        >>> with FlowContext("my_workflow", tracker=tracker):
+        ...     # Flow code here
+        ...     pass
+    """
     def __init__(self, flow_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
+        """Initialize flow context.
+
+        Args:
+            flow_name: Name of the flow.
+            tracker: Flow tracker for recording execution.
+            **kwargs: Additional arguments for ExecutionContext.
+        """
         super().__init__(name=flow_name, run_type="flow", tracker=tracker, **kwargs)
 
 
 class TaskContext(ExecutionContext):
-    """Convenience wrapper for task execution tracking."""
-    def __init__(self, task_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
-        super().__init__(name=task_name, run_type="task", tracker=tracker, **kwargs)
+    """Context manager for task execution tracking.
 
-# ============================================================================
-# endregion
+    Convenience wrapper around ExecutionContext that automatically sets
+    run_type to "task". Used by the @task decorator. Must be used within
+    a FlowContext or parent TaskContext.
+
+    Args:
+        task_name: Name of the task being executed.
+        tracker: Flow tracker for database operations.
+        **kwargs: Additional arguments passed to ExecutionContext.
+
+    Example:
+        >>> with FlowContext("my_flow", tracker=tracker):
+        ...     with TaskContext("my_task", tracker=tracker):
+        ...         # Task code here
+        ...         pass
+    """
+    def __init__(self, task_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
+        """Initialize task context.
+
+        Args:
+            task_name: Name of the task.
+            tracker: Flow tracker for recording execution.
+            **kwargs: Additional arguments for ExecutionContext.
+        """
+        super().__init__(name=task_name, run_type="task", tracker=tracker, **kwargs)

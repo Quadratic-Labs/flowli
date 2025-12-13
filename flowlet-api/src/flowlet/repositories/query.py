@@ -1,3 +1,8 @@
+"""Repository for querying flow and task execution history.
+
+This module provides the FlowQueryRepository class for read operations on
+flow execution data, along with SQL query definitions.
+"""
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -9,6 +14,11 @@ from ..interfaces.repository import models
 
 
 class SQL:
+    """Container for pre-compiled SQLAlchemy query objects.
+
+    Defines reusable SQL queries for retrieving flow and task execution data.
+    All queries are SQLAlchemy Core expressions for efficiency.
+    """
     get_run_by_id = (
         select(RunORM)
         .where(RunORM.run_id == bindparam("run_id"))
@@ -196,22 +206,55 @@ class SQL:
 
 
 class FlowQueryRepository:
-    """
-    Repository for querying flow and task execution data (read operations only).
+    """Repository for querying flow and task execution data (read operations only).
 
-    Used by API endpoints and UI to retrieve execution history and statistics.
-    Depends on FlowRegisterProtocol to combine registered flows with their runs.
+    Provides query methods for retrieving execution history, flow summaries, and
+    run details. Combines data from the flow register with execution records from
+    the database.
 
     Responsibilities:
-    - Query flow runs and summaries
-    - Query task runs
-    - Aggregate execution statistics
+        - Query flow runs and summaries
+        - Query task runs
+        - Aggregate execution statistics
+        - Build hierarchical run models with parent/child relationships
+
+    Attributes:
+        register: Flow register for accessing registered flow names.
+        db_session_factory: SQLAlchemy session factory for database access.
+
+    Example:
+        >>> repo = FlowQueryRepository(register=register, db_session_factory=factory)
+        >>> flows = repo.list_flows()
+        >>> run = repo.get_run_by_id(run_id)
     """
     def __init__(self, *, register: FlowRegisterProtocol, db_session_factory, **_):
+        """Initialize the query repository.
+
+        Args:
+            register: Flow register protocol for accessing registered flows.
+            db_session_factory: SQLAlchemy session factory.
+            **_: Additional unused dependencies (for flexible dependency injection).
+        """
         self.register = register
         self.db_session_factory = db_session_factory
 
     def list_flows(self, n_last_runs: int=1, db: Session | None=None) -> list[models.FlowSummary]:
+        """List all registered flows with execution summaries.
+
+        Combines registered flow names with execution statistics from recent runs.
+
+        Args:
+            n_last_runs: Number of recent runs to consider per flow. Defaults to 1.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            list[FlowSummary]: List of flow summaries with execution statistics.
+
+        Example:
+            >>> flows = repo.list_flows(n_last_runs=3)
+            >>> for flow in flows:
+            ...     print(f"{flow.name}: {flow.status}")
+        """
         if db is None:
             with self.db_session_factory() as db:
                 results = self.list_flows(n_last_runs=n_last_runs, db=db)
@@ -236,7 +279,16 @@ class FlowQueryRepository:
         return results
 
     def list_runs(self, offset: int = 0, limit: int = 10, db: Session | None=None) -> list[models.FlowRunSummary]:
-        """List runs summaries."""
+        """List recent runs with pagination.
+
+        Args:
+            offset: Number of runs to skip. Defaults to 0.
+            limit: Maximum number of runs to return. Defaults to 10.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            list[FlowRunSummary]: List of run summaries ordered by recency.
+        """
         if db is None:
             with self.db_session_factory() as db:
                 runs = self.list_runs(offset=offset, limit=limit, db=db)
@@ -253,7 +305,15 @@ class FlowQueryRepository:
         return results
 
     def list_runs_by_flow_name(self, name: str, db: Session | None=None) -> list[models.FlowRunSummary]:
-        """List runs summaries for a given flow `name`."""
+        """List all runs for a specific flow.
+
+        Args:
+            name: Name of the flow.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            list[FlowRunSummary]: List of run summaries for the specified flow.
+        """
         if db is None:
             with self.db_session_factory() as db:
                 runs = self.list_runs_by_flow_name(name=name, db=db)
@@ -270,6 +330,23 @@ class FlowQueryRepository:
         return results
 
     def get_run_by_id(self, run_id: UUID, db: Session | None=None) -> models.RunModel | None:
+        """Get detailed information for a specific run.
+
+        Retrieves a run with full hierarchy including all logs, parent run,
+        and child runs (tasks).
+
+        Args:
+            run_id: Unique identifier of the run.
+            db: Optional existing database session. If None, creates a new session.
+
+        Returns:
+            RunModel | None: Detailed run model with hierarchy, or None if not found.
+
+        Example:
+            >>> run = repo.get_run_by_id(run_id)
+            >>> if run:
+            ...     print(f"Run {run.run.name} has {len(run.children)} tasks")
+        """
         if db is None:
             with self.db_session_factory() as db:
                 run = self.get_run_by_id(run_id=run_id, db=db)
@@ -277,7 +354,7 @@ class FlowQueryRepository:
         row = db.scalar(SQL.get_run_by_id, {"run_id": run_id})
         if row is None:
             return None
-        # Build 
+        # Build run model with hierarchy
         run_attr = models.RunAttrModel(
             name=row.name,
             run_type=row.run_type,
