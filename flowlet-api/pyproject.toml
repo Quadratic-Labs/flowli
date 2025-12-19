@@ -37,6 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Development dependencies
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -47,6 +48,11 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.6.0",
     "httpx>=0.25.0",  # For testing FastAPI
+]
+
+# Azure Blob Storage support
+azure = [
+    "azure-storage-blob>=12.19.0",
 ]
 
 # Database adapters
@@ -117,6 +123,7 @@ path = "src/flowlet/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]  # Add src directory to Python path for imports
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
