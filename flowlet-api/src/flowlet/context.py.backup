@@ -1,6 +1,6 @@
-"""Execution context management for flow and task runs.
+"""Execution context and tracking for flow and task runs.
 
-This module provides execution context tracking for both flows and tasks
+This module provides unified execution context tracking for both flows and tasks
 that is safe in both multithreaded and async environments.
 
 Key Design Decisions:
@@ -8,49 +8,51 @@ Key Design Decisions:
     - Context managers for automatic lifecycle management
     - Unified context for both flows and tasks
     - Supports arbitrarily nested execution contexts
-    - Separation of concerns: context management vs. observation/tracking
+    - Proper error handling and resource cleanup
 """
 import contextvars
-from typing import Literal, TYPE_CHECKING
+import logging
+import traceback
+from typing import  Literal
 
-if TYPE_CHECKING:
-    from .execution_observer import ExecutionObserverBase
-
-from .interfaces.repository.models import RunAttrModel
-from .interfaces.context import ExecutionContext as ExecutionContextProtocol
+from .interfaces.repository.models import RunAttrModel, RunLogAttrModel
+from .interfaces.repository.protocols import FlowTrackerProtocol
 
 
-class ExecutionContext(ExecutionContextProtocol):
-    """Unified context manager for flow and task execution.
+logger = logging.getLogger('flowlet')
+
+
+class ExecutionContext:
+    """Unified context manager for flow and task execution tracking.
 
     Provides automatic lifecycle management for flow and task execution,
-    maintaining a stack of nested execution contexts. Thread-safe and
-    async-safe via contextvars.
+    including database tracking, error handling, and hierarchical linking
+    of runs. Thread-safe and async-safe via contextvars.
 
-    This class is responsible ONLY for:
-        - Managing the execution context stack (run_id, span_id hierarchy)
-        - Providing context lifecycle (enter/exit)
-        - Managing database session lifecycle
+    This class:
+        - Creates a new run record (flow or task) on entry
+        - Maintains a stack of nested execution contexts
+        - Links child runs to parent runs automatically
+        - Tracks execution status and timing
+        - Handles errors and cleanup
 
-    Observation/tracking (logging, database writes) is delegated to ExecutionObserver.
+    Supports both sync (with) and async (async with) usage patterns.
 
     Attributes:
         runs_stack: Class-level context variable maintaining the execution stack.
         name: Name of the flow or task being tracked.
         run_type: Type of run, either "flow" or "task".
         tracker: Flow tracker for database operations.
-        observer: Execution observer for logging/tracking.
         session: Database session (initialized in __enter__).
 
     Example:
         >>> # Sync usage
-        >>> observer = ExecutionObserver(tracker=tracker)
-        >>> with ExecutionContext("my_flow", "flow", tracker=tracker, observer=observer):
+        >>> with ExecutionContext("my_flow", "flow", tracker=tracker):
         ...     # Flow code here
         ...     pass
         >>>
         >>> # Async usage
-        >>> async with ExecutionContext("my_task", "task", tracker=tracker, observer=observer):
+        >>> async with ExecutionContext("my_task", "task", tracker=tracker):
         ...     # Task code here
         ...     pass
     """
@@ -58,30 +60,23 @@ class ExecutionContext(ExecutionContextProtocol):
         "runs_stack", default=[]
     )
 
-    def __init__(
-        self,
-        name: str,
-        run_type: Literal["flow", "task"],
-        *,
-        observer: "ExecutionObserverBase",
-        **_
-    ):
+    def __init__(self, name: str, run_type: Literal["flow", "task"], *, tracker: FlowTrackerProtocol, **_):
         """Initialize execution context.
 
         Args:
             name: Name of the flow or task.
             run_type: Type of execution, either "flow" or "task".
-            observer: Execution observer for logging/tracking.
+            tracker: Flow tracker for recording execution.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.name = name
         self.run_type = run_type
-        self.observer = observer
+        self.tracker = tracker
 
         # variables initialized in __enter__
+        self.session = None
         self._context_token = None
         self._previous_stack = None
-        self._current_run = None
 
     @classmethod
     def get_current_run(cls) -> RunAttrModel | None:
@@ -110,12 +105,13 @@ class ExecutionContext(ExecutionContextProtocol):
 
     @classmethod
     def get_root_run(cls) -> RunAttrModel | None:
-        """Get the root execution run from context.
+        """Get the parent execution run from context.
 
-        Returns the first run in the stack, which is the root flow.
+        Returns the second-from-top run in the stack, which is the parent
+        of the current run.
 
         Returns:
-            RunAttrModel | None: Root run attributes, or None if no run is active.
+            RunAttrModel | None: Parent run attributes, or None if no parent exists.
         """
         stack = cls.runs_stack.get()
         return stack[0] if stack else None
@@ -134,7 +130,8 @@ class ExecutionContext(ExecutionContextProtocol):
     def __enter__(self):
         """Start execution tracking (sync context manager).
 
-        Creates execution context, pushes to stack, and notifies observer.
+        Creates a run record, logs the start, links to parent if present,
+        and pushes onto the context stack.
 
         Returns:
             Self: This context instance.
@@ -142,31 +139,31 @@ class ExecutionContext(ExecutionContextProtocol):
         Raises:
             RuntimeError: If this is a task context but no parent context exists.
         """
-        # 1. Validate task has parent
+        self.session = self.tracker.db_session_factory()
         parent_run = self.get_current_run()
         if self.run_type == "task" and parent_run is None:
             raise RuntimeError(
                 f"TaskContext '{self.name}' must be used within a parent context (flow or task)"
             )
+        run = self.tracker.create_run(RunAttrModel(name=self.name, run_type=self.run_type))
+        log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="running"))
+        self.tracker.link_runs(parent_run, run)
 
-        # 2. Create run record
-        run = RunAttrModel(name=self.name, run_type=self.run_type)
-        self._current_run = run
-
-        # 3. Update context stack
+        # Update context stack: save current stack and push new ID
         self._previous_stack = self.runs_stack.get().copy()
         new_stack = self._previous_stack + [run]
         self._context_token = self.runs_stack.set(new_stack)
 
-        # 4. Notify observer (observer manages its own sessions/resources)
-        self.observer.on_start(run, parent_run)
-
+        logger.info(
+            f"starting execution of {run.name} {run.run_type}",
+            extra={"status": "starting"}
+        )
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
         """Complete execution tracking and cleanup (sync context manager).
 
-        Notifies observer of success/failure and cleans up resources.
+        Logs success or failure, cleans up the context stack and database session.
 
         Args:
             exc_type: Exception type if an exception occurred, None otherwise.
@@ -176,24 +173,34 @@ class ExecutionContext(ExecutionContextProtocol):
         Returns:
             bool: Always False (does not suppress exceptions).
         """
-        assert self._current_run is not None
-
+        assert self.session is not None
+        run = self.get_current_run()
+        assert run is not None
         try:
-            # Notify observer of outcome (observer manages its own cleanup)
             if exc_type is not None:
-                self.observer.on_failure(
-                    self._current_run,
-                    exc_type,
-                    exc_value,
-                    exc_traceback
+                error = "".join(
+                    traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="failed", log=error))
+                logger.error(
+                    f"{run.run_type} '{run.name}' failed: {exc_value}",
+                    exc_info=(exc_type, exc_value, exc_traceback),
+                    extra={"status": "failed"}
                 )
             else:
-                self.observer.on_success(self._current_run)
+                log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="success"))
+                logger.info(
+                    f"successfully executed {run.name} {run.run_type}",
+                    extra={"status": "success"}
+                )
 
         finally:
-            # Always reset contextvar
+            # Always reset contextvar using token and close session
             if self._context_token is not None:
                 self.runs_stack.reset(self._context_token)
+
+            if self.session:
+                self.session.close()
 
         # Don't suppress exceptions
         return False
@@ -201,7 +208,8 @@ class ExecutionContext(ExecutionContextProtocol):
     async def __aenter__(self):
         """Start execution tracking (async context manager).
 
-        Creates execution context, pushes to stack, and notifies observer.
+        Creates a run record, logs the start, links to parent if present,
+        and pushes onto the context stack.
 
         Returns:
             Self: This context instance.
@@ -209,31 +217,31 @@ class ExecutionContext(ExecutionContextProtocol):
         Raises:
             RuntimeError: If this is a task context but no parent context exists.
         """
-        # 1. Validate task has parent
+        self.session = self.tracker.db_session_factory()
         parent_run = self.get_current_run()
         if self.run_type == "task" and parent_run is None:
             raise RuntimeError(
                 f"TaskContext '{self.name}' must be used within a parent context (flow or task)"
             )
+        run = self.tracker.create_run(RunAttrModel(name=self.name, run_type=self.run_type))
+        log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="running"))
+        self.tracker.link_runs(parent_run, run)
 
-        # 2. Create run record
-        run = RunAttrModel(name=self.name, run_type=self.run_type)
-        self._current_run = run
-
-        # 3. Update context stack
+        # Update context stack: save current stack and push new ID
         self._previous_stack = self.runs_stack.get().copy()
         new_stack = self._previous_stack + [run]
         self._context_token = self.runs_stack.set(new_stack)
 
-        # 4. Notify observer (observer manages its own sessions/resources)
-        self.observer.on_start(run, parent_run)
-
+        logger.info(
+            f"starting execution of {run.name} {run.run_type}",
+            extra={"status": "starting"}
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_value, exc_traceback):
         """Complete execution tracking and cleanup (async context manager).
 
-        Notifies observer of success/failure and cleans up resources.
+        Logs success or failure, cleans up the context stack and database session.
 
         Args:
             exc_type: Exception type if an exception occurred, None otherwise.
@@ -243,24 +251,34 @@ class ExecutionContext(ExecutionContextProtocol):
         Returns:
             bool: Always False (does not suppress exceptions).
         """
-        assert self._current_run is not None
-
+        assert self.session is not None
+        run = self.get_current_run()
+        assert run is not None
         try:
-            # Notify observer of outcome (observer manages its own cleanup)
             if exc_type is not None:
-                self.observer.on_failure(
-                    self._current_run,
-                    exc_type,
-                    exc_value,
-                    exc_traceback
+                error = "".join(
+                    traceback.format_exception(exc_type, exc_value, exc_traceback)
+                )
+                log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="failed", log=error))
+                logger.error(
+                    f"{run.run_type} '{run.name}' failed: {exc_value}",
+                    exc_info=(exc_type, exc_value, exc_traceback),
+                    extra={"status": "failed"}
                 )
             else:
-                self.observer.on_success(self._current_run)
+                log = self.tracker.log(RunLogAttrModel(run_id=run.run_id, status="success"))
+                logger.info(
+                    f"successfully executed {run.name} {run.run_type}",
+                    extra={"status": "success"}
+                )
 
         finally:
-            # Always reset contextvar
+            # Always reset contextvar using token and close session
             if self._context_token is not None:
                 self.runs_stack.reset(self._context_token)
+
+            if self.session:
+                self.session.close()
 
         # Don't suppress exceptions
         return False
@@ -274,35 +292,23 @@ class FlowContext(ExecutionContext):
 
     Args:
         flow_name: Name of the flow being executed.
-        observer: Execution observer for logging/tracking.
+        tracker: Flow tracker for database operations.
         **kwargs: Additional arguments passed to ExecutionContext.
 
     Example:
-        >>> observer = RelationalDBObserver(tracker=tracker, db_session_factory=session_factory)
-        >>> with FlowContext("my_workflow", observer=observer):
+        >>> with FlowContext("my_workflow", tracker=tracker):
         ...     # Flow code here
         ...     pass
     """
-    def __init__(
-        self,
-        flow_name: str,
-        *,
-        observer: "ExecutionObserverBase",
-        **kwargs
-    ):
+    def __init__(self, flow_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
         """Initialize flow context.
 
         Args:
             flow_name: Name of the flow.
-            observer: Execution observer for logging/tracking.
+            tracker: Flow tracker for recording execution.
             **kwargs: Additional arguments for ExecutionContext.
         """
-        super().__init__(
-            name=flow_name,
-            run_type="flow",
-            observer=observer,
-            **kwargs
-        )
+        super().__init__(name=flow_name, run_type="flow", tracker=tracker, **kwargs)
 
 
 class TaskContext(ExecutionContext):
@@ -314,33 +320,21 @@ class TaskContext(ExecutionContext):
 
     Args:
         task_name: Name of the task being executed.
-        observer: Execution observer for logging/tracking.
+        tracker: Flow tracker for database operations.
         **kwargs: Additional arguments passed to ExecutionContext.
 
     Example:
-        >>> observer = RelationalDBObserver(tracker=tracker, db_session_factory=session_factory)
-        >>> with FlowContext("my_flow", observer=observer):
-        ...     with TaskContext("my_task", observer=observer):
+        >>> with FlowContext("my_flow", tracker=tracker):
+        ...     with TaskContext("my_task", tracker=tracker):
         ...         # Task code here
         ...         pass
     """
-    def __init__(
-        self,
-        task_name: str,
-        *,
-        observer: "ExecutionObserverBase",
-        **kwargs
-    ):
+    def __init__(self, task_name: str, *, tracker: FlowTrackerProtocol, **kwargs):
         """Initialize task context.
 
         Args:
             task_name: Name of the task.
-            observer: Execution observer for logging/tracking.
+            tracker: Flow tracker for recording execution.
             **kwargs: Additional arguments for ExecutionContext.
         """
-        super().__init__(
-            name=task_name,
-            run_type="task",
-            observer=observer,
-            **kwargs
-        )
+        super().__init__(name=task_name, run_type="task", tracker=tracker, **kwargs)

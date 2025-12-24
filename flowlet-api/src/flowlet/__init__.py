@@ -25,6 +25,15 @@ FastAPI Integration:
     >>>
     >>> app = FastAPI()
     >>> app.include_router(flowlet.get_router())
+
+Structured Logging:
+    >>> from flowlet import configure
+    >>> from flowlet.logging_manager import initialize_logging
+    >>>
+    >>> flowlet = configure({"database": {"url": "postgresql://localhost/mydb"}})
+    >>> initialize_logging(logs_dir="./logs", runs_dir="./runs")
+    >>>
+    >>> # All logs will now have automatic context injection
 """
 from .core import Flowlet, configure
 

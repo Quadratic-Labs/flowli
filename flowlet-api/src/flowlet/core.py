@@ -6,6 +6,7 @@ import sqlalchemy.orm
 from .config import FlowletConfig
 from .controllers import FlowController
 from .database import DatabaseSettings
+from .execution_observer import RelationalDBObserver
 from .register import FlowRegister
 from .repositories.query import FlowQueryRepository
 from .repositories.tracker import FlowTracker
@@ -18,6 +19,7 @@ class FlowletDependencies(TypedDict):
         configs: Flowlet configuration settings.
         db_session_factory: SQLAlchemy session factory for database connections.
         tracker: Flow execution tracker for recording run lifecycle events.
+        observer: Execution observer for logging and tracking lifecycle events.
         register: Flow and task registration manager.
         query_repository: Repository for querying flow execution history.
         controller: FastAPI controller for flow endpoints.
@@ -25,6 +27,7 @@ class FlowletDependencies(TypedDict):
     configs: FlowletConfig
     db_session_factory: sqlalchemy.orm.Session
     tracker: FlowTracker
+    observer: RelationalDBObserver
     register: FlowRegister
     query_repository: FlowQueryRepository
     controller: FlowController
@@ -40,6 +43,7 @@ class Flowlet:
         configs: Flowlet configuration settings.
         db_session_factory: SQLAlchemy session factory.
         tracker: Execution tracker for recording runs.
+        observer: Execution observer for logging/tracking lifecycle events.
         register: Flow and task registration manager.
         query_repository: Query interface for execution history.
         controller: FastAPI endpoint controller.
@@ -66,6 +70,7 @@ class Flowlet:
         self.configs = deps["configs"]
         self.db_session_factory = deps["db_session_factory"]
         self.tracker = deps["tracker"]
+        self.observer = deps["observer"]
         self.register = deps["register"]
         self.query_repository = deps["query_repository"]
         self.controller = deps["controller"]
@@ -180,7 +185,14 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     # Create tracker first (no dependencies on register)
     deps["tracker"] = FlowTracker(**deps)
 
-    # Create register (depends on tracker)
+    # Create execution observer (depends on tracker and db_session_factory)
+    # Note: log_manager can be set later via initialize_logging()
+    deps["observer"] = RelationalDBObserver(
+        tracker=deps["tracker"],
+        db_session_factory=deps["db_session_factory"]
+    )
+
+    # Create register (depends on tracker and observer)
     deps["register"] = FlowRegister(**deps)
 
     # Create query repository (depends on register)
