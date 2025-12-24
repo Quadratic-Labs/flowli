@@ -40,3 +40,11 @@ class FlowRegisterProtocol(Protocol):
             list[str]: Names of registered tasks.
         """
         ...
+
+    def list_flows_and_tasks(self) -> list[str]:
+        """Return list of all registered task names.
+
+        Returns:
+            list[str]: Names of registered tasks and flows.
+        """
+        return self.list_flows() + self.list_tasks()
