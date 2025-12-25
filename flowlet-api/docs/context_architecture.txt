@@ -2,27 +2,27 @@ Context Management Architecture for Flowlet
 ===========================================
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        THREAD ISOLATION                                  │
-│                                                                           │
-│  Thread 1                          Thread 2                              │
+│                        THREAD ISOLATION                                 │
+│                                                                         │
+│  Thread 1                          Thread 2                             │
 │  ┌──────────────────┐             ┌──────────────────┐                  │
 │  │ Flow "checkout"  │             │ Flow "analytics" │                  │
 │  │ run_id: aaa-111  │             │ run_id: bbb-222  │                  │
 │  └────────┬─────────┘             └────────┬─────────┘                  │
-│           │                                 │                             │
-│           │ ContextVar stores:              │ ContextVar stores:          │
-│           │ flow_run_id = "aaa-111"         │ flow_run_id = "bbb-222"     │
-│           │                                 │                             │
-│           ├─► Task: validate_cart           ├─► Task: compute_metrics    │
-│           │   Gets: "aaa-111" ✓             │   Gets: "bbb-222" ✓         │
-│           │                                 │                             │
-│           ├─► Task: process_payment         ├─► Task: aggregate_data     │
-│           │   Gets: "aaa-111" ✓             │   Gets: "bbb-222" ✓         │
-│           │                                 │                             │
-│           └─► Task: send_confirmation       └─► Task: generate_report    │
-│               Gets: "aaa-111" ✓                 Gets: "bbb-222" ✓         │
-│                                                                           │
-│  ✅ NO INTERFERENCE - Each thread has isolated context                   │
+│           │                                │                            │
+│           │ ContextVar stores:             │ ContextVar stores:         │
+│           │ flow_run_id = "aaa-111"        │ flow_run_id = "bbb-222"    │
+│           │                                │                            │
+│           ├─► Task: validate_cart          ├─► Task: compute_metrics    │
+│           │   Gets: "aaa-111"              │   Gets: "bbb-222"          │
+│           │                                │                            │
+│           ├─► Task: process_payment        ├─► Task: aggregate_data     │
+│           │   Gets: "aaa-111"              │   Gets: "bbb-222"          │
+│           │                                │                            │
+│           └─► Task: send_confirmation      └─► Task: generate_report    │
+│               Gets: "aaa-111"                   Gets: "bbb-222"         │
+│                                                                         │
+│  ✅ NO INTERFERENCE - Each thread has isolated context                  │
 └─────────────────────────────────────────────────────────────────────────┘
 
 

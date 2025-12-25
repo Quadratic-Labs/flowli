@@ -5,8 +5,10 @@ enabling type checking without concrete dependencies.
 """
 from typing import Callable, Protocol
 
+from .executor import ExecutorProtocol
 
-class FlowRegisterProtocol(Protocol):
+
+class RegistryProtocol(Protocol):
     """Protocol for flow and task registration.
 
     Defines the interface for registering and accessing flows and tasks.
@@ -22,9 +24,6 @@ class FlowRegisterProtocol(Protocol):
         >>> flow_names = register.list_flows()
         >>> task_names = register.list_tasks()
     """
-    flows: dict[str, Callable]
-    tasks: dict[str, Callable]
-
     def list_flows(self) -> list[str]:
         """Return list of all registered flow names.
 
@@ -48,3 +47,39 @@ class FlowRegisterProtocol(Protocol):
             list[str]: Names of registered tasks and flows.
         """
         return self.list_flows() + self.list_tasks()
+
+    def register_flow(
+        self,
+        executor: ExecutorProtocol,
+        fn: Callable,
+        name: str | None = None,
+    ) -> Callable:
+        """Register a flow to the registry.
+        
+        Arguments:
+            executor: the executor wrapping the function.
+            fn: the function underlying the flow.
+            name: the flow's name.
+        
+        Returns:
+            The wrapped flow's function.
+        """
+        ...
+
+    def register_task(
+        self,
+        executor: ExecutorProtocol,
+        fn: Callable,
+        name: str | None = None,
+    ) -> Callable:
+        """Register a task to the registry.
+        
+        Arguments:
+            executor: the executor wrapping the function.
+            fn: the function underlying the task.
+            name: the task's name.
+        
+        Returns:
+            The wrapped task's function.
+        """
+        ...

@@ -1,15 +1,23 @@
-from typing import Mapping, TypedDict, Unpack
+import logging
+from logging import Handler
+from typing import Callable, Mapping, TypedDict, Unpack
 
 from fastapi import APIRouter
-import sqlalchemy.orm
+
+from .interfaces.context import ContextManagerProtocol
+from .interfaces.executor import ExecutorProtocol
+from .interfaces.registry import RegistryProtocol
+from .interfaces.tracker import TrackerProtocol
 
 from .config import FlowletConfig
-from .controllers import FlowController
-from .database import DatabaseSettings
-from .execution_observer import RelationalDBObserver
-from .register import FlowRegister
+from .registry import Registry
+from .context import ExecutionContext
+from .tracker import Tracker
+from .executor import ExecutorInProcess
+from .persistence.azure_logging import AzureBlobHandler
 from .repositories.query import FlowQueryRepository
 from .repositories.tracker import FlowTracker
+from .controllers import FlowController
 
 
 class FlowletDependencies(TypedDict):
@@ -17,19 +25,23 @@ class FlowletDependencies(TypedDict):
 
     Attributes:
         configs: Flowlet configuration settings.
-        db_session_factory: SQLAlchemy session factory for database connections.
-        tracker: Flow execution tracker for recording run lifecycle events.
-        observer: Execution observer for logging and tracking lifecycle events.
-        register: Flow and task registration manager.
+        registry: Flows and tasks registry.
+        context_manager: Execution runs' context manager.
+        tracker: Execution tracker for logging lifecycle events.
+        executor: Flow execution orchestrator.
+        log_handlers: Flow logs exporters.
+        run_log_handlers: Flow run logs exporters.
         query_repository: Repository for querying flow execution history.
         controller: FastAPI controller for flow endpoints.
     """
     configs: FlowletConfig
-    db_session_factory: sqlalchemy.orm.Session
-    tracker: FlowTracker
-    observer: RelationalDBObserver
-    register: FlowRegister
-    query_repository: FlowQueryRepository
+    registry: RegistryProtocol
+    context_manager: ContextManagerProtocol
+    tracker: TrackerProtocol
+    executor: ExecutorProtocol
+    log_handlers: list[Handler]
+    run_log_handlers: list[Handler]
+    query: FlowQueryRepository
     controller: FlowController
 
 
@@ -41,11 +53,12 @@ class Flowlet:
 
     Attributes:
         configs: Flowlet configuration settings.
-        db_session_factory: SQLAlchemy session factory.
+        registry: Flow and task registration manager.
         tracker: Execution tracker for recording runs.
-        observer: Execution observer for logging/tracking lifecycle events.
-        register: Flow and task registration manager.
-        query_repository: Query interface for execution history.
+        executor: Execution logic manager.
+        log_handlers: Exporters for flowlet logs.
+        run_log_handlers: Exporters for flowlet run summaries.
+        query: Data access interface for execution history.
         controller: FastAPI endpoint controller.
 
     Example:
@@ -68,12 +81,19 @@ class Flowlet:
             **deps: Unpack of FlowletDependencies containing all required components.
         """
         self.configs = deps["configs"]
-        self.db_session_factory = deps["db_session_factory"]
+        self.registry = deps["registry"]
+        self.context_manager = deps["context_manager"]
         self.tracker = deps["tracker"]
-        self.observer = deps["observer"]
-        self.register = deps["register"]
-        self.query_repository = deps["query_repository"]
+        self.executor = deps["executor"]
+        self.log_handlers = deps["log_handlers"]
+        self.run_log_handlers = deps["run_log_handlers"]
+        self.query = deps["query"]
         self.controller = deps["controller"]
+
+        for hdl in self.log_handlers:
+            self.tracker.logger.addHandler(hdl)
+        for hdl in self.run_log_handlers:
+            self.tracker.run_logger.addHandler(hdl)
 
     def get_router(self):
         """Create a FastAPI router with all Flowlet endpoints.
@@ -89,17 +109,13 @@ class Flowlet:
         router.get("/runs/{run_id}")(self.controller.get_run)
         return router
 
-    def init_database(self):
-        """Initialize database tables for flow run tracking."""
-        self.configs.database.init_database()
-
     def list_flows(self):
         """List all registered flow names.
 
         Returns:
             list[str]: Names of registered flows.
         """
-        return self.register.list_flows()
+        return self.registry.list_flows()
 
     def list_tasks(self):
         """List all registered task names.
@@ -107,9 +123,9 @@ class Flowlet:
         Returns:
             list[str]: Names of registered tasks.
         """
-        return self.register.list_tasks()
+        return self.registry.list_tasks()
 
-    def flow(self, name: str | None=None):
+    def flow(self, name: str | None=None, executor: ExecutorProtocol | None = None):
         """Decorator to register a function as a flow.
 
         Flows are the top-level orchestration units that coordinate task execution.
@@ -127,9 +143,14 @@ class Flowlet:
             ...     result = my_task()
             ...     return result
         """
-        return self.register.flow(name=name)
+        def _decorator(fn: Callable) -> Callable:
+            flow_name = name
+            exe = executor or self.executor
+            wrapped = self.registry.register_flow(exe, fn, flow_name)
+            return wrapped
+        return _decorator
 
-    def task(self, name: str | None=None):
+    def task(self, name: str | None=None, executor: ExecutorProtocol | None = None):
         """Decorator to register a function as a task.
 
         Tasks are individual units of work within a flow. Task execution is tracked
@@ -146,7 +167,14 @@ class Flowlet:
             >>> def my_task():
             ...     return {"status": "completed"}
         """
-        return self.register.task(name=name)
+        def _decorator(fn: Callable) -> Callable:
+            exe = executor or self.executor
+            wrapped = self.registry.register_task(exe, fn, name)
+            return wrapped
+        return _decorator
+
+    def get_logger(self):
+        return self.tracker.logger
 
 
 def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
@@ -180,25 +208,17 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
         configs = FlowletConfig.model_validate(configs)
     deps = {}
     deps["configs"] = configs
-    deps["db_session_factory"] = configs.database.db_session_factory
-
-    # Create tracker first (no dependencies on register)
-    deps["tracker"] = FlowTracker(**deps)
-
-    # Create execution observer (depends on tracker and db_session_factory)
-    # Note: log_manager can be set later via initialize_logging()
-    deps["observer"] = RelationalDBObserver(
-        tracker=deps["tracker"],
-        db_session_factory=deps["db_session_factory"]
-    )
-
-    # Create register (depends on tracker and observer)
-    deps["register"] = FlowRegister(**deps)
-
-    # Create query repository (depends on register)
-    deps["query_repository"] = FlowQueryRepository(**deps)
-
-    # Create controller (depends on query_repository)
+    deps["registry"] = Registry(**deps)
+    deps["context_manager"] = ExecutionContext(**deps)
+    deps["tracker"] = Tracker.setup(**deps)
+    deps["executor"] = ExecutorInProcess(**deps)
+    fmt = logging.Formatter("%(message)s")
+    sh = logging.StreamHandler()
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(fmt)
+    deps["log_handlers"] = [sh]
+    deps["run_log_handlers"] = [sh]
+    deps["query"] = FlowQueryRepository(**deps)
     deps["controller"] = FlowController(**deps)
 
     return Flowlet(**deps)

@@ -5,7 +5,7 @@ allowing configuration via Python objects, dictionaries, or environment variable
 """
 from pydantic import BaseModel, Field
 
-from .database import DatabaseSettings
+# from .database import DatabaseSettings
 
 
 class FlowletConfig(BaseModel):
@@ -25,10 +25,10 @@ class FlowletConfig(BaseModel):
         >>> # Set FLOWLET_DATABASE_URL=postgresql://localhost/mydb
         >>> config = FlowletConfig()
     """
-    database: DatabaseSettings = Field(
-        default_factory=DatabaseSettings,  # type: ignore
-        description="Flow runs database settings",
-    )
+    # database: DatabaseSettings = Field(
+    #     default_factory=DatabaseSettings,  # type: ignore
+    #     description="Flow runs database settings",
+    # )
 
     class Config:
         """Pydantic model configuration."""
