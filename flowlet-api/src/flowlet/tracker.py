@@ -9,17 +9,18 @@ import isodate
 
 from .interfaces.context import ContextManagerProtocol
 from .interfaces.tracker import TrackerProtocol
-from .logging import JSONFormatter, ContextInjectingFilter, FlowletLogBuffer
+from .logging import JSONFormatter, ContextInjectingFilter, FlowletLogBuffer, FlowletLogger
 from .types import FlowType, RunStatus
 
 
+# class RunSummary(TypedDict):
+#     run_id: str
+#     flow_name: str
+#     span: SpanSummary
+
+
+# class SpanSummary(TypedDict):
 class RunSummary(TypedDict):
-    run_id: str
-    flow_name: str
-    span: SpanSummary
-
-
-class SpanSummary(TypedDict):
     span_id: str
     span_type: FlowType
     span_name: str
@@ -27,34 +28,38 @@ class SpanSummary(TypedDict):
     start_ts: str
     end_ts: str
     duration: str
-    children: list[SpanSummary]
+    children: list[RunSummary]
 
 
 @define
 class Tracker(TrackerProtocol):
     context_manager: ContextManagerProtocol
-    logger: logging.Logger
+    logger: FlowletLogger
     bufferer: FlowletLogBuffer
-    run_logger: logging.Logger
+    run_logger: FlowletLogger
 
     @classmethod
     def setup(cls, *, context_manager: ContextManagerProtocol, **_) -> Tracker:
-        logger = logging.getLogger('flowlet')
+        # logging.getLogger() returns FlowletLogger instances after setLoggerClass() is called
+        logger = cast(FlowletLogger, logging.getLogger('flowlet'))
+        logger.setLevel(logging.INFO)
         logger.propagate = True  # Allow propagation to root logger
         context_filter = ContextInjectingFilter(context_manager)
         logger.addFilter(context_filter)
 
         json_formatter = JSONFormatter()
         buffer_handler = FlowletLogBuffer()
+        buffer_handler.setLevel(logging.INFO)
         buffer_handler.setFormatter(json_formatter)
         logger.addHandler(buffer_handler)
 
-        run_logger = logging.getLogger("flowlet-run")
+        run_logger = cast(FlowletLogger, logging.getLogger("flowlet-run"))
+        run_logger.setLevel(logging.INFO)
         run_logger.propagate = True  # Allow propagation to root logger
 
         return cls(
-            context_manager=context_manager, 
-            logger=logger, 
+            context_manager=context_manager,
+            logger=logger,
             bufferer=buffer_handler,
             run_logger=run_logger,
         )
@@ -79,7 +84,7 @@ class Tracker(TrackerProtocol):
 
             # Capture flow_name from the first span we process (typically root)
             if flow_name is None:
-                flow_name = start_log.get('flow', '')
+                flow_name = start_log.get('flow_name', '')
 
             # Calculate duration if we have both start and end
             duration_str = ""
@@ -89,11 +94,14 @@ class Tracker(TrackerProtocol):
                 duration = end_dt - start_dt
                 duration_str = isodate.duration_isoformat(duration)
 
+            # Determine status from end_log's level
+            status = RunStatus.from_log_level(end_log.get('level', ''))
+
             span = {
                 "span_id": span_id,
                 "span_type": start_log.get('span_type'),
-                "span_name": start_log.get('name'),
-                "status": end_log.get('status', 'running'),
+                "span_name": start_log.get('span_name'),
+                "status": status,
                 "start_ts": start_log.get('ts', ''),
                 "end_ts": end_log.get('ts', '') if end_log else '',
                 "duration": duration_str,
@@ -118,12 +126,13 @@ class Tracker(TrackerProtocol):
                 root_span = span
 
         # Build final summary structure
-        summary = {
-            "run_id": run_id,
-            "flow_name": flow_name or '',
-            "span": root_span if root_span else {}
-        }
-        return cast(RunSummary, summary)
+        # summary = {
+        #     "run_id": run_id,
+        #     "flow_name": flow_name or '',
+        #     "span": root_span if root_span else {}
+        # }
+        # return cast(RunSummary, summary)
+        return cast(RunSummary, root_span if root_span else {})
 
     def flush_run(self, run_id: str, clear_buffer: bool = True) -> RunSummary | None:
         """
@@ -142,12 +151,9 @@ class Tracker(TrackerProtocol):
         Raises:
             ValueError: If buffer handler is not initialized
         """
-        root = self.context_manager.get_root_span()
-        if root is None:
-            return None
-        logs = self.bufferer.get_run_logs(str(root.run_id))
-        summary = self.summarise(logs, root.run_id)
+        logs = self.bufferer.get_run_logs(run_id)
+        summary = self.summarise(logs, run_id)
         if clear_buffer:
-            self.bufferer.clear_run_logs(str(root.run_id))
+            self.bufferer.clear_run_logs(run_id)
         self.run_logger.info(json.dumps(summary))
         return summary

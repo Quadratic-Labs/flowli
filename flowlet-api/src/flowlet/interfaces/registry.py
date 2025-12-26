@@ -48,6 +48,12 @@ class RegistryProtocol(Protocol):
         """
         return self.list_flows() + self.list_tasks()
 
+    def get_flow(self, name: str) -> Callable:
+        ...
+
+    def get_task(self, name: str) -> Callable:
+        ...
+
     def register_flow(
         self,
         executor: ExecutorProtocol,

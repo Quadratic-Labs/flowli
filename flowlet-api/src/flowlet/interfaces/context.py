@@ -28,12 +28,12 @@ class RunContextModel:
         ...     run_id=uuid4()
         ... )
     """
+    run_id: UUID = Factory(uuid7)
     span_name: str
     span_type: str
     span_id: UUID = Factory(lambda self: self.run_id, takes_self=True)
     parent_span_id: UUID | None = field(default=None)
     flow_name: str = Factory(lambda self: self.span_name, takes_self=True)
-    run_id: UUID = Factory(uuid7)
 
     @classmethod
     def init_root_span(
