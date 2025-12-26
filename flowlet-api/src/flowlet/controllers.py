@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
-from .repositories.query import FlowQueryRepository
+from .repositories.query import QueryRepository
 
 
 def humanize_timedelta(td: timedelta) -> str:
@@ -193,7 +193,7 @@ class FlowController:
         >>> flows = controller.list_flows()
         >>> controller.run_flow("my_flow", FlowInputModel(kwargs={"param": "value"}))
     """
-    def __init__(self, *, query_repository: FlowQueryRepository, **_):
+    def __init__(self, *, query_repository: QueryRepository, **_):
         """Initialize the flow controller.
 
         Args:
@@ -201,7 +201,7 @@ class FlowController:
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.query_repository = query_repository
-        self.register = query_repository.register
+        self.registry = query_repository.registry
 
     def run_flow(self, flow_name: str, payload: FlowInputModel) -> None:
         """Execute a registered flow with provided arguments.
@@ -217,9 +217,9 @@ class FlowController:
             Currently executes flows synchronously. Future versions will
             support background task scheduling.
         """
-        if flow_name not in self.register.list_flows():
+        if flow_name not in self.registry.list_flows():
             raise HTTPException(status_code=404, detail="Flow not found")
-        fn = self.register.flows[flow_name]
+        fn = self.registry.get_flow(flow_name)
         # For simplicity, accept only kwargs
         kwargs = payload.kwargs or {}
         # TODO: schedule background task, get immediate status

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import bindparam, func, select
 
 from ..database import Run as RunORM, RunLog as RunLogORM
-from ..interfaces.register import FlowRegisterProtocol
+from ..interfaces.registry import RegistryProtocol
 from ..interfaces.repository import models
 
 
@@ -205,7 +205,7 @@ class SQL:
     # )
 
 
-class FlowQueryRepository:
+class QueryRepository:
     """Repository for querying flow and task execution data (read operations only).
 
     Provides query methods for retrieving execution history, flow summaries, and
@@ -227,7 +227,7 @@ class FlowQueryRepository:
         >>> flows = repo.list_flows()
         >>> run = repo.get_run_by_id(run_id)
     """
-    def __init__(self, *, register: FlowRegisterProtocol, db_session_factory, **_):
+    def __init__(self, *, registry: RegistryProtocol, db_session_factory, **_):
         """Initialize the query repository.
 
         Args:
@@ -235,7 +235,7 @@ class FlowQueryRepository:
             db_session_factory: SQLAlchemy session factory.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
-        self.register = register
+        self.registry = registry
         self.db_session_factory = db_session_factory
 
     def list_flows(self, n_last_runs: int=1, db: Session | None=None) -> list[models.FlowSummary]:
@@ -267,7 +267,7 @@ class FlowQueryRepository:
             runs_idx[name] = runs_idx.get(name, [])
             runs_idx[name].append(row)
 
-        for name in self.register.list_flows():
+        for name in self.registry.list_flows():
             last_runs = runs_idx.get(name)
             res = models.FlowSummary(name=name)
             if last_runs:

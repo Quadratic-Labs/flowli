@@ -11,8 +11,8 @@ Key Design Decisions:
     - Separation of concerns: context management vs. observation/tracking
 """
 import contextvars
-from typing import Any, AsyncContextManager, ContextManager, Literal, cast
-from uuid import UUID, uuid7
+from typing import AsyncContextManager, ContextManager, Literal, cast
+from uuid import UUID
 
 from .interfaces.context import RunContextModel, ContextManagerProtocol
 
@@ -55,6 +55,9 @@ class ExecutionContext(ContextManagerProtocol):
     runs_stack: contextvars.ContextVar[tuple[RunContextModel, ...]] = contextvars.ContextVar(
         "runs_stack", default=()
     )
+
+    def __init__(self, **_):
+        pass
 
     @classmethod
     def get_all_spans(cls) -> tuple[RunContextModel, ...]:

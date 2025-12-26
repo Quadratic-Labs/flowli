@@ -13,6 +13,23 @@ from typing import Any
 
 from .interfaces.context import ContextManagerProtocol
 
+# Define custom SUCCESS logging level
+SUCCESS = 25
+logging.addLevelName(SUCCESS, 'SUCCESS')
+
+
+class FlowletLogger(logging.Logger):
+    """Logger with custom SUCCESS level support."""
+
+    def success(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message with severity 'SUCCESS' (level 25)."""
+        if self.isEnabledFor(SUCCESS):
+            self._log(SUCCESS, message, args, **kwargs)
+
+
+# Set FlowletLogger as the default logger class for all loggers created after this point
+logging.setLoggerClass(FlowletLogger)
+
 
 class ContextInjectingFilter(logging.Filter):
     """
@@ -42,12 +59,12 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record as a JSON string."""
         log_data = {
-            "logger": record.name,
-            "span_id": getattr(record, 'span_id', None),
-            "parent_span_id": getattr(record, 'parent_span_id', None),
-            "span_type": getattr(record, 'span_type', None),
             "flow_name": getattr(record, 'flow_name', None),
             "run_id": getattr(record, 'run_id', None),
+            "span_type": getattr(record, 'span_type', None),
+            "span_name": getattr(record, 'span_name', None),
+            "span_id": getattr(record, 'span_id', None),
+            "parent_span_id": getattr(record, 'parent_span_id', None),
             # "status": getattr(record, 'status', None),
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
             "message": record.getMessage(),
@@ -65,7 +82,7 @@ class JSONFormatter(logging.Formatter):
                           'levelname', 'levelno', 'lineno', 'module', 'msecs',
                           'message', 'pathname', 'process', 'processName', 'relativeCreated',
                           'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info',
-                          'run_id', 'span_id', 'parent_span_id', 'span_type', 'flow_name', 'status']:
+                          'run_id', 'span_id', 'parent_span_id', 'span_type', 'span_name', 'flow_name', 'status']:
                 if not key.startswith('_'):
                     log_data["extra"][key] = value
 
