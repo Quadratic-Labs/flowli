@@ -7,10 +7,10 @@ directory-like navigation.
 """
 
 from __future__ import annotations
-from typing import Optional, Iterator, TYPE_CHECKING, Literal, Any
+from typing import Optional, Iterator, TYPE_CHECKING, Literal, Any, cast
 from pathlib import PurePosixPath
 
-from .azure import AzureBlobFile, DEFAULT_CHUNK_SIZE
+from .file import AzureBlobFile, DEFAULT_CHUNK_SIZE
 
 if TYPE_CHECKING:
     from azure.storage.blob import BlobServiceClient, ContainerClient, BlobClient
@@ -145,7 +145,7 @@ class AzureBlobPath:
             self._blob_client = self._container.get_blob_client(self._blob_path)
         return self._blob_client
 
-    def __truediv__(self, other: str | 'AzureBlobPath') -> 'AzureBlobPath':
+    def __truediv__(self, other: str | AzureBlobPath) -> AzureBlobPath:
         """
         Join paths using the / operator.
 
@@ -386,24 +386,21 @@ class AzureBlobPath:
             raise ValueError("Cannot open container root as a file")
 
         return AzureBlobFile(
-            connection_string=self._connection_string or '',
-            container_name=self.container_name,
-            blob_name=self._blob_path,
+            path=self,
             mode=mode,
             encoding=encoding,
-            blob_service_client=self._blob_service_client,
             chunk_size=chunk_size
         )
 
     def read_bytes(self) -> bytes:
         """Read blob contents as bytes."""
         with self.open('rb') as f:
-            return f.read()
+            return cast(bytes, f.read())
 
     def read_text(self, encoding: str = 'utf-8') -> str:
         """Read blob contents as text."""
         with self.open('r', encoding=encoding) as f:
-            return f.read()
+            return cast(str, f.read())
 
     def write_bytes(self, data: bytes) -> int:
         """Write bytes to blob."""

@@ -11,7 +11,7 @@ Tests the file-like interface for reading and writing blobs, including:
 import io
 import pytest
 from unittest.mock import Mock, MagicMock, patch, call
-from flowlet.persistence.azure import AzureBlobFile, open_azure_blob, DEFAULT_CHUNK_SIZE
+from flowlet.storage.azure import AzureBlobFile, open_azure_blob, DEFAULT_CHUNK_SIZE
 
 
 @pytest.fixture
