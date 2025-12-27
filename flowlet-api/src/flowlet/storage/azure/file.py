@@ -13,10 +13,11 @@ to buffered mode with warning for BlockBlobs.
 """
 import io
 import warnings
-from typing import Optional, Literal, TYPE_CHECKING, Any
+from typing import Optional, Literal, TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient, BlobType
+    from .path import AzureBlobPath
 else:
     try:
         from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient, BlobType
@@ -48,41 +49,71 @@ class AzureBlobFile:
           with a warning
         - New blobs are created as AppendBlobs by default in append mode
 
-    Example:
-        # Writing to a blob
-        with AzureBlobFile(connection_string, 'container', 'path/to/file.txt', mode='w') as f:
+    Example (path-based API - recommended):
+        from flowlet.storage.azure import AzureBlobPath
+
+        # Create a root path
+        root = AzureBlobPath.from_connection_string(conn_str, 'my-container')
+
+        # Navigate and write
+        file_path = root / 'data' / 'file.txt'
+        with AzureBlobFile(file_path, mode='w') as f:
             f.write('Hello, Azure!')
 
         # Reading from a blob (streams in chunks)
-        with AzureBlobFile(connection_string, 'container', 'path/to/file.txt', mode='r') as f:
+        with AzureBlobFile(file_path, mode='r') as f:
             content = f.read()
 
         # Efficient appending to AppendBlob
-        with AzureBlobFile(connection_string, 'container', 'log.txt', mode='a') as f:
+        log_path = root / 'logs' / 'app.log'
+        with AzureBlobFile(log_path, mode='a') as f:
             f.write('New log entry\n')  # Uses append_block()
+
+    Legacy Example (still supported):
+        # Writing to a blob
+        with AzureBlobFile(
+            connection_string=conn_str,
+            container_name='container',
+            blob_name='path/to/file.txt',
+            mode='w'
+        ) as f:
+            f.write('Hello, Azure!')
     """
 
     def __init__(
         self,
-        connection_string: str,
-        container_name: str,
-        blob_name: str,
+        path: Optional[Union[str, 'AzureBlobPath']] = None,
         mode: Literal['r', 'w', 'rb', 'wb', 'a', 'ab'] = 'r',
         encoding: Optional[str] = 'utf-8',
-        blob_service_client: Optional['BlobServiceClient'] = None,
-        chunk_size: int = DEFAULT_CHUNK_SIZE
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ):
         """
         Initialize Azure Blob Storage file handle.
 
         Args:
-            connection_string: Azure Storage connection string
-            container_name: Name of the blob container
-            blob_name: Name/path of the blob within the container
+            path: AzureBlobPath instance or blob path string (if using legacy params)
             mode: File mode ('r', 'w', 'rb', 'wb', 'a', 'ab')
             encoding: Text encoding for text modes (default: 'utf-8')
-            blob_service_client: Optional pre-configured BlobServiceClient
             chunk_size: Size of chunks for streaming reads (default: 4MB)
+
+        Examples:
+            # New path-based API (recommended)
+            from flowlet.storage.azure import AzureBlobPath
+
+            root = AzureBlobPath.from_connection_string(conn_str, 'my-container')
+            file_path = root / 'data' / 'file.txt'
+
+            with AzureBlobFile(file_path, mode='w') as f:
+                f.write('Hello!')
+
+            # Legacy API (still supported for backward compatibility)
+            with AzureBlobFile(
+                connection_string=conn_str,
+                container_name='my-container',
+                blob_name='data/file.txt',
+                mode='w'
+            ) as f:
+                f.write('Hello!')
         """
         if BlobServiceClient is None:
             raise ImportError(
@@ -90,21 +121,16 @@ class AzureBlobFile:
                 "Install it with: pip install azure-storage-blob"
             )
 
-        self.connection_string = connection_string
-        self.container_name = container_name
-        self.blob_name = blob_name
+        if not isinstance(path, AzureBlobPath):
+            raise TypeError(f"path must be an AzureBlobPath instance, got {type(path).__name__}")
+
+        if not path._blob_path:
+            raise ValueError("Cannot open container root as a file")
+
+        self.path = path
         self.mode = mode
         self.encoding = encoding if 'b' not in mode else None
         self.chunk_size = chunk_size
-
-        # Initialize Azure clients
-        if blob_service_client:
-            self._blob_service_client: 'BlobServiceClient' = blob_service_client
-        else:
-            self._blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-
-        self._container_client: 'ContainerClient' = self._blob_service_client.get_container_client(container_name)
-        self._blob_client: 'BlobClient' = self._container_client.get_blob_client(blob_name)
 
         # For write modes: buffer all writes locally
         self._write_buffer: Optional[io.BytesIO] = None
@@ -132,12 +158,12 @@ class AzureBlobFile:
     def _init_read_mode(self) -> None:
         """Initialize read mode by fetching blob metadata."""
         try:
-            properties = self._blob_client.get_blob_properties()
+            properties = self.path._blob.get_blob_properties()
             self._blob_size = properties.size
             self._position = 0
         except Exception as e:
             if 'BlobNotFound' in str(type(e).__name__):
-                raise FileNotFoundError(f"Blob '{self.blob_name}' not found in container '{self.container_name}'")
+                raise FileNotFoundError(f"Blob '{self.path}' not found")
             raise
 
     def _init_append_mode(self) -> None:
@@ -149,7 +175,7 @@ class AzureBlobFile:
         """
         try:
             # Check if blob exists and get its type
-            properties = self._blob_client.get_blob_properties()
+            properties = self.path._blob.get_blob_properties()
             blob_type = properties.blob_type
 
             if blob_type == 'AppendBlob':
@@ -160,7 +186,7 @@ class AzureBlobFile:
             else:
                 # BlockBlob or PageBlob - use degraded mode
                 warnings.warn(
-                    f"Blob '{self.blob_name}' is a {blob_type}, not an AppendBlob. "
+                    f"Blob '{self.path}' is a {blob_type}, not an AppendBlob. "
                     f"Append operations will use degraded mode (read-all, write-all). "
                     f"For efficient appending, create the blob as an AppendBlob first.",
                     UserWarning,
@@ -168,7 +194,7 @@ class AzureBlobFile:
                 )
                 self._degraded_append_mode = True
                 # Download entire blob for modification
-                blob_data = self._blob_client.download_blob()
+                blob_data = self.path._blob.download_blob()
                 content = blob_data.readall()
                 self._write_buffer = io.BytesIO(content)
                 self._write_buffer.seek(0, io.SEEK_END)
@@ -177,14 +203,14 @@ class AzureBlobFile:
             if 'BlobNotFound' in str(type(e).__name__):
                 # Blob doesn't exist - create as AppendBlob
                 try:
-                    self._blob_client.create_append_blob()
+                    self.path._blob.create_append_blob()
                     self._is_append_blob = True
                     self._blob_size = 0
                     self._position = 0
                 except Exception:
                     # If append blob creation fails, fall back to degraded mode
                     warnings.warn(
-                        f"Could not create AppendBlob '{self.blob_name}'. "
+                        f"Could not create AppendBlob '{self.path}'. "
                         f"Using degraded append mode.",
                         UserWarning,
                         stacklevel=3
@@ -224,7 +250,7 @@ class AzureBlobFile:
             return
 
         # Download the chunk
-        blob_data = self._blob_client.download_blob(
+        blob_data = self.path._blob.download_blob(
             offset=download_start,
             length=download_length
         )
@@ -483,12 +509,12 @@ class AzureBlobFile:
 
         # Ensure container exists
         try:
-            self._container_client.create_container()
+            self.path._container.create_container()
         except Exception:
             pass  # Container may already exist
 
         # Append the data
-        self._blob_client.append_block(self._append_buffer)
+        self.path._blob.append_block(self._append_buffer)
 
         # Update position
         if self._blob_size is not None:
@@ -519,12 +545,12 @@ class AzureBlobFile:
 
             # Ensure container exists
             try:
-                self._container_client.create_container()
+                self.path._container.create_container()
             except Exception:
                 pass  # Container may already exist
 
             # Upload blob
-            self._blob_client.upload_blob(data, overwrite=True)
+            self.path._blob.upload_blob(data, overwrite=True)
 
             # Restore position
             self._write_buffer.seek(current_position)
@@ -583,7 +609,7 @@ class AzureBlobFile:
                 # Initialize read state if needed
                 if self._blob_size is None:
                     try:
-                        properties = self._blob_client.get_blob_properties()
+                        properties = self.path._blob.get_blob_properties()
                         self._blob_size = properties.size
                     except Exception:
                         pass
@@ -604,7 +630,7 @@ class AzureBlobFile:
     @property
     def name(self) -> str:
         """Get the blob name."""
-        return self.blob_name
+        return self.path.name
 
     def readable(self) -> bool:
         """Check if the file is readable."""
@@ -627,56 +653,3 @@ class AzureBlobFile:
     def is_degraded_append_mode(self) -> bool:
         """Check if using degraded append mode (read-all, write-all)."""
         return self._degraded_append_mode
-
-
-def open_azure_blob(
-    connection_string: str,
-    container_name: str,
-    blob_name: str,
-    mode: Literal['r', 'w', 'rb', 'wb', 'a', 'ab'] = 'r',
-    encoding: Optional[str] = 'utf-8',
-    blob_service_client: Optional['BlobServiceClient'] = None,
-    chunk_size: int = DEFAULT_CHUNK_SIZE
-) -> AzureBlobFile:
-    """
-    Open an Azure blob with a file-like interface.
-
-    This is a convenience function that mimics Python's built-in open() function.
-
-    Args:
-        connection_string: Azure Storage connection string
-        container_name: Name of the blob container
-        blob_name: Name/path of the blob within the container
-        mode: File mode ('r', 'w', 'rb', 'wb', 'a', 'ab')
-        encoding: Text encoding for text modes (default: 'utf-8')
-        blob_service_client: Optional pre-configured BlobServiceClient
-        chunk_size: Size of chunks for streaming reads (default: 4MB)
-
-    Returns:
-        AzureBlobFile instance
-
-    Example:
-        # Streaming read of large file
-        with open_azure_blob(conn_str, 'my-container', 'large-file.txt', 'r') as f:
-            for line in f:
-                process(line)  # Only loads chunks as needed
-
-        # Write with custom chunk size
-        with open_azure_blob(conn_str, 'my-container', 'data.txt', 'w', chunk_size=1024*1024) as f:
-            f.write('Hello, Azure!')
-
-        # Efficient append mode (creates/uses AppendBlob)
-        with open_azure_blob(conn_str, 'logs', 'app.log', 'a') as f:
-            f.write('Log entry\n')  # Uses append_block() for efficiency
-            print(f.is_append_blob)  # True if using AppendBlob
-            print(f.is_degraded_append_mode)  # True if using degraded mode
-    """
-    return AzureBlobFile(
-        connection_string=connection_string,
-        container_name=container_name,
-        blob_name=blob_name,
-        mode=mode,
-        encoding=encoding,
-        blob_service_client=blob_service_client,
-        chunk_size=chunk_size
-    )

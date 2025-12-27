@@ -11,14 +11,15 @@ from .interfaces.executor import ExecutorProtocol
 from .interfaces.registry import RegistryProtocol
 from .interfaces.tracker import TrackerProtocol
 
-from .config import FlowletConfig, FilesystemStorageConfig, AzureBlobStorageConfig, SQLiteStorageConfig
+from .config import FlowletConfig
+from .storage.config import FilesystemStorageConfig, AzureBlobStorageConfig, SQLiteStorageConfig
 from .registry import Registry
 from .context import ExecutionContext
 from .tracker import Tracker
 from .executor import ExecutorInProcess
-from .persistence.azure_logging import AzureBlobHandler
-from .persistence.filesystem_logging import FilesystemHandler, FilesystemRunHandler
-from .persistence.sqlite_logging import SQLiteHandler, SQLiteRunHandler
+from .storage.azure.logging import AzureBlobHandler
+from .storage.filesystem.logging import FilesystemHandler
+from .storage.sqlite_logging import SQLiteHandler, SQLiteRunHandler
 from .repositories.query import QueryRepository
 from .controllers import FlowController
 
@@ -194,26 +195,36 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
         Flowlet: Fully configured Flowlet instance ready for use.
 
     Example:
-        >>> # Use defaults
+        >>> # Use defaults (no storage exporters)
         >>> flowlet = configure()
         >>>
-        >>> # Use dict configuration with filesystem storage
+        >>> # Single filesystem storage exporter
         >>> flowlet = configure({
-        ...     "storage": {"type": "filesystem", "base_path": "./storage"}
+        ...     "storage": [{"type": "filesystem", "base_path": "./storage"}]
         ... })
         >>>
-        >>> # Use FlowletConfig instance with Azure Blob storage
+        >>> # Multiple exporters - Azure Blob + SQLite
         >>> from flowlet import FlowletConfig
-        >>> config = FlowletConfig(storage={
-        ...     "type": "azure_blob",
-        ...     "connection_string": "...",
-        ...     "container_name": "logs"
-        ... })
+        >>> config = FlowletConfig(storage=[
+        ...     {
+        ...         "type": "azure_blob",
+        ...         "connection_string": "...",
+        ...         "container_name": "logs"
+        ...     },
+        ...     {
+        ...         "type": "sqlite",
+        ...         "database_path": "./flowlet.db"
+        ...     }
+        ... ])
         >>> flowlet = configure(config)
         >>>
-        >>> # Use SQLite storage
+        >>> # All three storage backends
         >>> flowlet = configure({
-        ...     "storage": {"type": "sqlite", "database_path": "./flowlet.db"}
+        ...     "storage": [
+        ...         {"type": "filesystem", "base_path": "./storage"},
+        ...         {"type": "azure_blob", "connection_string": "...", "container_name": "logs"},
+        ...         {"type": "sqlite", "database_path": "./flowlet.db"}
+        ...     ]
         ... })
     """
     if configs is None:
@@ -246,33 +257,32 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     rh.setFormatter(text_formatter)
     run_log_handlers.append(rh)
 
-    # Add storage-specific handlers if storage is configured
-    if configs.storage:
-        if isinstance(configs.storage, FilesystemStorageConfig):
+    # Add storage-specific handlers for each configured storage backend
+    for storage_config in configs.storage:
+        if isinstance(storage_config, FilesystemStorageConfig):
             # Filesystem storage handlers
-            logs_path = f"{configs.storage.base_path}/logs"
-            runs_path = f"{configs.storage.base_path}/runs"
+            logs_path = storage_config.base_path / "logs"
+            runs_path = storage_config.base_path / "runs"
 
-            fs_log_handler = FilesystemHandler(
-                base_path=logs_path,
-                filename_template='{run_id}.jsonl'
-            )
-            fs_log_handler.setLevel(logging.INFO)
+            fs_log_handler = FilesystemHandler(path=logs_path, level=logging.INFO)
             fs_log_handler.setFormatter(json_formatter)
             log_handlers.append(fs_log_handler)
 
-            fs_run_handler = FilesystemRunHandler(base_path=runs_path)
-            fs_run_handler.setLevel(logging.INFO)
+            fs_run_handler = FilesystemHandler(
+                path=runs_path,
+                level=logging.INFO,
+                router=lambda r: getattr(r, "run_id"),
+            )
             fs_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(fs_run_handler)
 
-        elif isinstance(configs.storage, AzureBlobStorageConfig):
-            # Azure Blob storage handlers
-            from datetime import datetime
+        elif isinstance(storage_config, AzureBlobStorageConfig):
+            from .storage.azure.path import AzureBlobPath
 
+            # Azure Blob storage handlers
             # For logs, we'll use run_id in the blob name (handled by handler)
             # For now, use a timestamp-based approach or organize by date
-            base_path = configs.storage.base_path.rstrip('/')
+            base_path = storage_config.base_path.rstrip('/')
             logs_prefix = f"{base_path}/logs" if base_path else "logs"
             runs_prefix = f"{base_path}/runs" if base_path else "runs"
 
@@ -280,39 +290,39 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             # For now, we'll create a handler that appends to a single log file
             # In production, you may want to implement a custom handler that creates
             # separate blobs per run_id
-            azure_log_handler = AzureBlobHandler(
-                connection_string=configs.storage.connection_string,
-                container_name=configs.storage.container_name,
-                blob_name=f"{logs_prefix}/flowlet.jsonl",
-                auto_flush=True
+            azure_path = AzureBlobPath(
+                connection_string=storage_config.connection_string,
+                container_name=storage_config.container_name,
             )
-            azure_log_handler.setLevel(logging.INFO)
+            azure_log_handler = AzureBlobHandler(
+                path = azure_path / logs_prefix,
+                level = logging.INFO,
+                chunk_size = 4*1024,  # 4 KiB
+            )
             azure_log_handler.setFormatter(json_formatter)
             log_handlers.append(azure_log_handler)
 
             azure_run_handler = AzureBlobHandler(
-                connection_string=configs.storage.connection_string,
-                container_name=configs.storage.container_name,
-                blob_name=f"{runs_prefix}/runs.jsonl",
-                auto_flush=True
+                path = azure_path / runs_prefix,
+                level = logging.INFO,
+                chunk_size=4*1024,  # 4 KiB
             )
-            azure_run_handler.setLevel(logging.INFO)
             azure_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(azure_run_handler)
 
-        elif isinstance(configs.storage, SQLiteStorageConfig):
+        elif isinstance(storage_config, SQLiteStorageConfig):
             # SQLite storage handlers
             sqlite_log_handler = SQLiteHandler(
-                database_path=configs.storage.database_path,
-                table_name=configs.storage.logs_table_name
+                database_path=storage_config.database_path,
+                table_name=storage_config.logs_table_name
             )
             sqlite_log_handler.setLevel(logging.INFO)
             sqlite_log_handler.setFormatter(json_formatter)
             log_handlers.append(sqlite_log_handler)
 
             sqlite_run_handler = SQLiteRunHandler(
-                database_path=configs.storage.database_path,
-                table_name=configs.storage.runs_table_name
+                database_path=storage_config.database_path,
+                table_name=storage_config.runs_table_name
             )
             sqlite_run_handler.setLevel(logging.INFO)
             sqlite_run_handler.setFormatter(text_formatter)

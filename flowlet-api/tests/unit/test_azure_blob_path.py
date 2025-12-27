@@ -11,8 +11,8 @@ Tests the Path-like interface for navigating and manipulating blobs, including:
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch, call
-from flowlet.persistence.azure_path import AzureBlobPath
-from flowlet.persistence.azure import AzureBlobFile
+from flowlet.storage.azure_path import AzureBlobPath
+from flowlet.storage.azure import AzureBlobFile
 
 
 @pytest.fixture

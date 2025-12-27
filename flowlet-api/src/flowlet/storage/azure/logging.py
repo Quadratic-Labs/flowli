@@ -7,9 +7,10 @@ using appendable blobs (AppendBlob) for efficient log streaming.
 
 import logging
 import threading
-from typing import Optional, TYPE_CHECKING, Any
+from typing import Optional, TYPE_CHECKING, Any, Union, Callable
 
-from .azure import AzureBlobFile
+from .file import AzureBlobFile, MAX_APPEND_BLOCK_SIZE
+from .path import AzureBlobPath
 
 if TYPE_CHECKING:
     from azure.storage.blob import BlobServiceClient
@@ -27,110 +28,162 @@ class AzureBlobHandler(logging.Handler):
     - Thread-safe log writing with locks
     - Automatic blob creation if it doesn't exist
     - Supports custom formatters (JSON, text, etc.)
-    - Buffered writes with configurable flush behavior
+    - Configurable chunk-based buffering (default: 4MB)
+    - Static or dynamic path routing (e.g., per run_id)
 
-    Example:
-        # Basic usage with JSON formatting
-        from flowlet.persistence.azure_logging import AzureBlobHandler
-        from flowlet.logging import JSONFormatter
+    Buffering Strategy:
+        By default, logs are buffered in memory until the buffer reaches
+        chunk_size (default: 4MB), then automatically flushed to Azure. This
+        provides an excellent balance between performance and data persistence.
 
-        handler = AzureBlobHandler(
-            connection_string=os.getenv('AZURE_STORAGE_CONNECTION_STRING'),
-            container_name='logs',
-            blob_name='app.log'
-        )
-        handler.setFormatter(JSONFormatter())
+        For real-time streaming, use a smaller chunk_size (e.g., 64KB) or use
+        AzureBlobStreamHandler which configures optimal settings automatically.
 
+    Example (static path - recommended):
+        from flowlet.storage.azure import AzureBlobPath
+
+        # Create root path
+        root = AzureBlobPath.from_connection_string(conn_str, 'logs')
+
+        # Static path with default buffering (4MB chunks)
+        handler = AzureBlobHandler(root / 'app.log')
         logger = logging.getLogger('myapp')
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-
-        logger.info('Application started')  # Written to Azure blob
+        logger.info('Application started')
 
         # Clean up
         handler.close()
 
-    Example with path-based blob names:
-        # Organize logs by date and application
+    Example (dynamic path per run_id):
+        # Route logs to different blobs based on run_id
+        def route_by_run_id(record: logging.LogRecord) -> str:
+            run_id = getattr(record, 'run_id', 'default')
+            return f'{run_id}/output.log'
+
+        handler = AzureBlobHandler(root, router=route_by_run_id)
+        logger.addHandler(handler)
+
+        # Logs go to different blobs based on run_id
+        logger.info('Task started', extra={'run_id': 'run-123'})  # -> logs/run-123/output.log
+        logger.info('Task started', extra={'run_id': 'run-456'})  # -> logs/run-456/output.log
+
+    Example (organize by date):
         import datetime
         today = datetime.date.today().isoformat()
+        handler = AzureBlobHandler(root / 'myapp' / today / 'app.log')
 
-        handler = AzureBlobHandler(
-            connection_string=conn_str,
-            container_name='logs',
-            blob_name=f'myapp/{today}/app.log'
-        )
-
-    Example with auto-flush:
-        # Flush after every log record (less efficient but more real-time)
-        handler = AzureBlobHandler(
-            connection_string=conn_str,
-            container_name='logs',
-            blob_name='realtime.log',
-            auto_flush=True
-        )
+    Example (real-time streaming with smaller chunks):
+        # Flush every 64KB for near real-time visibility
+        handler = AzureBlobHandler(root / 'realtime.log', chunk_size=64 * 1024)
     """
 
     def __init__(
         self,
-        connection_string: str,
-        container_name: str,
-        blob_name: str,
+        path: AzureBlobPath,
         level: int = logging.NOTSET,
-        blob_service_client: Optional['BlobServiceClient'] = None,
-        auto_flush: bool = False,
-        encoding: str = 'utf-8'
+        encoding: str = 'utf-8',
+        chunk_size: int = MAX_APPEND_BLOCK_SIZE,
+        router: Callable[[logging.LogRecord], str] | None = None
     ):
         """
         Initialize Azure Blob Storage logging handler.
 
         Args:
-            connection_string: Azure Storage connection string
-            container_name: Name of the blob container for logs
-            blob_name: Name/path of the log blob (will be created as AppendBlob)
+            path: AzureBlobPath instance where to send logs.
             level: Minimum log level to handle (default: NOTSET)
-            blob_service_client: Optional pre-configured BlobServiceClient for shared connections
-            auto_flush: If True, flush after every emit (default: False for better performance)
             encoding: Text encoding for log messages (default: 'utf-8')
+            chunk_size: Size of buffer before auto-flush to Azure (default: 4MB).
+                Smaller values provide more real-time visibility but more API calls.
+                Larger values improve performance but delay log visibility.
+            router: Optional function to route records to sub-blobs under path.
+                Takes a LogRecord and returns a relative path string.
+
+        Examples:
+            # Static path with default buffering (recommended)
+            from flowlet.storage.azure import AzureBlobPath
+
+            root = AzureBlobPath.from_connection_string(conn_str, 'logs')
+            log_path = root / 'app.log'
+
+            handler = AzureBlobHandler(log_path)
+            logger.addHandler(handler)
+
+            # Real-time streaming with smaller chunks
+            handler = AzureBlobHandler(log_path, chunk_size=64 * 1024)  # 64KB chunks
+
+            # Dynamic routing based on context (e.g., per run_id)
+            def route_by_run_id(record: logging.LogRecord) -> str:
+                run_id = getattr(record, 'run_id', 'default')
+                return f'{run_id}/output.log'
+
+            handler = AzureBlobHandler(root, router=route_by_run_id)
+            logger.addHandler(handler)
+
+            # Now logs with different run_ids go to different blobs
+            logger.info('Starting', extra={'run_id': 'run-123'})  # -> logs/run-123/output.log
+            logger.info('Processing', extra={'run_id': 'run-456'})  # -> logs/run-456/output.log
         """
         super().__init__(level)
-
-        self.connection_string = connection_string
-        self.container_name = container_name
-        self.blob_name = blob_name
-        self.blob_service_client = blob_service_client
-        self.auto_flush = auto_flush
+        self.path = path
+        self.level = level
         self.encoding = encoding
+        self.chunk_size = chunk_size
+        self.router = router
 
         # Thread safety
         self._lock = threading.Lock()
-
-        # Azure blob file handle
-        self._blob_file: Optional[AzureBlobFile] = None
+        self._blob_file_cache: dict[str, AzureBlobFile] = {}
         self._closed = False
 
-        # Initialize the blob file in append mode
-        self._init_blob_file()
+    def _init_blob_file(self, path: AzureBlobPath) -> AzureBlobFile:
+        """
+        Initialize an Azure blob file in append mode.
 
-    def _init_blob_file(self) -> None:
-        """Initialize the Azure blob file in append mode."""
+        Args:
+            path: AzureBlobPath to open
+
+        Returns:
+            Opened AzureBlobFile in append mode
+        """
         try:
-            self._blob_file = AzureBlobFile(
-                connection_string=self.connection_string,
-                container_name=self.container_name,
-                blob_name=self.blob_name,
-                mode='a',  # Append mode - creates AppendBlob if doesn't exist
-                encoding=self.encoding,
-                blob_service_client=self.blob_service_client
-            )
+            return path.open(mode='a', encoding=self.encoding, chunk_size=self.chunk_size)
         except Exception as e:
             # Log initialization error but don't crash
             self.handleError(None)  # type: ignore
             raise RuntimeError(f"Failed to initialize Azure blob file: {e}") from e
 
+    def _get_blob_file(self, record: logging.LogRecord) -> AzureBlobFile:
+        """
+        Get the appropriate blob file for this log record.
+
+        For static paths, returns the single blob file.
+        For dynamic paths, resolves the path and returns cached or new blob file.
+
+        Args:
+            record: The log record being emitted
+
+        Returns:
+            AzureBlobFile to write to
+        """
+        this_path = self.path
+        if self.router is not None:
+            this_path = this_path / self.router(record)
+
+        # Get opened file from cache
+        path_key = str(this_path)
+        if path_key not in self._blob_file_cache:
+            self._blob_file_cache[path_key] = self._init_blob_file(this_path)
+        return self._blob_file_cache[path_key]
+
     def emit(self, record: logging.LogRecord) -> None:
         """
         Emit a log record to the Azure blob.
+
+        The log record is written to the blob file's internal buffer.
+        When the buffer reaches chunk_size, it automatically flushes to Azure.
+
+        For dynamic paths, routes the log record to the appropriate blob
+        based on the router function.
 
         Args:
             record: The log record to emit
@@ -147,13 +200,12 @@ class AzureBlobHandler(logging.Handler):
                 msg += '\n'
 
             # Thread-safe write to blob
+            # AzureBlobFile will automatically flush when buffer reaches chunk_size
             with self._lock:
-                if self._blob_file and not self._blob_file.closed:
-                    self._blob_file.write(msg)
+                blob_file = self._get_blob_file(record)
 
-                    # Auto-flush if configured
-                    if self.auto_flush:
-                        self._blob_file.flush()
+                if blob_file and not blob_file.closed:
+                    blob_file.write(msg)
 
         except Exception:
             self.handleError(record)
@@ -163,14 +215,17 @@ class AzureBlobHandler(logging.Handler):
         Flush any buffered log records to Azure Blob Storage.
 
         This forces any pending writes to be uploaded to Azure.
+        For dynamic paths, flushes all cached blob files.
         """
         if self._closed:
             return
 
         try:
             with self._lock:
-                if self._blob_file and not self._blob_file.closed:
-                    self._blob_file.flush()
+                # Flush all cached blob files
+                for blob_file in self._blob_file_cache.values():
+                    if blob_file and not blob_file.closed:
+                        blob_file.flush()
         except Exception:
             self.handleError(None)  # type: ignore
 
@@ -179,16 +234,19 @@ class AzureBlobHandler(logging.Handler):
         Close the handler and upload any pending log data.
 
         This should be called when the application shuts down to ensure
-        all logs are written to Azure.
+        all logs are written to Azure. For dynamic paths, closes all
+        cached blob files.
         """
         if self._closed:
             return
 
         try:
             with self._lock:
-                if self._blob_file and not self._blob_file.closed:
-                    self._blob_file.close()
-                self._closed = True
+                for blob_file in self._blob_file_cache.values():
+                    if blob_file and not blob_file.closed:
+                        blob_file.close()
+                self._blob_file_cache.clear()
+            self._closed = True
         except Exception:
             self.handleError(None)  # type: ignore
         finally:
@@ -208,63 +266,53 @@ class AzureBlobHandler(logging.Handler):
         """Check if the handler is closed."""
         return self._closed
 
-    @property
-    def is_append_blob(self) -> bool:
-        """Check if using native AppendBlob operations."""
-        if self._blob_file:
-            return self._blob_file.is_append_blob
-        return False
-
-    @property
-    def is_degraded_append_mode(self) -> bool:
-        """Check if using degraded append mode (less efficient)."""
-        if self._blob_file:
-            return self._blob_file.is_degraded_append_mode
-        return False
-
 
 class AzureBlobStreamHandler(AzureBlobHandler):
     """
-    Variant of AzureBlobHandler with auto-flush enabled by default.
+    Variant of AzureBlobHandler optimized for real-time log streaming.
 
-    This is useful for real-time log streaming where you want logs
-    to appear in Azure immediately, at the cost of some performance.
+    This handler uses a smaller chunk size (64KB) to provide near real-time
+    log visibility in Azure, at the cost of more frequent API calls.
+
+    For high-volume logging where performance is critical, use AzureBlobHandler
+    with the default 4MB chunk size instead.
 
     Example:
-        handler = AzureBlobStreamHandler(
-            connection_string=conn_str,
-            container_name='logs',
-            blob_name='realtime.log'
-        )
-        # Each log record is immediately flushed to Azure
+        from flowlet.storage.azure import AzureBlobPath
+
+        root = AzureBlobPath.from_connection_string(conn_str, 'logs')
+        handler = AzureBlobStreamHandler(root / 'realtime.log')
+        logger.addHandler(handler)
+
+        # Logs appear in Azure within seconds
+        logger.info('This appears quickly in Azure')
     """
+
+    # Default chunk size for streaming: 64KB for near real-time visibility
+    DEFAULT_STREAM_CHUNK_SIZE = 64 * 1024
 
     def __init__(
         self,
-        connection_string: str,
-        container_name: str,
-        blob_name: str,
+        path: AzureBlobPath,
         level: int = logging.NOTSET,
-        blob_service_client: Optional['BlobServiceClient'] = None,
-        encoding: str = 'utf-8'
+        encoding: str = 'utf-8',
+        chunk_size: int | None = None,
+        router: Callable[[logging.LogRecord], str] | None = None
     ):
         """
-        Initialize Azure Blob Storage streaming handler with auto-flush.
+        Initialize Azure Blob Storage streaming handler.
 
         Args:
-            connection_string: Azure Storage connection string
-            container_name: Name of the blob container for logs
-            blob_name: Name/path of the log blob
+            path: AzureBlobPath instance where to send logs
             level: Minimum log level to handle
-            blob_service_client: Optional pre-configured BlobServiceClient
             encoding: Text encoding for log messages
+            chunk_size: Buffer size before flush (default: 64KB for real-time streaming)
+            router: Optional function to route records to sub-blobs under path
         """
         super().__init__(
-            connection_string=connection_string,
-            container_name=container_name,
-            blob_name=blob_name,
+            path=path,
             level=level,
-            blob_service_client=blob_service_client,
-            auto_flush=True,  # Always auto-flush for streaming
-            encoding=encoding
+            encoding=encoding,
+            chunk_size=chunk_size if chunk_size is not None else self.DEFAULT_STREAM_CHUNK_SIZE,
+            router=router,
         )
