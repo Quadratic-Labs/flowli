@@ -72,7 +72,7 @@ class FileQuery(RunQueryProtocol):
                 continue
             result =  self._load(path)
             if query is not None:
-                result = jsonry.execution.in_memory.apply(query, content)
+                result = jsonry.execution.in_memory.apply(query, result)
             yield from result
 
     def list_logs(
