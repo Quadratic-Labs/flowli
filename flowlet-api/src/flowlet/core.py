@@ -1,3 +1,4 @@
+import json
 import logging
 from logging import Handler
 from typing import Callable, Mapping, TypedDict, Unpack
@@ -8,6 +9,7 @@ from .logging import JSONFormatter
 
 from .interfaces.context import ContextManagerProtocol
 from .interfaces.executor import ExecutorProtocol
+from .interfaces.query import RunQueryProtocol
 from .interfaces.registry import RegistryProtocol
 from .interfaces.tracker import TrackerProtocol
 
@@ -20,7 +22,7 @@ from .executor import ExecutorInProcess
 from .storage.azure.logging import AzureBlobHandler
 from .storage.filesystem.logging import FilesystemHandler
 from .storage.sqlite_logging import SQLiteHandler, SQLiteRunHandler
-from .repositories.query import QueryRepository
+# from .repositories.query import QueryRepository
 from .controllers import FlowController
 
 
@@ -45,7 +47,7 @@ class FlowletDependencies(TypedDict):
     executor: ExecutorProtocol
     log_handlers: list[Handler]
     run_log_handlers: list[Handler]
-    query: QueryRepository
+    query: RunQueryProtocol
     controller: FlowController
 
 
@@ -264,14 +266,18 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             logs_path = storage_config.base_path / "logs"
             runs_path = storage_config.base_path / "runs"
 
-            fs_log_handler = FilesystemHandler(path=logs_path, level=logging.INFO)
+            fs_log_handler = FilesystemHandler(
+                path=logs_path,
+                level=logging.INFO,
+                router=lambda r: f"{getattr(r, 'run_id')}.jsonl",
+            )
             fs_log_handler.setFormatter(json_formatter)
             log_handlers.append(fs_log_handler)
 
             fs_run_handler = FilesystemHandler(
                 path=runs_path,
                 level=logging.INFO,
-                router=lambda r: getattr(r, "run_id"),
+                router=lambda r: f"{json.loads(r.message).get('span_name', 'undefined')}.jsonl",
             )
             fs_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(fs_run_handler)

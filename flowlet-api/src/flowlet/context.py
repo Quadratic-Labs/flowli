@@ -11,10 +11,12 @@ Key Design Decisions:
     - Separation of concerns: context management vs. observation/tracking
 """
 import contextvars
-from typing import AsyncContextManager, ContextManager, Literal, cast
+from typing import AsyncContextManager, ContextManager, cast
 from uuid import UUID
 
-from .interfaces.context import RunContextModel, ContextManagerProtocol
+from .interfaces.context import ContextManagerProtocol
+from .models import RunContext
+from .types import SpanType
 
 
 class ExecutionContext(ContextManagerProtocol):
@@ -37,7 +39,7 @@ class ExecutionContext(ContextManagerProtocol):
 
     Attributes:
         runs_stack: ContextVar maintaining the execution stack (thread/async-safe).
-        run: The RunContextModel instance representing this execution span.
+        run: The RunContext instance representing this execution span.
         observer: Execution observer for logging/tracking.
 
     Example:
@@ -52,7 +54,7 @@ class ExecutionContext(ContextManagerProtocol):
         ...     # Flow code here
         ...     pass
     """
-    runs_stack: contextvars.ContextVar[tuple[RunContextModel, ...]] = contextvars.ContextVar(
+    runs_stack: contextvars.ContextVar[tuple[RunContext, ...]] = contextvars.ContextVar(
         "runs_stack", default=()
     )
 
@@ -60,13 +62,13 @@ class ExecutionContext(ContextManagerProtocol):
         pass
 
     @classmethod
-    def get_all_spans(cls) -> tuple[RunContextModel, ...]:
+    def get_all_spans(cls) -> tuple[RunContext, ...]:
         """Get all execution runs in the current context stack.
 
         Returns a copy of the full execution hierarchy from root to current.
 
         Returns:
-            list[RunContextModel]: List of all runs in the current execution stack.
+            list[RunContext]: List of all runs in the current execution stack.
         """
         return cls.runs_stack.get()
 
@@ -74,15 +76,15 @@ class ExecutionContext(ContextManagerProtocol):
     def append_new_span(
         cls,
         span_name: str,
-        span_type: Literal["flow"] | Literal["task"] = "task",
+        span_type: SpanType = SpanType.task,
         span_id: UUID | None = None,
-    ) -> tuple[RunContextModel, ...]:
+    ) -> tuple[RunContext, ...]:
         parent = cls.get_current_span()
         if parent:
             ctx = parent.init_child_span(
                 span_name=span_name, span_type=span_type, span_id=span_id)
         else:
-            ctx = RunContextModel.init_root_span(
+            ctx = RunContext.init_root_span(
                 span_name=span_name, span_type=span_type, span_id=span_id)
         return cls.get_all_spans() + (ctx,)
 
@@ -90,7 +92,7 @@ class ExecutionContext(ContextManagerProtocol):
     def begin_span(
         cls,
         span_name: str,
-        span_type: Literal["flow"] | Literal["task"] = "task",
+        span_type: SpanType = SpanType.task,
         span_id: UUID | None = None,
     ) -> ContextManager[None]:
         spans = cls.append_new_span(
@@ -101,7 +103,7 @@ class ExecutionContext(ContextManagerProtocol):
     async def begin_span_async(
         cls,
         span_name: str,
-        span_type: Literal["flow"] | Literal["task"] = "task",
+        span_type: SpanType = SpanType.task,
         span_id: UUID | None = None,
     ) -> AsyncContextManager[None]:
         spans = cls.append_new_span(

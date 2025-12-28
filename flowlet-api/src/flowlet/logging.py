@@ -65,7 +65,6 @@ class JSONFormatter(logging.Formatter):
             "span_name": getattr(record, 'span_name', None),
             "span_id": getattr(record, 'span_id', None),
             "parent_span_id": getattr(record, 'parent_span_id', None),
-            # "status": getattr(record, 'status', None),
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
             "message": record.getMessage(),
             "level": record.levelname,
@@ -82,7 +81,7 @@ class JSONFormatter(logging.Formatter):
                           'levelname', 'levelno', 'lineno', 'module', 'msecs',
                           'message', 'pathname', 'process', 'processName', 'relativeCreated',
                           'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info',
-                          'run_id', 'span_id', 'parent_span_id', 'span_type', 'span_name', 'flow_name', 'status']:
+                          'run_id', 'span_id', 'parent_span_id', 'span_type', 'span_name', 'flow_name']:
                 if not key.startswith('_'):
                     log_data["extra"][key] = value
 
