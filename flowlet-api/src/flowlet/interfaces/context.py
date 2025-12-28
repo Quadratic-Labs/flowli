@@ -3,87 +3,13 @@
 This module defines the protocol for managing execution context during flow
 and task runs, including run tracking, hierarchy management, and lifecycle control.
 """
-from typing import Any, AsyncContextManager, ContextManager, Literal, Protocol
+from typing import AsyncContextManager, ContextManager, Protocol
 from uuid import UUID, uuid7
 
 from attrs import define, Factory, field, fields
 
-
-@define(slots=True, kw_only=True)
-class RunContextModel:
-    """Core attributes identifying a flow or task run.
-
-    Minimal model containing only the essential identifiers for a run.
-    Used in contexts where full run details are not needed.
-
-    Attributes:
-        name: Name of the flow or task.
-        run_type: Type of run ("flow" or "task").
-        run_id: Unique identifier for this run.
-
-    Example:
-        >>> run_attrs = RunAttrModel(
-        ...     name="my_flow",
-        ...     run_type="flow",
-        ...     run_id=uuid4()
-        ... )
-    """
-    run_id: UUID = Factory(uuid7)
-    span_name: str
-    span_type: str
-    span_id: UUID = Factory(lambda self: self.run_id, takes_self=True)
-    parent_span_id: UUID | None = field(default=None)
-    flow_name: str = Factory(lambda self: self.span_name, takes_self=True)
-
-    @classmethod
-    def init_root_span(
-        cls,
-        span_name: str,
-        span_type: Literal["task"] | Literal["flow"] = "task",
-        span_id: UUID | None = None,
-    ) -> RunContextModel:
-        if span_type == "task":
-            raise RuntimeError(
-                f"TaskContext '{span_name}' must be used within a parent context (flow or task)"
-            )
-        if span_id:
-            ctx = RunContextModel(
-                span_name=span_name,
-                span_type=span_type,
-                span_id=span_id,
-            )
-        else:
-            ctx = RunContextModel(
-                span_name=span_name,
-                span_type=span_type,
-            )
-        return ctx
-
-    def init_child_span(
-            self,
-            span_name: str,
-            span_type: Literal["flow"] | Literal["task"] = "task",
-            span_id: UUID | None = None,
-    ) -> RunContextModel:
-        return type(self)(
-            flow_name = self.flow_name,
-            run_id = self.run_id,
-            span_name = span_name,
-            span_type = span_type,
-            span_id = span_id or uuid7(),
-            parent_span_id = self.span_id,
-        )
-
-    def inject_as_str_into(self, obj: Any) -> Any:
-        if obj is None:
-            for att in fields(type(self)):
-                setattr(obj, att.name, None)
-        else:
-            for att in fields(type(self)):
-                val = getattr(self, att.name, None)
-                val = str(val) if val is not None else ""
-                setattr(obj, att.name, val)
-        return obj
+from ..models import RunContext
+from ..types import SpanType
 
 
 class ContextManagerProtocol(Protocol):
@@ -103,24 +29,24 @@ class ContextManagerProtocol(Protocol):
         delegated to the ExecutionObserver component.
     """
     @classmethod
-    def get_all_spans(cls) -> tuple[RunContextModel, ...]:
+    def get_all_spans(cls) -> tuple[RunContext, ...]:
         """Retrieve all execution spans from the current context stack."""
         ...
 
     @classmethod
-    def get_current_span(cls) -> RunContextModel | None:
+    def get_current_span(cls) -> RunContext | None:
         """Retrieve the currently active execution span."""
         spans = cls.get_all_spans()
         return spans[-1] if spans else None
 
     @classmethod
-    def get_parent_span(cls) -> RunContextModel | None:
+    def get_parent_span(cls) -> RunContext | None:
         """Retrieve the parent of the currently active execution span."""
         spans = cls.get_all_spans()
         return spans[-2] if spans and len(spans) > 1 else None
 
     @classmethod
-    def get_root_span(cls) -> RunContextModel | None:
+    def get_root_span(cls) -> RunContext | None:
         """Retrieve the root execution span from the context stack."""
         spans = cls.get_all_spans()
         return spans[0] if spans else None
@@ -134,7 +60,7 @@ class ContextManagerProtocol(Protocol):
     def begin_span(
         cls,
         span_name: str,
-        span_type: Literal["task"] | Literal["flow"] = "task",
+        span_type: SpanType = SpanType.task,
         span_id: UUID | None = None,
     ) -> ContextManager[None]:
         """Enter the execution context (synchronous context manager protocol).
@@ -154,7 +80,7 @@ class ContextManagerProtocol(Protocol):
     async def begin_span_async(
         cls,
         span_name: str,
-        span_type: Literal["task"] | Literal["flow"] = "task",
+        span_type: SpanType = SpanType.task,
         span_id: UUID | None = None,
     ) -> AsyncContextManager[None]:
         """Enter the execution context (synchronous context manager protocol).

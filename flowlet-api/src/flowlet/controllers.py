@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import HTTPException
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
-from .repositories.query import QueryRepository
+from .interfaces.query import RunQueryProtocol
 
 
 def humanize_timedelta(td: timedelta) -> str:
@@ -193,7 +193,7 @@ class FlowController:
         >>> flows = controller.list_flows()
         >>> controller.run_flow("my_flow", FlowInputModel(kwargs={"param": "value"}))
     """
-    def __init__(self, *, query_repository: QueryRepository, **_):
+    def __init__(self, *, query_repository: RunQueryProtocol, **_):
         """Initialize the flow controller.
 
         Args:

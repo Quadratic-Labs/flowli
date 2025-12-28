@@ -4,6 +4,7 @@ from uuid import uuid7
 
 from .interfaces.executor import ExecutorProtocol
 from .interfaces.tracker import TrackerProtocol
+from .types import SpanType
 
 
 class ExecutorInProcess(ExecutorProtocol):
@@ -18,7 +19,7 @@ class ExecutorInProcess(ExecutorProtocol):
         self,
         fn: Callable,
         name: str,
-        typ: Literal["task"] | Literal["flow"],
+        typ: SpanType,
     ) -> Callable:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):

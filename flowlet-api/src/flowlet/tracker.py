@@ -10,19 +10,12 @@ import isodate
 from .interfaces.context import ContextManagerProtocol
 from .interfaces.tracker import TrackerProtocol
 from .logging import JSONFormatter, ContextInjectingFilter, FlowletLogBuffer, FlowletLogger
-from .types import FlowType, RunStatus
+from .types import SpanType, RunStatus
 
 
-# class RunSummary(TypedDict):
-#     run_id: str
-#     flow_name: str
-#     span: SpanSummary
-
-
-# class SpanSummary(TypedDict):
 class RunSummary(TypedDict):
     span_id: str
-    span_type: FlowType
+    span_type: SpanType
     span_name: str
     status: RunStatus
     start_ts: str
@@ -125,13 +118,6 @@ class Tracker(TrackerProtocol):
             else:  # This is the root span
                 root_span = span
 
-        # Build final summary structure
-        # summary = {
-        #     "run_id": run_id,
-        #     "flow_name": flow_name or '',
-        #     "span": root_span if root_span else {}
-        # }
-        # return cast(RunSummary, summary)
         return cast(RunSummary, root_span if root_span else {})
 
     def flush_run(self, run_id: str, clear_buffer: bool = True) -> RunSummary | None:

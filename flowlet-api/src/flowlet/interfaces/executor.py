@@ -1,6 +1,7 @@
 from typing import Callable, Literal, Protocol
 
 from .tracker import TrackerProtocol
+from ..types import SpanType
 
 
 class ExecutorProtocol(Protocol):
@@ -10,7 +11,7 @@ class ExecutorProtocol(Protocol):
         self,
         fn: Callable,
         name: str,
-        typ: Literal["task"] | Literal["flow"],
+        typ: SpanType,
     ) -> Callable:
         """Decorator that injects the flowlet execution logic around a function."""
         ...
