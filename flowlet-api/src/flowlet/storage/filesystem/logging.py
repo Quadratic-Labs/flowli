@@ -1,34 +1,47 @@
 """
 Filesystem logging handler for Flowlet.
 
-Provides Python logging Handlers that export log records to the local filesystem,
-organizing logs by run ID or custom routing logic.
+Provides Python logging Handlers that export log records to the local filesystem
+or Azure Blob Storage, organizing logs by run ID or custom routing logic.
 """
 
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeAlias
+
+if TYPE_CHECKING:
+    from flowlet.storage.azure.path import AzureBlobPath
+    PathLike: TypeAlias = Path | AzureBlobPath
 
 
 class FilesystemHandler(logging.Handler):
     """
-    Logging handler that writes logs to the filesystem.
+    Logging handler that writes logs to filesystem or Azure Blob Storage.
 
     This handler writes log records to files, with support for dynamic routing
-    to organize logs by run ID or other attributes.
+    to organize logs by run ID or other attributes. Works seamlessly with both
+    local filesystem paths (Path) and Azure Blob Storage paths (AzureBlobPath).
 
     Features:
+    - Works with both Path and AzureBlobPath
     - Automatic directory creation
     - Thread-safe file writing with locks
     - Supports custom formatters (JSON, text, etc.)
     - Dynamic routing via router function
     - Backward compatible with run_id attribute
 
-    Example (simple static file):
+    Example (simple static file - local):
         from flowlet.storage.filesystem import FilesystemHandler
 
         handler = FilesystemHandler(Path('./logs') / 'app.log')
+        logger.addHandler(handler)
+
+    Example (simple static file - Azure):
+        from flowlet.storage.azure.path import AzureBlobPath
+
+        path = AzureBlobPath.from_connection_string(conn_str, 'logs', 'app.log')
+        handler = FilesystemHandler(path)
         logger.addHandler(handler)
 
     Example (dynamic routing by run_id):
@@ -36,6 +49,7 @@ class FilesystemHandler(logging.Handler):
             run_id = getattr(record, 'run_id', 'default')
             return f'{run_id}/output.log'
 
+        # Works with both Path and AzureBlobPath
         handler = FilesystemHandler(Path('./logs'), router=route_by_run_id)
         logger.addHandler(handler)
 
@@ -46,24 +60,37 @@ class FilesystemHandler(logging.Handler):
 
     def __init__(
         self,
-        path: Path,
+        path: PathLike,
         level: int = logging.NOTSET,
         encoding: str = 'utf-8',
-        router: Callable[[logging.LogRecord], str] | None = None
+        router: Callable[[logging.LogRecord], str] | None = None,
+        chunk_size: int | None = None
     ):
         """
-        Initialize filesystem logging handler.
+        Initialize filesystem or Azure blob logging handler.
 
         Args:
-            path: Base directory or file path for storing logs
+            path: Base directory or file path for storing logs.
+                  Can be a local Path or an AzureBlobPath.
             level: Minimum log level to handle (default: NOTSET)
             encoding: Text encoding for log messages (default: 'utf-8')
             router: Optional function to route records to sub-paths.
                     Takes a LogRecord and returns a relative path string.
+            chunk_size: Buffer size for Azure blob storage (default: 4MB).
+                       Only applies to AzureBlobPath. Smaller values provide
+                       more real-time visibility but more API calls.
+                       Ignored for local filesystem paths.
 
         Examples:
-            # Static file
+            # Static file - local
             handler = FilesystemHandler(Path('./logs/app.log'))
+
+            # Static file - Azure with default buffering (4MB)
+            path = AzureBlobPath.from_connection_string(conn_str, 'logs', 'app.log')
+            handler = FilesystemHandler(path)
+
+            # Azure with real-time streaming (64KB chunks)
+            handler = FilesystemHandler(path, chunk_size=64 * 1024)
 
             # Dynamic routing by run_id
             def route_by_run_id(record: logging.LogRecord) -> str:
@@ -77,6 +104,7 @@ class FilesystemHandler(logging.Handler):
         self.path = path
         self.encoding = encoding
         self.router = router
+        self.chunk_size = chunk_size
 
         # Thread safety
         self._lock = threading.Lock()
@@ -91,13 +119,22 @@ class FilesystemHandler(logging.Handler):
             # Dynamic routing - create base directory
             self.path.mkdir(parents=True, exist_ok=True)
 
-    def _get_file_handle(self, filepath: Path):
+    def _get_file_handle(self, filepath: PathLike):
         """Get or create a file handle for the given filepath."""
         path_key = str(filepath)
         if path_key not in self._file_handles:
             # Ensure parent directory exists
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            self._file_handles[path_key] = open(filepath, 'a', encoding=self.encoding)
+
+            # Open file with appropriate parameters
+            # Check if this is an AzureBlobPath (has chunk_size parameter)
+            if self.chunk_size is not None and not isinstance(filepath, Path):
+                # AzureBlobPath - supports chunk_size
+                self._file_handles[path_key] = filepath.open(
+                    mode='a', encoding=self.encoding, chunk_size=self.chunk_size,
+                )
+            else:
+                self._file_handles[path_key] = filepath.open('a', encoding=self.encoding)
         return self._file_handles[path_key]
 
     def emit(self, record: logging.LogRecord) -> None:

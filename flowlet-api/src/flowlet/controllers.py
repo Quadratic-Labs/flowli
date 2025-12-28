@@ -3,14 +3,18 @@
 Provides controller classes for handling flow execution and querying,
 along with Pydantic models for API request/response serialization.
 """
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import HTTPException
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
+from jsonry.http.query_spec import QuerySpecUnion
+from jsonry.http.converters import spec_to_query
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from .interfaces.query import RunQueryProtocol
+from .models import RunSummary, SpanLog
+from .types import RunStatus, SpanType
 
 
 def humanize_timedelta(td: timedelta) -> str:
@@ -57,7 +61,7 @@ class Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class FlowInputModel(Base):
+class FlowArguments(Base):
     """API model for flow execution request.
 
     Accepts keyword arguments to pass to the flow function.
@@ -71,111 +75,115 @@ class FlowInputModel(Base):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
-class FlowSummaryModel(Base):
-    """API model for flow summary with execution statistics.
-
-    Includes computed fields for human-readable durations.
+class RunQueryRequest(Base):
+    """API model for querying runs with jsonry.
 
     Attributes:
-        name: Flow name.
-        status: Latest execution status ("running", "success", "failed", etc.).
-        started_at: Timestamp when the latest run started.
-        last_at: Timestamp of the latest status update.
-        doc: Flow docstring or description.
-        finished_ago: Computed field showing time since completion.
-        duration: Computed field showing execution duration.
+        names: Optional list of flow names to filter by.
+        query: Optional jsonry QuerySpec for filtering, projection, and aggregation.
+            See jsonry documentation for query syntax.
+
+    Example:
+        >>> # Filter runs by status
+        >>> request = RunQueryRequest(
+        ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["status"]}, "right": "success"}}
+        ... )
     """
-    name: str
-    status: str | None = Field(default=None)
-    started_at: datetime | None = Field(default=None)
-    last_at: datetime | None = Field(default=None)
-    doc: str | None = Field(default=None)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def finished_ago(self) -> str | None:
-        """Compute time since last_at relative to now.
-
-        Returns:
-            str | None: Human-readable string like "5m ago", or None if not finished.
-        """
-        if self.last_at is None:
-            return None
-        delta = datetime.now(UTC) - self.last_at
-        return humanize_timedelta(delta)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def duration(self) -> str | None:
-        """Compute execution duration from started_at to last_at.
-
-        Returns:
-            str | None: Human-readable duration like "2h 15m ago", or None if incomplete.
-        """
-        if self.started_at is None or self.last_at is None:
-            return None
-        delta = self.last_at - self.started_at
-        return humanize_timedelta(delta)
+    names: list[str] | None = Field(
+        None,
+        description="Optional list of flow names to filter by"
+    )
+    query: QuerySpecUnion | None = Field(
+        None,
+        description="jsonry Query specification for data transformation"
+    )
 
 
-class FlowRunModel(Base):
-    """API model for a single flow run summary.
+class LogQueryRequest(Base):
+    """API model for querying logs with jsonry.
 
     Attributes:
-        name: Flow name.
-        run_id: Unique run identifier.
-        status: Run status ("running", "success", "failed", etc.).
-        ended_at: Timestamp when the run ended.
+        runs: Optional list of run UUIDs to filter by.
+        query: Optional jsonry QuerySpec for filtering, projection, and aggregation.
+            See jsonry documentation for query syntax.
+
+    Example:
+        >>> # Get error logs only
+        >>> request = LogQueryRequest(
+        ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["level"]}, "right": "error"}}
+        ... )
     """
-    name: str
-    run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
-    status: str | None = Field(default=None)
-    ended_at: datetime | None = Field(default=None)
+    runs: list[str] | None = Field(
+        None,
+        description="Optional list of run UUIDs (as strings) to filter by"
+    )
+    query: QuerySpecUnion | None = Field(
+        None,
+        description="jsonry Query specification for data transformation"
+    )
 
 
-class RunAttrModel(Base):
-    """API model for run attributes.
-
-    Attributes:
-        name: Name of the flow or task.
-        run_type: Type of run ("flow" or "task").
-        run_id: Unique run identifier.
-    """
-    name: str
-    run_type: str
-    run_id: uuid.UUID
-
-
-class RunLogModel(Base):
+class SpanLogDTO(Base):
     """API model for a run log entry.
 
     Attributes:
-        status: Status at this log point ("running", "success", "failed").
-        log: Optional log message or error details.
-        timestamp: When this log entry was created.
-        log_id: Unique log entry identifier.
+        TODO
     """
-    status: str
-    log: str = Field(default="")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    log_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    flow_name: str
+    run_id: str
+    span_type: SpanType
+    span_name: str
+    span_id: str
+    parent_span_id: str | None
+    ts: datetime
+    message: str
+    level: str
 
 
-class RunModel(Base):
-    """API model for detailed run information with hierarchy.
-
-    Includes the run attributes, all log entries, parent run, and child runs.
+class RunSummaryDTO(Base):
+    """API model for a single flow run summary.
 
     Attributes:
-        run: Run attributes (name, type, ID).
-        logs: All log entries for this run.
-        parent: Parent run attributes if this is a task.
-        children: Child runs (tasks) if this is a flow.
+        span_id: span's identifier. 
+        span_name: span's name.
+        status: span's most recent status.
+        start_ts: span's starting time.
+        end_ts: span's ending time.
+        children: span's children span's summaries.
     """
-    run: RunAttrModel
-    logs: list[RunLogModel] = Field(default_factory=list)
-    parent: RunAttrModel | None = Field(default=None)
-    children: list["RunModel"] = Field(default_factory=list)
+    span_id: str
+    span_name: str
+    status: RunStatus
+    start_ts: datetime
+    end_ts: datetime
+    duration: HumanDuration | None = Field(default=None)
+    children: list[RunSummaryDTO]
+
+
+def span_log_to_dto(data: SpanLog):
+    return SpanLogDTO(
+        flow_name = data.flow_name, 
+        run_id = str(data.run_id),
+        span_type = data.span_type,
+        span_name = data.span_name,
+        span_id = str(data.span_id),
+        parent_span_id = str(data.parent_span_id) if data.parent_span_id else None,
+        ts = data.ts,
+        message = data.message,
+        level = data.level,
+    )
+
+
+def run_summary_to_dto(data: RunSummary):
+    return RunSummaryDTO(
+        span_id = str(data.span_id),
+        span_name = data.span_name,
+        status = data.status,
+        start_ts = data.start_ts,
+        end_ts = data.end_ts,
+        duration = data.duration if data.duration is not None else None,
+        children = [run_summary_to_dto(c) for c in data.children],
+    )
 
 
 class FlowController:
@@ -185,25 +193,25 @@ class FlowController:
     flow execution, listing flows, querying runs, and retrieving run details.
 
     Attributes:
-        query_repository: Repository for querying flow execution data.
+        query_querier: querier for querying flow execution data.
         register: Flow and task register for accessing registered flows.
 
     Example:
-        >>> controller = FlowController(query_repository=repo)
+        >>> controller = FlowController(query_querier=repo)
         >>> flows = controller.list_flows()
         >>> controller.run_flow("my_flow", FlowInputModel(kwargs={"param": "value"}))
     """
-    def __init__(self, *, query_repository: RunQueryProtocol, **_):
+    def __init__(self, *, querier: RunQueryProtocol, **_):
         """Initialize the flow controller.
 
         Args:
-            query_repository: Repository for querying flow execution history.
+            querier: querier for querying flow execution history.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
-        self.query_repository = query_repository
-        self.registry = query_repository.registry
+        self.querier = querier
+        self.registry = querier.registry
 
-    def run_flow(self, flow_name: str, payload: FlowInputModel) -> None:
+    def run_flow(self, flow_name: str, payload: FlowArguments) -> None:
         """Execute a registered flow with provided arguments.
 
         Args:
@@ -226,61 +234,103 @@ class FlowController:
         # TODO: add azure job to execution and PubSub sockets
         _ = fn(**kwargs)
 
-    def list_flows(self) -> list[FlowSummaryModel]:
-        """List all registered flows with execution summaries.
 
-        Returns:
-            list[FlowSummaryModel]: List of flow summaries including latest run status.
-        """
-        flows = self.query_repository.list_flows()
-        result = []
-        for flow in flows:
-            result.append(FlowSummaryModel.model_validate(flow))
-        return result
+    def query_runs(self, request: RunQueryRequest) -> list[Any]:
+        """Query runs with flexible jsonry queries.
 
-    def list_runs(self, offset: int = 0, limit: int = 50) -> list[FlowRunModel]:
-        """List recent flow runs with pagination.
+        Supports filtering, projection, aggregation, and transformation of run data
+        using jsonry query language.
 
         Args:
-            offset: Number of runs to skip. Defaults to 0.
-            limit: Maximum number of runs to return. Defaults to 50.
+            request: Query request containing optional flow names filter and jsonry query spec.
 
         Returns:
-            list[FlowRunModel]: List of flow run summaries.
-        """
-        rows = self.query_repository.list_runs(offset=offset, limit=limit)
-        return [FlowRunModel.model_validate(row) for row in rows]
-
-    def get_run(self, run_id: uuid.UUID) -> RunModel:
-        """Get detailed information for a specific run.
-
-        Includes full run hierarchy with parent and child runs, and all log entries.
-
-        Args:
-            run_id: Unique identifier of the run.
-
-        Returns:
-            RunModel: Detailed run information with logs and hierarchy.
+            list[Any]: Query results. Type depends on the query transformation applied.
 
         Raises:
-            HTTPException: 404 if the run is not found.
-        """
-        run = self.query_repository.get_run_by_id(run_id=run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        return RunModel.model_validate(run)
+            HTTPException: 400 if the query is invalid or cannot be executed.
 
-    def list_flow_runs(self, name: str) -> list[FlowRunModel]:
-        """List all runs for a specific flow.
+        Example:
+            >>> # Filter runs by status
+            >>> request = RunQueryRequest(
+            ...     query=FilterSpec(
+            ...         predicate=EqualSpec(
+            ...             left=GetSpec(keys=["status"]),
+            ...             right="success"
+            ...         )
+            ...     )
+            ... )
+            >>> results = controller.query_runs(request)
+        """
+        try:
+            # Convert QuerySpec to Query object if provided
+            query = spec_to_query(request.query) if request.query else None
+
+            # Execute query through the repository layer
+            results = self.querier.list_runs(
+                names=request.names,
+                query=query
+            )
+
+            # Convert iterator to list and return
+            return list(results)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query execution failed: {str(e)}"
+            )
+
+    def query_logs(self, request: LogQueryRequest) -> list[Any]:
+        """Query logs with flexible jsonry queries.
+
+        Supports filtering, projection, aggregation, and transformation of log data
+        using jsonry query language.
 
         Args:
-            name: Name of the flow.
+            request: Query request containing optional run UUIDs filter and jsonry query spec.
 
         Returns:
-            list[FlowRunModel]: List of run summaries for the specified flow.
+            list[Any]: Query results. Type depends on the query transformation applied.
+
+        Raises:
+            HTTPException: 400 if the query is invalid or cannot be executed.
+
+        Example:
+            >>> # Get error-level logs only
+            >>> request = LogQueryRequest(
+            ...     query=FilterSpec(
+            ...         predicate=EqualSpec(
+            ...             left=GetSpec(keys=["level"]),
+            ...             right="error"
+            ...         )
+            ...     )
+            ... )
+            >>> results = controller.query_logs(request)
         """
-        runs = self.query_repository.list_runs_by_flow_name(name=name)
-        result = []
-        for run in runs:
-            result.append(FlowRunModel.model_validate(run))
-        return result
+        try:
+            # Convert QuerySpec to Query object if provided
+            query = spec_to_query(request.query) if request.query else None
+
+            # Convert string UUIDs to UUID objects if provided
+            run_uuids = None
+            if request.runs is not None:
+                run_uuids = [UUID(run_id) for run_id in request.runs]
+
+            # Execute query through the repository layer
+            results = self.querier.list_logs(
+                runs=run_uuids,
+                query=query
+            )
+
+            # Convert iterator to list and return
+            return list(results)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid UUID format: {str(e)}"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query execution failed: {str(e)}"
+            )

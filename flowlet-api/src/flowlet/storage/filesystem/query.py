@@ -11,10 +11,10 @@ from uuid import UUID
 from jsonry.model import Query
 import jsonry.execution.in_memory
 
-from ..interfaces.registry import RegistryProtocol
-from ..interfaces.query import RunQueryProtocol
-from ..types import Period
-from .azure.path import AzureBlobPath
+from ...interfaces.registry import RegistryProtocol
+from ...interfaces.query import RunQueryProtocol
+from ...types import Period
+from ..azure.path import AzureBlobPath
 
 
 class FileQuery(RunQueryProtocol):
