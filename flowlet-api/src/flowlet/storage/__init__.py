@@ -9,19 +9,15 @@ from .azure import (
     AzureBlobPath,
     DEFAULT_CHUNK_SIZE,
     MAX_APPEND_BLOCK_SIZE,
-    AzureBlobHandler,
-    AzureBlobStreamHandler,
 )
 from .filesystem.logging import FilesystemHandler
-from .sqlite_logging import SQLiteHandler, SQLiteRunHandler
+from .rdbms.sqlite_logging import SQLiteHandler, SQLiteRunHandler
 
 __all__ = [
     'AzureBlobFile',
     'AzureBlobPath',
     'DEFAULT_CHUNK_SIZE',
     'MAX_APPEND_BLOCK_SIZE',
-    'AzureBlobHandler',
-    'AzureBlobStreamHandler',
     'FilesystemHandler',
     'SQLiteHandler',
     'SQLiteRunHandler',

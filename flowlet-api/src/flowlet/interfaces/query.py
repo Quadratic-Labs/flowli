@@ -9,6 +9,7 @@ from uuid import UUID
 from jsonry.model import Query
 
 from ..types import Period
+from .registry import RegistryProtocol
 
 
 class RunQueryProtocol(Protocol):
@@ -17,6 +18,8 @@ class RunQueryProtocol(Protocol):
     Defines the interface for querying flow and task execution history.
     Implementations should provide efficient read-only access to execution data.
     """
+    registry: RegistryProtocol
+
     def list_runs(
         self,
         names: Sequence[str] | None = None,
@@ -62,6 +65,8 @@ class AsyncRunQueryProtocol(Protocol):
     Attributes:
         db_session_factory: SQLAlchemy session factory for database access.
     """
+    registry: RegistryProtocol
+
     async def list_runs(
         self,
         names: Sequence[str] | None = None,

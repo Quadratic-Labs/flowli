@@ -19,9 +19,8 @@ from .registry import Registry
 from .context import ExecutionContext
 from .tracker import Tracker
 from .executor import ExecutorInProcess
-from .storage.azure.logging import AzureBlobHandler
 from .storage.filesystem.logging import FilesystemHandler
-from .storage.sqlite_logging import SQLiteHandler, SQLiteRunHandler
+from .storage.rdbms.sqlite_logging import SQLiteHandler, SQLiteRunHandler
 # from .repositories.query import QueryRepository
 from .controllers import FlowController
 
@@ -108,11 +107,9 @@ class Flowlet:
             APIRouter: Configured router with flow execution and query endpoints.
         """
         router = APIRouter()
-        router.get("/flows")(self.controller.list_flows)
-        router.post("/flows/{flow_name}/execute")(self.controller.run_flow)
-        router.get("/flows/{flow_name}/runs")(self.controller.list_flow_runs)
-        router.get("/runs")(self.controller.list_runs)
-        router.get("/runs/{run_id}")(self.controller.get_run)
+        router.post("/execute/{flow_name}")(self.controller.run_flow)
+        router.post("/runs/query")(self.controller.query_runs)
+        router.post("/logs/query")(self.controller.query_logs)
         return router
 
     def list_flows(self):
@@ -300,7 +297,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
                 connection_string=storage_config.connection_string,
                 container_name=storage_config.container_name,
             )
-            azure_log_handler = AzureBlobHandler(
+            azure_log_handler = FilesystemHandler(
                 path = azure_path / logs_prefix,
                 level = logging.INFO,
                 chunk_size = 4*1024,  # 4 KiB
@@ -308,7 +305,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             azure_log_handler.setFormatter(json_formatter)
             log_handlers.append(azure_log_handler)
 
-            azure_run_handler = AzureBlobHandler(
+            azure_run_handler = FilesystemHandler(
                 path = azure_path / runs_prefix,
                 level = logging.INFO,
                 chunk_size=4*1024,  # 4 KiB
