@@ -281,7 +281,7 @@ class TestBaseModelHelpers:
 
     def test_from_attrs(self, db_session):
         """Test creating ORM instance from attrs object."""
-        from flowlet.interfaces.repository.models import RunAttrModel
+        from flowlet.models import RunAttrModel
 
         # Create an attrs model
         attrs_run = RunAttrModel(
@@ -302,7 +302,7 @@ class TestBaseModelHelpers:
 
     def test_update_from_attrs(self, db_session):
         """Test updating ORM instance from attrs object."""
-        from flowlet.interfaces.repository.models import RunAttrModel
+        from flowlet.models import RunAttrModel
 
         # Create initial run
         run_id = uuid.uuid4()

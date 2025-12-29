@@ -4,13 +4,13 @@ Provides controller classes for handling flow execution and querying,
 along with Pydantic models for API request/response serialization.
 """
 from datetime import datetime, timedelta
+from inspect import Parameter
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import HTTPException
-from jsonry.http.query_spec import QuerySpecUnion
-from jsonry.http.converters import spec_to_query
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from jsonry.serdes.from_dict import from_dict
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from .interfaces.query import RunQueryProtocol
 from .models import RunSummary, SpanLog
@@ -80,8 +80,8 @@ class RunQueryRequest(Base):
 
     Attributes:
         names: Optional list of flow names to filter by.
-        query: Optional jsonry QuerySpec for filtering, projection, and aggregation.
-            See jsonry documentation for query syntax.
+        query: Optional jsonry query as a JSON object. See jsonry documentation for syntax.
+            Validation happens during deserialization.
 
     Example:
         >>> # Filter runs by status
@@ -93,9 +93,9 @@ class RunQueryRequest(Base):
         None,
         description="Optional list of flow names to filter by"
     )
-    query: QuerySpecUnion | None = Field(
+    query: dict[str, Any] | None = Field(
         None,
-        description="jsonry Query specification for data transformation"
+        description="jsonry Query specification as JSON. See jsonry documentation for query syntax."
     )
 
 
@@ -104,8 +104,8 @@ class LogQueryRequest(Base):
 
     Attributes:
         runs: Optional list of run UUIDs to filter by.
-        query: Optional jsonry QuerySpec for filtering, projection, and aggregation.
-            See jsonry documentation for query syntax.
+        query: Optional jsonry query as a JSON object. See jsonry documentation for syntax.
+            Validation happens during deserialization.
 
     Example:
         >>> # Get error logs only
@@ -117,9 +117,9 @@ class LogQueryRequest(Base):
         None,
         description="Optional list of run UUIDs (as strings) to filter by"
     )
-    query: QuerySpecUnion | None = Field(
+    query: dict[str, Any] | None = Field(
         None,
-        description="jsonry Query specification for data transformation"
+        description="jsonry Query specification as JSON. See jsonry documentation for query syntax."
     )
 
 
@@ -220,16 +220,39 @@ class FlowController:
 
         Raises:
             HTTPException: 404 if the flow is not registered.
+            HTTPException: 422 if the provided arguments fail schema validation.
 
         Note:
+            If the flow has type hints, arguments are validated against the generated schema.
+            Untyped flows execute without validation (backwards compatible).
             Currently executes flows synchronously. Future versions will
             support background task scheduling.
         """
         if flow_name not in self.registry.list_flows():
             raise HTTPException(status_code=404, detail="Flow not found")
+
+        # Get schema for validation
+        schema = self.registry.get_flow_schema(flow_name)
+
+        if schema is not None:
+            # Validate kwargs against Pydantic model
+            try:
+                validated_data = schema.pydantic_model(**payload.kwargs)
+                kwargs = validated_data.model_dump()
+            except ValidationError as e:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Invalid flow arguments",
+                        "flow": flow_name,
+                        "errors": e.errors()
+                    }
+                )
+        else:
+            # Graceful degradation: no schema, use kwargs as-is
+            kwargs = payload.kwargs or {}
+
         fn = self.registry.get_flow(flow_name)
-        # For simplicity, accept only kwargs
-        kwargs = payload.kwargs or {}
         # TODO: schedule background task, get immediate status
         # TODO: add azure job to execution and PubSub sockets
         _ = fn(**kwargs)
@@ -242,7 +265,7 @@ class FlowController:
         using jsonry query language.
 
         Args:
-            request: Query request containing optional flow names filter and jsonry query spec.
+            request: Query request containing optional flow names filter and jsonry query dict.
 
         Returns:
             list[Any]: Query results. Type depends on the query transformation applied.
@@ -253,18 +276,13 @@ class FlowController:
         Example:
             >>> # Filter runs by status
             >>> request = RunQueryRequest(
-            ...     query=FilterSpec(
-            ...         predicate=EqualSpec(
-            ...             left=GetSpec(keys=["status"]),
-            ...             right="success"
-            ...         )
-            ...     )
+            ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["status"]}, "right": "success"}}
             ... )
             >>> results = controller.query_runs(request)
         """
         try:
-            # Convert QuerySpec to Query object if provided
-            query = spec_to_query(request.query) if request.query else None
+            # Deserialize dict to Query object if provided, with validation
+            query = from_dict(request.query) if request.query else None
 
             # Execute query through the repository layer
             results = self.querier.list_runs(
@@ -277,7 +295,7 @@ class FlowController:
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Query execution failed: {str(e)}"
+                detail=f"Invalid query specification: {str(e)}"
             )
 
     def query_logs(self, request: LogQueryRequest) -> list[Any]:
@@ -287,7 +305,7 @@ class FlowController:
         using jsonry query language.
 
         Args:
-            request: Query request containing optional run UUIDs filter and jsonry query spec.
+            request: Query request containing optional run UUIDs filter and jsonry query dict.
 
         Returns:
             list[Any]: Query results. Type depends on the query transformation applied.
@@ -298,18 +316,13 @@ class FlowController:
         Example:
             >>> # Get error-level logs only
             >>> request = LogQueryRequest(
-            ...     query=FilterSpec(
-            ...         predicate=EqualSpec(
-            ...             left=GetSpec(keys=["level"]),
-            ...             right="error"
-            ...         )
-            ...     )
+            ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["level"]}, "right": "error"}}
             ... )
             >>> results = controller.query_logs(request)
         """
         try:
-            # Convert QuerySpec to Query object if provided
-            query = spec_to_query(request.query) if request.query else None
+            # Deserialize dict to Query object if provided, with validation
+            query = from_dict(request.query) if request.query else None
 
             # Convert string UUIDs to UUID objects if provided
             run_uuids = None
@@ -332,5 +345,98 @@ class FlowController:
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Query execution failed: {str(e)}"
+                detail=f"Invalid query specification: {str(e)}"
             )
+
+    def get_flow_schema(self, flow_name: str) -> dict[str, Any]:
+        """Get parameter schema for a specific flow.
+
+        Args:
+            flow_name: Name of the flow.
+
+        Returns:
+            Dictionary containing flow schema information including:
+            - flow_name: Name of the flow
+            - has_schema: Whether type hints are available
+            - docstring: Flow's docstring (if available)
+            - parameters: List of parameter metadata
+            - json_schema: JSON Schema representation (if available)
+
+        Raises:
+            HTTPException: 404 if flow not found.
+
+        Example:
+            >>> schema = controller.get_flow_schema("my_flow")
+            >>> print(schema["parameters"])
+            [{"name": "x", "type": "int", "required": true}, ...]
+        """
+        if flow_name not in self.registry.list_flows():
+            raise HTTPException(status_code=404, detail="Flow not found")
+
+        schema = self.registry.get_flow_schema(flow_name)
+
+        if schema is None:
+            return {
+                "flow_name": flow_name,
+                "has_schema": False,
+                "message": "No type hints available for this flow"
+            }
+
+        return {
+            "flow_name": flow_name,
+            "docstring": schema.docstring,
+            "has_schema": True,
+            "parameters": [
+                {
+                    "name": p.name,
+                    "type": str(p.type_annotation),
+                    "required": p.required,
+                    "default": p.default if p.default != Parameter.empty else None,
+                    "description": p.description
+                }
+                for p in schema.parameters
+            ],
+            "json_schema": schema.pydantic_model.model_json_schema()
+        }
+
+    def list_flows_with_schemas(self) -> list[dict[str, Any]]:
+        """List all flows with their parameter schemas.
+
+        Returns:
+            List of flow metadata dictionaries, each containing:
+            - name: Flow name
+            - docstring: Flow's docstring (if available)
+            - has_schema: Whether type hints are available
+            - parameters: List of parameter info (if schema available)
+
+        Example:
+            >>> flows = controller.list_flows_with_schemas()
+            >>> for flow in flows:
+            ...     print(f"{flow['name']}: {flow['has_schema']}")
+            my_flow: True
+            legacy_flow: False
+        """
+        flows = []
+        for flow_name in self.registry.list_flows():
+            fn = self.registry.get_flow(flow_name)
+            schema = self.registry.get_flow_schema(flow_name)
+
+            flow_info: dict[str, Any] = {
+                "name": flow_name,
+                "docstring": fn.__doc__,
+                "has_schema": schema is not None,
+            }
+
+            if schema:
+                flow_info["parameters"] = [
+                    {
+                        "name": p.name,
+                        "type": str(p.type_annotation),
+                        "required": p.required,
+                    }
+                    for p in schema.parameters
+                ]
+
+            flows.append(flow_info)
+
+        return flows

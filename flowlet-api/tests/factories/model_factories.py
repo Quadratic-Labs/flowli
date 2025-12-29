@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import factory
 
-from flowlet.interfaces.repository.models import (
+from flowlet.models import (
     FlowRunSummary,
     FlowSummary,
     RunAttrModel,

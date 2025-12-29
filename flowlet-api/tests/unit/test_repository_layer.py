@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from flowlet.database import Run, RunLink, RunLog
-from flowlet.interfaces.repository.models import RunAttrModel, RunLogAttrModel
+from flowlet.models import RunAttrModel, RunLogAttrModel
 
 
 @pytest.mark.unit

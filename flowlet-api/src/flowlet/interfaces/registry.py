@@ -3,9 +3,12 @@
 This module defines the structural typing protocol for flow and task registration,
 enabling type checking without concrete dependencies.
 """
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from .executor import ExecutorProtocol
+
+if TYPE_CHECKING:
+    from ..schema_generator import FlowSchema
 
 
 class RegistryProtocol(Protocol):
@@ -52,6 +55,28 @@ class RegistryProtocol(Protocol):
         ...
 
     def get_task(self, name: str) -> Callable:
+        ...
+
+    def get_flow_schema(self, name: str) -> "FlowSchema | None":
+        """Get the schema for a registered flow.
+
+        Args:
+            name: Name of the flow.
+
+        Returns:
+            FlowSchema object if available, None otherwise.
+        """
+        ...
+
+    def get_task_schema(self, name: str) -> "FlowSchema | None":
+        """Get the schema for a registered task.
+
+        Args:
+            name: Name of the task.
+
+        Returns:
+            FlowSchema object if available, None otherwise.
+        """
         ...
 
     def register_flow(

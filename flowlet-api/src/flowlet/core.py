@@ -21,7 +21,7 @@ from .tracker import Tracker
 from .executor import ExecutorInProcess
 from .storage.filesystem.logging import FilesystemHandler
 from .storage.rdbms.sqlite_logging import SQLiteHandler, SQLiteRunHandler
-# from .repositories.query import QueryRepository
+from .storage.filesystem.query import FileQuery
 from .controllers import FlowController
 
 
@@ -46,7 +46,7 @@ class FlowletDependencies(TypedDict):
     executor: ExecutorProtocol
     log_handlers: list[Handler]
     run_log_handlers: list[Handler]
-    query: RunQueryProtocol
+    querier: RunQueryProtocol
     controller: FlowController
 
 
@@ -92,7 +92,7 @@ class Flowlet:
         self.executor = deps["executor"]
         self.log_handlers = deps["log_handlers"]
         self.run_log_handlers = deps["run_log_handlers"]
-        self.query = deps["query"]
+        self.querier = deps["querier"]
         self.controller = deps["controller"]
 
         for hdl in self.log_handlers:
@@ -107,9 +107,57 @@ class Flowlet:
             APIRouter: Configured router with flow execution and query endpoints.
         """
         router = APIRouter()
-        router.post("/execute/{flow_name}")(self.controller.run_flow)
-        router.post("/runs/query")(self.controller.query_runs)
-        router.post("/logs/query")(self.controller.query_logs)
+
+        # Execution endpoints
+        router.post(
+            "/execute/{flow_name}",
+            summary="Execute a registered flow",
+            description="""
+            Execute a flow with validated arguments.
+
+            To see the exact parameter schema for a specific flow:
+            GET /flows/{flow_name}/schema
+
+            The request body should contain a 'kwargs' object with parameters
+            matching the flow's type signature.
+            """,
+            responses={
+                200: {"description": "Flow executed successfully"},
+                404: {"description": "Flow not found"},
+                422: {"description": "Invalid flow arguments - see error details"}
+            },
+            tags=["Execution"]
+        )(self.controller.run_flow)
+
+        # Query endpoints
+        router.post(
+            "/runs/query",
+            tags=["Query"]
+        )(self.controller.query_runs)
+
+        router.post(
+            "/logs/query",
+            tags=["Query"]
+        )(self.controller.query_logs)
+
+        # Schema introspection endpoints
+        router.get(
+            "/flows",
+            summary="List all registered flows with their schemas",
+            description="Returns metadata for all flows including parameter information",
+            response_model=list[dict],
+            tags=["Introspection"]
+        )(self.controller.list_flows_with_schemas)
+
+        router.get(
+            "/flows/{flow_name}/schema",
+            summary="Get parameter schema for a specific flow",
+            description="Returns detailed schema including JSON Schema format for client generation",
+            response_model=dict,
+            responses={404: {"description": "Flow not found"}},
+            tags=["Introspection"]
+        )(self.controller.get_flow_schema)
+
         return router
 
     def list_flows(self):
@@ -278,6 +326,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             )
             fs_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(fs_run_handler)
+            deps["querier"] = FileQuery(base_path=storage_config.base_path, **deps)
 
         elif isinstance(storage_config, AzureBlobStorageConfig):
             from .storage.azure.path import AzureBlobPath
@@ -312,6 +361,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             )
             azure_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(azure_run_handler)
+            deps["querier"] = FileQuery(base_path=azure_path, **deps)
 
         elif isinstance(storage_config, SQLiteStorageConfig):
             # SQLite storage handlers
@@ -331,11 +381,10 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             sqlite_run_handler.setFormatter(text_formatter)
             run_log_handlers.append(sqlite_run_handler)
 
+            deps["querier"] = None
+
     deps["log_handlers"] = log_handlers
     deps["run_log_handlers"] = run_log_handlers
-    # deps["query"] = QueryRepository(**deps)
-    # deps["controller"] = FlowController(**deps)
-    deps["query"] = None
-    deps["controller"] = None
+    deps["controller"] = FlowController(**deps)
 
     return Flowlet(**deps)

@@ -19,8 +19,8 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 
-from flowlet.controllers import FlowInputModel, FlowRunModel, FlowSummaryModel, RunModel
-from flowlet.interfaces.repository.models import (
+from flowlet.controllers import FlowArguments, FlowRunModel, FlowSummary, RunModel
+from flowlet.models import (
     FlowRunSummary,
     FlowSummary,
     RunAttrModel,
@@ -64,7 +64,7 @@ class TestFlowController:
         result = flow_controller.list_flows()
 
         assert len(result) == 2
-        assert isinstance(result[0], FlowSummaryModel)
+        assert isinstance(result[0], FlowSummary)
         assert result[0].name == "flow_1"
         assert result[0].status == "success"
         assert result[1].name == "flow_2"
@@ -77,7 +77,7 @@ class TestFlowController:
         mock_query_repository.register.flows = {"test_flow": mock_flow_fn}
         mock_query_repository.register.list_flows.return_value = ["test_flow"]
 
-        payload = FlowInputModel(kwargs={"x": 1, "y": 2})
+        payload = FlowArguments(kwargs={"x": 1, "y": 2})
         result = flow_controller.run_flow("test_flow", payload)
 
         # Verify flow was called with correct arguments
@@ -87,7 +87,7 @@ class TestFlowController:
         """Test running a non-existent flow raises 404."""
         mock_query_repository.register.list_flows.return_value = []
 
-        payload = FlowInputModel(kwargs={})
+        payload = FlowArguments(kwargs={})
 
         with pytest.raises(HTTPException) as exc_info:
             flow_controller.run_flow("non_existent_flow", payload)
@@ -101,7 +101,7 @@ class TestFlowController:
         mock_query_repository.register.flows = {"test_flow": mock_flow_fn}
         mock_query_repository.register.list_flows.return_value = ["test_flow"]
 
-        payload = FlowInputModel()  # No kwargs
+        payload = FlowArguments()  # No kwargs
         flow_controller.run_flow("test_flow", payload)
 
         # Should call with empty kwargs
@@ -224,18 +224,18 @@ class TestControllerModels:
 
     def test_flow_input_model_default(self):
         """Test FlowInputModel with default values."""
-        model = FlowInputModel()
+        model = FlowArguments()
         assert model.kwargs == {}
 
     def test_flow_input_model_with_kwargs(self):
         """Test FlowInputModel with custom kwargs."""
-        model = FlowInputModel(kwargs={"x": 1, "y": 2})
+        model = FlowArguments(kwargs={"x": 1, "y": 2})
         assert model.kwargs == {"x": 1, "y": 2}
 
     def test_flow_summary_model_direct_creation(self):
         """Test creating FlowSummaryModel directly."""
         now = datetime.now(UTC)
-        model = FlowSummaryModel(
+        model = FlowSummary(
             name="test_flow",
             status="success",
             started_at=now,
@@ -250,7 +250,7 @@ class TestControllerModels:
     def test_flow_summary_computed_fields(self):
         """Test FlowSummaryModel computed fields."""
         now = datetime.now(UTC)
-        model = FlowSummaryModel(
+        model = FlowSummary(
             name="test_flow",
             status="success",
             started_at=now,
