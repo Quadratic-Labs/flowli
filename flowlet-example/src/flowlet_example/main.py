@@ -20,7 +20,7 @@ def root():
         "name": "Flowlet Example",
         "version": "0.1.0",
         "description": "Example application demonstrating Flowlet framework",
-        "flows": list(flows.flowlet.register.flows.keys()),
+        "flows": list(flows.flowlet.registry.list_flows()),
         "endpoints": {
             "flows": "/flows",
             "runs": "/runs",

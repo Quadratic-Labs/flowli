@@ -38,7 +38,7 @@ class FileQuery(RunQueryProtocol):
         >>> flows = repo.list_flows()
         >>> run = repo.get_run_by_id(run_id)
     """
-    def __init__(self, *, registry: RegistryProtocol, base_path: AzureBlobPath | Path):
+    def __init__(self, *, registry: RegistryProtocol, base_path: AzureBlobPath | Path, **_):
         """Initialize the query repository.
         """
         self.registry = registry

@@ -8,8 +8,9 @@ from datetime import datetime
 from flowlet import configure
 
 
-flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
-flowlet.init_database()
+# flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
+# flowlet.init_database()
+flowlet = configure({"storage": [{"type": "filesystem", "base_path": "./storage"}]})
 
 
 # region Tasks
