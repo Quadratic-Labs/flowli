@@ -1,30 +1,19 @@
-import json
+from datetime import datetime, UTC
 import logging
-from datetime import datetime
-from typing import Any, TypedDict, cast
+from typing import cast
 from uuid import UUID
 
-from attrs import define
-import isodate
+import attrs
 
 from .interfaces.context import ContextManagerProtocol
 from .interfaces.tracker import TrackerProtocol
-from .logging import JSONFormatter, ContextInjectingFilter, FlowletLogBuffer, FlowletLogger
-from .types import SpanType, RunStatus
+from .logging import ContextInjectingFilter, FlowletLogBuffer, FlowletLogger
+from .models import RunSummary, SpanLog
+from .serdes import to_json
+from .types import RunStatus
 
 
-class RunSummary(TypedDict):
-    span_id: str
-    span_type: SpanType
-    span_name: str
-    status: RunStatus
-    start_ts: str
-    end_ts: str
-    duration: str
-    children: list[RunSummary]
-
-
-@define
+@attrs.define
 class Tracker(TrackerProtocol):
     context_manager: ContextManagerProtocol
     logger: FlowletLogger
@@ -33,20 +22,19 @@ class Tracker(TrackerProtocol):
 
     @classmethod
     def setup(cls, *, context_manager: ContextManagerProtocol, **_) -> Tracker:
-        # logging.getLogger() returns FlowletLogger instances after setLoggerClass() is called
-        logger = cast(FlowletLogger, logging.getLogger('flowlet'))
+        # Run Log handling
+        logger = cast(FlowletLogger, logging.getLogger('flowlet.log'))
         logger.setLevel(logging.INFO)
         logger.propagate = True  # Allow propagation to root logger
         context_filter = ContextInjectingFilter(context_manager)
         logger.addFilter(context_filter)
-
-        json_formatter = JSONFormatter()
         buffer_handler = FlowletLogBuffer()
         buffer_handler.setLevel(logging.INFO)
-        buffer_handler.setFormatter(json_formatter)
+        # buffer_handler.setFormatter(json_formatter)
         logger.addHandler(buffer_handler)
 
-        run_logger = cast(FlowletLogger, logging.getLogger("flowlet-run"))
+        # Run Summaries handling
+        run_logger = cast(FlowletLogger, logging.getLogger("flowlet.run"))
         run_logger.setLevel(logging.INFO)
         run_logger.propagate = True  # Allow propagation to root logger
 
@@ -58,69 +46,71 @@ class Tracker(TrackerProtocol):
         )
 
     @classmethod
-    def summarise(cls, logs, run_id) -> RunSummary:
-        span_logs: dict[str, list[dict[str, Any]]] = {}
-        for log in logs:
-            span_id = log.get('span_id')
+    def summarise(cls, spans: list[SpanLog]) -> RunSummary:
+        span_logs: dict[str, list[SpanLog]] = {}
+        for span in spans:
+            span_id = span.span_id
             if span_id:
                 if span_id not in span_logs:
-                    span_logs[span_id] = []
-                span_logs[span_id].append(log)
+                    span_logs[str(span_id)] = []
+                span_logs[str(span_id)].append(span)
 
-        # Build span objects
-        spans: dict[str, dict[str, Any]] = {}
+        # Build span objects as RunSummary models
+        info: dict[str, RunSummary] = {}
         flow_name = None
         for span_id, span_log_list in span_logs.items():
-            span_log_list = sorted(span_log_list, key=lambda l: datetime.fromisoformat(l["ts"]))
+            span_log_list = sorted(span_log_list, key=lambda l: l.ts)
             start_log = span_log_list[0]
             end_log = span_log_list[-1]
 
             # Capture flow_name from the first span we process (typically root)
             if flow_name is None:
-                flow_name = start_log.get('flow_name', '')
-
-            # Calculate duration if we have both start and end
-            duration_str = ""
-            if start_log.get('ts') and end_log.get('ts'):
-                start_dt = datetime.fromisoformat(start_log['ts'])
-                end_dt = datetime.fromisoformat(end_log['ts'])
-                duration = end_dt - start_dt
-                duration_str = isodate.duration_isoformat(duration)
+                flow_name = start_log.flow_name
 
             # Determine status from end_log's level
-            status = RunStatus.from_log_level(end_log.get('level', ''))
+            status = RunStatus.from_log_level(end_log.level)
 
-            span = {
-                "span_id": span_id,
-                "span_type": start_log.get('span_type'),
-                "span_name": start_log.get('span_name'),
-                "status": status,
-                "start_ts": start_log.get('ts', ''),
-                "end_ts": end_log.get('ts', '') if end_log else '',
-                "duration": duration_str,
-                "children": []
-            }
+            span = RunSummary(
+                span_id=span_id,
+                span_name=start_log.span_name,
+                status=status,
+                start_ts=start_log.ts,
+                end_ts=end_log.ts,
+                children=[]
+            )
 
-            spans[span_id] = span
+            info[span_id] = span
 
         # Build hierarchy by linking parent-child relationships
         root_span = None
-        for span_id, span in spans.items():
+        for span_id, span in info.items():
             # Find parent span ID from logs
             parent_span_id = None
             for log in span_logs[span_id]:
-                if log.get('parent_span_id'):
-                    parent_span_id = log['parent_span_id']
+                if log.parent_span_id:
+                    parent_span_id = log.parent_span_id
                     break
 
-            if parent_span_id and parent_span_id in spans:
-                spans[parent_span_id]["children"].append(span)
+            if parent_span_id and parent_span_id in info:
+                info[str(parent_span_id)].children.append(span)
             else:  # This is the root span
                 root_span = span
 
-        return cast(RunSummary, root_span if root_span else {})
+        # Return root span or create an empty placeholder
+        if root_span is None:
+            # Create a placeholder for empty logs
+            root_span = RunSummary(
+                span_id="",
+                span_name="",
+                status=RunStatus.running,
+                start_ts=datetime.now(UTC),
+                end_ts=datetime.now(UTC),
+                children=[]
+            )
 
-    def flush_run(self, run_id: str, clear_buffer: bool = True) -> RunSummary | None:
+        return root_span
+
+    def flush_run(self, run_id: UUID, clear_buffer: bool = True) -> RunSummary | None:
         """
         Generate and write a run summary from buffered logs.
 
@@ -132,14 +122,14 @@ class Tracker(TrackerProtocol):
             clear_buffer: Whether to clear the buffer after emitting (default: True)
 
         Returns:
-            The generated summary dictionary
+            The generated RunSummary model
 
         Raises:
             ValueError: If buffer handler is not initialized
         """
-        logs = self.bufferer.get_run_logs(run_id)
-        summary = self.summarise(logs, run_id)
+        spans = self.bufferer.get_run_logs(run_id)
+        summary = self.summarise(spans)
         if clear_buffer:
             self.bufferer.clear_run_logs(run_id)
-        self.run_logger.info(json.dumps(summary))
+        self.run_logger.info(to_json(summary))
         return summary

@@ -20,38 +20,42 @@ class RunQueryProtocol(Protocol):
     """
     registry: RegistryProtocol
 
-    def list_runs(
+    def list_summaries(
         self,
         names: Sequence[str] | None = None,
         query: Query | None = None,
     ) -> Iterator:
         """
-        List all registered flows with execution summaries.
+        List execution summaries for registered flows.
 
-        Optionally, we can post-transform results using `query`.
+        Returns RunSummary models when possible (full schema), or dicts when projections are used.
 
         Args:
             names: include flow's with flow_names in `names`, or all if None.
             query: post-transformation on the results.
 
         Returns:
-            Iterator over results, the type depending on query.
+            Iterator[RunSummary | dict]: RunSummary models if full schema is available,
+                                         otherwise dicts with projected fields
         """
         ...
 
-    def list_logs(
+    def list_runs(
         self,
         runs: Sequence[UUID] | Period | None = None,
         query: Query | None = None
     ) -> Iterator:
-        """Get logs for run's given by run_ids.
+        """Get runs with logs and summaries.
+
+        Returns Run models (logs + summary) when possible, or dicts when projections are used.
 
         Args:
-            run_ids: 
-            db: Optional database session.
+            runs: Run UUIDs or time period to filter by, or None for all runs
+            query: Optional jsonry query for filtering/projection/transformation
 
         Returns:
-            RunModel | None: Detailed run model, or None if not found.
+            Iterator[Run | dict]: Run models (with logs and summary) if full schema is available,
+                                  otherwise dicts with projected fields
         """
         ...
 
@@ -67,37 +71,41 @@ class AsyncRunQueryProtocol(Protocol):
     """
     registry: RegistryProtocol
 
-    async def list_runs(
+    async def list_summaries(
         self,
         names: Sequence[str] | None = None,
         query: Query | None = None,
     ) -> AsyncIterator:
         """
-        List all registered flows with execution summaries.
+        List execution summaries for registered flows.
 
-        Optionally, we can post-transform results using `query`.
+        Returns RunSummary models when possible (full schema), or dicts when projections are used.
 
         Args:
             names: include flow's with flow_names in `names`, or all if None.
             query: post-transformation on the results.
 
         Returns:
-            Iterator over results, the type depending on query.
+            AsyncIterator[RunSummary | dict]: RunSummary models if full schema is available,
+                                               otherwise dicts with projected fields
         """
         ...
 
-    async def list_logs(
+    async def list_runs(
         self,
         runs: Sequence[UUID] | Period | None = None,
         query: Query | None = None
     ) -> AsyncIterator:
-        """Get logs for run's given by run_ids.
+        """Get runs with logs and summaries.
+
+        Returns Run models (logs + summary) when possible, or dicts when projections are used.
 
         Args:
-            run_ids: 
-            db: Optional database session.
+            runs: Run UUIDs or time period to filter by, or None for all runs
+            query: Optional jsonry query for filtering/projection/transformation
 
         Returns:
-            RunModel | None: Detailed run model, or None if not found.
+            AsyncIterator[Run | dict]: Run models (with logs and summary) if full schema is available,
+                                        otherwise dicts with projected fields
         """
         ...
