@@ -13,6 +13,7 @@ from jsonry.serdes.from_dict import from_dict
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from .interfaces.query import RunQueryProtocol
+from .interfaces.tracker import TrackerProtocol
 from .models import RunSummary, SpanLog
 from .types import RunStatus, SpanType
 
@@ -24,7 +25,7 @@ def humanize_timedelta(td: timedelta) -> str:
         td: Timedelta to humanize.
 
     Returns:
-        str: Human-readable string like "5s ago", "3m ago", "2h 15m ago", or "1d 3h ago".
+        str: Human-readable string like "5s", "3m", "2h 15m", or "1d 3h".
 
     Example:
         >>> from datetime import timedelta
@@ -37,17 +38,17 @@ def humanize_timedelta(td: timedelta) -> str:
     """
     seconds = int(td.total_seconds())
     if seconds < 60:
-        return f"{seconds}s ago"
+        return f"{seconds}s"
     elif seconds < 3600:
-        return f"{seconds // 60}m ago"
+        return f"{seconds // 60}m"
     elif seconds < 86400:
         hours = seconds // 3600
         mins = (seconds % 3600) // 60
-        return f"{hours}h {mins}m ago"
+        return f"{hours}h {mins}m"
     else:
         days = seconds // 86400
         hours = (seconds % 86400) // 3600
-        return f"{days}d {hours}h ago"
+        return f"{days}d {hours}h"
 
 HumanDuration = Annotated[timedelta, AfterValidator(humanize_timedelta)]
 """Type alias for timedelta that is automatically humanized when validated."""
@@ -129,22 +130,22 @@ class SpanLogDTO(Base):
     Attributes:
         TODO
     """
-    flow_name: str
-    run_id: str
-    span_type: SpanType
-    span_name: str
-    span_id: str
-    parent_span_id: str | None
-    ts: datetime
-    message: str
-    level: str
+    flow_name: str | None = None
+    run_id: str | None = None
+    span_type: SpanType | None = None
+    span_name: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    ts: datetime | None = None
+    message: str | None = None
+    level: str | None = None
 
 
 class RunSummaryDTO(Base):
     """API model for a single flow run summary.
 
     Attributes:
-        span_id: span's identifier. 
+        span_id: span's identifier.
         span_name: span's name.
         status: span's most recent status.
         start_ts: span's starting time.
@@ -160,30 +161,8 @@ class RunSummaryDTO(Base):
     children: list[RunSummaryDTO]
 
 
-def span_log_to_dto(data: SpanLog):
-    return SpanLogDTO(
-        flow_name = data.flow_name, 
-        run_id = str(data.run_id),
-        span_type = data.span_type,
-        span_name = data.span_name,
-        span_id = str(data.span_id),
-        parent_span_id = str(data.parent_span_id) if data.parent_span_id else None,
-        ts = data.ts,
-        message = data.message,
-        level = data.level,
-    )
-
-
-def run_summary_to_dto(data: RunSummary):
-    return RunSummaryDTO(
-        span_id = str(data.span_id),
-        span_name = data.span_name,
-        status = data.status,
-        start_ts = data.start_ts,
-        end_ts = data.end_ts,
-        duration = data.duration if data.duration is not None else None,
-        children = [run_summary_to_dto(c) for c in data.children],
-    )
+class RunDTO(RunSummaryDTO):
+    logs: list[SpanLogDTO]
 
 
 class FlowController:
@@ -195,21 +174,24 @@ class FlowController:
     Attributes:
         query_querier: querier for querying flow execution data.
         register: Flow and task register for accessing registered flows.
+        tracker: Tracker for computing run summaries from logs.
 
     Example:
-        >>> controller = FlowController(query_querier=repo)
+        >>> controller = FlowController(query_querier=repo, tracker=tracker)
         >>> flows = controller.list_flows()
         >>> controller.run_flow("my_flow", FlowInputModel(kwargs={"param": "value"}))
     """
-    def __init__(self, *, querier: RunQueryProtocol, **_):
+    def __init__(self, *, querier: RunQueryProtocol, tracker: TrackerProtocol, **_):
         """Initialize the flow controller.
 
         Args:
             querier: querier for querying flow execution history.
+            tracker: Tracker for computing run summaries from logs.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.querier = querier
         self.registry = querier.registry
+        self.tracker = tracker
 
     def run_flow(self, flow_name: str, payload: FlowArguments) -> None:
         """Execute a registered flow with provided arguments.
@@ -258,10 +240,10 @@ class FlowController:
         _ = fn(**kwargs)
 
 
-    def query_runs(self, request: RunQueryRequest) -> list[Any]:
-        """Query runs with flexible jsonry queries.
+    def query_runs(self, request: RunQueryRequest) -> list[RunSummaryDTO]:
+        """Query run summaries with flexible jsonry queries.
 
-        Supports filtering, projection, aggregation, and transformation of run data
+        Supports filtering, projection, aggregation, and transformation of run summary data
         using jsonry query language.
 
         Args:
@@ -269,12 +251,13 @@ class FlowController:
 
         Returns:
             list[Any]: Query results. Type depends on the query transformation applied.
+                      Returns RunSummary models when full schema, or dicts when projected.
 
         Raises:
             HTTPException: 400 if the query is invalid or cannot be executed.
 
         Example:
-            >>> # Filter runs by status
+            >>> # Filter run summaries by status
             >>> request = RunQueryRequest(
             ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["status"]}, "right": "success"}}
             ... )
@@ -285,41 +268,51 @@ class FlowController:
             query = from_dict(request.query) if request.query else None
 
             # Execute query through the repository layer
-            results = self.querier.list_runs(
+            results = self.querier.list_summaries(
                 names=request.names,
                 query=query
             )
 
             # Convert iterator to list and return
-            return list(results)
+            return [RunSummaryDTO.model_validate(res) for res in results]
         except Exception as e:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid query specification: {str(e)}"
             )
 
-    def query_logs(self, request: LogQueryRequest) -> list[Any]:
-        """Query logs with flexible jsonry queries.
+    def query_logs(self, request: LogQueryRequest) -> list[RunDTO]:
+        """Query runs (logs + summaries) with flexible jsonry queries.
 
-        Supports filtering, projection, aggregation, and transformation of log data
+        Supports filtering, projection, aggregation, and transformation of run data
         using jsonry query language.
+
+        Behavior:
+        - If full schema is available: returns Run models (with logs and computed summary)
+        - If projection/transformation is used: returns the projected results directly
 
         Args:
             request: Query request containing optional run UUIDs filter and jsonry query dict.
 
         Returns:
             list[Any]: Query results. Type depends on the query transformation applied.
+                      Returns Run models when full schema, or dicts when projected.
 
         Raises:
             HTTPException: 400 if the query is invalid or cannot be executed.
 
         Example:
-            >>> # Get error-level logs only
+            >>> # Get full runs with logs and summaries (no projection)
+            >>> request = LogQueryRequest()
+            >>> results = controller.query_logs(request)
+
+            >>> # Get only specific fields (projection query)
             >>> request = LogQueryRequest(
-            ...     query={"type": "Filter", "predicate": {"type": "Equal", "left": {"type": "Get", "keys": ["level"]}, "right": "error"}}
+            ...     query={"type": "Map", "transform": {"type": "Pick", "keys": ["summary", "status"]}}
             ... )
             >>> results = controller.query_logs(request)
         """
+        breakpoint()
         try:
             # Deserialize dict to Query object if provided, with validation
             query = from_dict(request.query) if request.query else None
@@ -330,13 +323,14 @@ class FlowController:
                 run_uuids = [UUID(run_id) for run_id in request.runs]
 
             # Execute query through the repository layer
-            results = self.querier.list_logs(
+            # list_runs returns Run models (logs + summary) or dicts if projected
+            results = self.querier.list_runs(
                 runs=run_uuids,
                 query=query
             )
 
             # Convert iterator to list and return
-            return list(results)
+            return [RunDTO.model_validate(res) for res in results]
         except ValueError as e:
             raise HTTPException(
                 status_code=400,

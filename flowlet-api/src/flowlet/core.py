@@ -5,7 +5,7 @@ from typing import Callable, Mapping, TypedDict, Unpack
 
 from fastapi import APIRouter
 
-from .logging import JSONFormatter
+from .logging import JSONSpanFormatter
 
 from .interfaces.context import ContextManagerProtocol
 from .interfaces.executor import ExecutorProtocol
@@ -286,7 +286,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
     deps["executor"] = ExecutorInProcess(**deps)
 
     # Setup formatters
-    json_formatter = JSONFormatter()
+    json_formatter = JSONSpanFormatter()
     text_formatter = logging.Formatter("%(message)s")
 
     # Initialize log handlers (always include stream handler)

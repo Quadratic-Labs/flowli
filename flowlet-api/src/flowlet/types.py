@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import random
+from typing import TypeAlias
 from uuid import UUID
 
 from attrs import define, field
@@ -100,3 +101,7 @@ class PeriodUUID:
             (self.start is None or uid > self.start)
             and (self.end is None or uid < self.end)
         )
+
+
+JsonAtom: TypeAlias = None | bool | int | float | str
+JsonData: TypeAlias =  JsonAtom | dict[str, "JsonData"] | list["JsonData"]

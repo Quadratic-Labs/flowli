@@ -5,13 +5,14 @@ Provides JSON-formatted logging with automatic context injection (run_id, span_i
 and separate handlers for full logs and Flowlet-only logs.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from .interfaces.context import ContextManagerProtocol
+from .models import SpanLog
+from .serdes import to_json
 
 # Define custom SUCCESS logging level
 SUCCESS = 25
@@ -44,48 +45,51 @@ class ContextInjectingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """Add execution context to the log record."""
         current = self.context.get_current_span()
-        if current:
-            record = current.inject_as_str_into(record)
+        span_data = {
+            "flow_name": getattr(current, 'flow_name', None),
+            "run_id": getattr(current, 'run_id', None),
+            "span_type": getattr(current, 'span_type', None),
+            "span_name": getattr(current, 'span_name', None),
+            "span_id": getattr(current, 'span_id', None),
+            "parent_span_id": getattr(current, 'parent_span_id', None),
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc),
+            "message": record.getMessage(),
+            "level": record.levelname,
+            "extra": {},
+        }
+        setattr(record, "_span", SpanLog(**span_data))
+        # if current:
+        #     record = current.inject_as_str_into(record)
         return True
 
 
-class JSONFormatter(logging.Formatter):
+class JSONSpanFormatter(logging.Formatter):
     """
     Formats log records as JSON with execution context.
 
     Output format matches the example in examples/storage/hello-world/logs/*.jsonl
     """
-
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record as a JSON string."""
-        log_data = {
-            "flow_name": getattr(record, 'flow_name', None),
-            "run_id": getattr(record, 'run_id', None),
-            "span_type": getattr(record, 'span_type', None),
-            "span_name": getattr(record, 'span_name', None),
-            "span_id": getattr(record, 'span_id', None),
-            "parent_span_id": getattr(record, 'parent_span_id', None),
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message": record.getMessage(),
-            "level": record.levelname,
-            "extra": {}
-        }
+        span = getattr(record, "_span")
+        if span is None:
+            record.message = "JSONSpanFormatter error: no span to format"
+            return super().format(record)
 
         # Add exception info if present
         if record.exc_info:
-            log_data["extra"]["exception"] = self.formatException(record.exc_info)
+            span.extra["exception"] =  self.formatException(record.exc_info)
 
         # Add any custom extra fields
         for key, value in record.__dict__.items():
             if key not in ['name', 'msg', 'args', 'created', 'filename', 'funcName',
                           'levelname', 'levelno', 'lineno', 'module', 'msecs',
                           'message', 'pathname', 'process', 'processName', 'relativeCreated',
-                          'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info',
-                          'run_id', 'span_id', 'parent_span_id', 'span_type', 'span_name', 'flow_name']:
+                          'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info', ]:
                 if not key.startswith('_'):
-                    log_data["extra"][key] = value
+                    span.extra[key] = value
 
-        return json.dumps(log_data)
+        return to_json(span)
 
 
 class FlowletLogBuffer(logging.Handler):
@@ -98,24 +102,22 @@ class FlowletLogBuffer(logging.Handler):
 
     def __init__(self, level=logging.NOTSET):
         super().__init__(level)
-        self.buffer: list[dict[str, Any]] = []
-        self.run_buffers: dict[str, list[dict[str, Any]]] = {}
+        self.buffer: list[SpanLog] = []
+        self.run_buffers: dict[UUID, list[SpanLog]] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         """Buffer log records from the flowlet logger."""
-        # Only buffer logs from flowlet logger
-        if not record.name.startswith('flowlet'):
-            return
-
         try:
             # Parse the JSON formatted log
-            log_entry = json.loads(self.format(record))
+            log_entry = getattr(record, "_span")
+            if log_entry is None:
+                return
 
             # Store in global buffer
             self.buffer.append(log_entry)
 
             # Store in per-run buffer
-            run_id = log_entry.get('run_id')
+            run_id = log_entry.run_id
             if run_id:
                 if run_id not in self.run_buffers:
                     self.run_buffers[run_id] = []
@@ -123,11 +125,11 @@ class FlowletLogBuffer(logging.Handler):
         except Exception:
             self.handleError(record)
 
-    def get_run_logs(self, run_id: str) -> list[dict[str, Any]]:
+    def get_run_logs(self, run_id: UUID) -> list[SpanLog]:
         """Get all buffered logs for a specific run."""
         return self.run_buffers.get(run_id, []).copy()
 
-    def clear_run_logs(self, run_id: str) -> None:
+    def clear_run_logs(self, run_id: UUID) -> None:
         """Clear buffered logs for a specific run."""
         if run_id in self.run_buffers:
             del self.run_buffers[run_id]
