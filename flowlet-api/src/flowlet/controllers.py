@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from jsonry.serdes.from_dict import from_dict
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, computed_field
 
 from .interfaces.query import RunQueryProtocol
 from .interfaces.tracker import TrackerProtocol
@@ -130,11 +130,11 @@ class SpanLogDTO(Base):
         TODO
     """
     flow_name: str | None = None
-    run_id: str | None = None
+    run_id: UUID | None = None
     span_type: SpanType | None = None
     span_name: str | None = None
-    span_id: str | None = None
-    parent_span_id: str | None = None
+    span_id: UUID | None = None
+    parent_span_id: UUID | None = None
     ts: datetime | None = None
     message: str | None = None
     level: str | None = None
@@ -151,13 +151,18 @@ class RunSummaryDTO(Base):
         end_ts: span's ending time.
         children: span's children span's summaries.
     """
-    span_id: str
+    span_id: UUID
     span_name: str
     status: RunStatus
     start_ts: datetime
     end_ts: datetime
-    duration: HumanDuration | None = Field(default=None)
     children: list[RunSummaryDTO]
+
+    @computed_field
+    @property
+    def duration(self) -> str:
+        return humanize_timedelta(self.end_ts - self.start_ts)
+
 
 
 class RunDTO(RunSummaryDTO):
@@ -322,13 +327,15 @@ class FlowController:
 
             # Execute query through the repository layer
             # list_runs returns Run models (logs + summary) or dicts if projected
-            results = self.querier.list_runs(
+            query_results = self.querier.list_runs(
                 runs=run_uuids,
                 query=query
             )
-
-            # Convert iterator to list and return
-            return [RunDTO.model_validate(res) for res in results]
+            results = []
+            for res in query_results:
+                result = RunDTO.model_validate(res)
+                results.append(result)
+            return results
         except ValueError as e:
             raise HTTPException(
                 status_code=400,

@@ -7,7 +7,16 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { FlowletApi, FlowListItem } from '../../services/flowlet-api';
+import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+import { forkJoin } from 'rxjs';
+
+interface FlowWithStatus {
+  name: string;
+  status: string | null;
+  finished_ago: string | null;
+  duration: string | null;
+  doc: string | null;
+}
 
 @Component({
   selector: 'app-flows-list',
@@ -16,7 +25,7 @@ import { FlowletApi, FlowListItem } from '../../services/flowlet-api';
   styleUrl: './flows-list.css',
 })
 export class FlowsList implements OnInit {
-  flows: FlowListItem[] = [];
+  flows: FlowWithStatus[] = [];
   loading = true;
   error: string | null = null;
   displayedColumns: string[] = ['name', 'status', 'finished', 'duration', 'description', 'actions'];
@@ -30,9 +39,45 @@ export class FlowsList implements OnInit {
   loadFlows(): void {
     this.loading = true;
     this.error = null;
-    this.flowletApi.getFlows().subscribe({
-      next: (flows) => {
-        this.flows = flows;
+
+    // Fetch both available flows and latest run summaries
+    forkJoin({
+      flows: this.flowletApi.getFlows(),
+      runs: this.flowletApi.queryRuns({
+        query: {
+          type: 'pipe',
+          queries: [
+            {
+              type: 'sort',
+              key: { type: 'get', keys: ['span_id'] },
+              reverse: true
+            },
+            {
+              type: 'get',
+              keys: [{ _type: 'slice', start: 0, stop: 5, step: 1 }]
+            }
+          ]
+        }
+      })
+    }).subscribe({
+      next: ({ flows, runs }) => {
+        // Create a map of latest runs by flow name
+        const runsByFlow = new Map<string, RunSummaryDTO>();
+        runs.forEach(run => {
+          if (!runsByFlow.has(run.span_name)) {
+            runsByFlow.set(run.span_name, run);
+          }
+        });
+
+        // Merge flows with their latest run status
+        this.flows = flows.map(flow => ({
+          name: flow.name,
+          status: runsByFlow.get(flow.name)?.status || null,
+          finished_ago: this.calculateTimeAgo(runsByFlow.get(flow.name)?.end_ts),
+          duration: runsByFlow.get(flow.name)?.duration || null,
+          doc: flow.docstring || null
+        }));
+
         this.loading = false;
       },
       error: (err) => {
@@ -40,6 +85,23 @@ export class FlowsList implements OnInit {
         this.loading = false;
       }
     });
+  }
+
+  private calculateTimeAgo(timestamp: string | undefined): string | null {
+    if (!timestamp) return null;
+
+    const now = new Date();
+    const then = new Date(timestamp);
+    const diffMs = now.getTime() - then.getTime();
+    const diffSecs = Math.floor(diffMs / 1000);
+
+    if (diffSecs < 60) return `${diffSecs}s ago`;
+    const diffMins = Math.floor(diffSecs / 60);
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
   }
 
   runFlow(flowName: string): void {

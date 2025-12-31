@@ -6,7 +6,15 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
-import { FlowletApi, FlowRunInfo } from '../../services/flowlet-api';
+import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+
+interface RunDisplay {
+  name: string;
+  run_id: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+}
 
 @Component({
   selector: 'app-runs-list',
@@ -15,7 +23,7 @@ import { FlowletApi, FlowRunInfo } from '../../services/flowlet-api';
   styleUrl: './runs-list.css',
 })
 export class RunsList implements OnInit {
-  runs: FlowRunInfo[] = [];
+  runs: RunDisplay[] = [];
   loading = true;
   error: string | null = null;
   offset = 0;
@@ -32,8 +40,15 @@ export class RunsList implements OnInit {
     this.loading = true;
     this.error = null;
     this.flowletApi.getRuns(this.offset, this.limit).subscribe({
-      next: (runs) => {
-        this.runs = runs;
+      next: (runs: RunSummaryDTO[]) => {
+        // Map RunSummaryDTO to RunDisplay format for the template
+        this.runs = runs.map(run => ({
+          name: run.span_name,
+          run_id: run.span_id,
+          status: run.status,
+          started_at: run.start_ts,
+          ended_at: run.end_ts
+        }));
         this.loading = false;
       },
       error: (err) => {

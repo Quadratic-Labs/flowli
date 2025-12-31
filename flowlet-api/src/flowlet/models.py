@@ -4,11 +4,11 @@ This module defines attrs dataclasses for representing flow execution data
 in a type-safe, immutable way. These models are used throughout the repository
 layer for data transfer between components.
 """
-from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping, Self, TypedDict, NotRequired
+from datetime import datetime, timedelta
+from typing import Any, Mapping, TypedDict, NotRequired
 from uuid import UUID, uuid7
 
-from attrs import Factory, define, field, fields
+from attrs import Factory, define, field
 
 from .types import SpanType, RunStatus
 
@@ -163,7 +163,7 @@ class RunResult(RunSummaryResult):
         summary: Hierarchical summary computed from the logs.
         logs: All log entries for this run, in chronological order.
     """
-    logs: NotRequired[list[SpanLog]]
+    logs: NotRequired[list[dict[str, Any]]]
 
 
 @define(slots=True, kw_only=True)
