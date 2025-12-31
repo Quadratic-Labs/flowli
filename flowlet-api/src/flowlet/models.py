@@ -75,7 +75,7 @@ class RunContext:
         span_id: UUID | None = None,
     ) -> RunContext:
         """Spawn a valid child context from the current context.
-        
+
         Invariants that needs to be verified:
 
         1. child.flow_name == self.flow_name
@@ -136,7 +136,7 @@ class RunSummary:
         end_ts: span's ending time.
         children: span's children span's summaries.
     """
-    span_id: str
+    span_id: UUID
     span_name: str
     status: RunStatus
     start_ts: datetime

@@ -47,16 +47,16 @@ class Tracker(TrackerProtocol):
 
     @classmethod
     def summarise(cls, spans: list[SpanLog]) -> RunSummary:
-        span_logs: dict[str, list[SpanLog]] = {}
+        span_logs: dict[UUID, list[SpanLog]] = {}
         for span in spans:
             span_id = span.span_id
             if span_id:
                 if span_id not in span_logs:
-                    span_logs[str(span_id)] = []
-                span_logs[str(span_id)].append(span)
+                    span_logs[span_id] = []
+                span_logs[span_id].append(span)
 
         # Build span objects as RunSummary models
-        info: dict[str, RunSummary] = {}
+        info: dict[UUID, RunSummary] = {}
         flow_name = None
         for span_id, span_log_list in span_logs.items():
             span_log_list = sorted(span_log_list, key=lambda l: l.ts)
@@ -92,21 +92,13 @@ class Tracker(TrackerProtocol):
                     break
 
             if parent_span_id and parent_span_id in info:
-                info[str(parent_span_id)].children.append(span)
+                info[parent_span_id].children.append(span)
             else:  # This is the root span
                 root_span = span
 
         # Return root span or create an empty placeholder
         if root_span is None:
-            # Create a placeholder for empty logs
-            root_span = RunSummary(
-                span_id="",
-                span_name="",
-                status=RunStatus.running,
-                start_ts=datetime.now(UTC),
-                end_ts=datetime.now(UTC),
-                children=[]
-            )
+            raise ValueError("No root span")
 
         return root_span
 
