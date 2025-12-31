@@ -14,7 +14,8 @@ import jsonry.execution.in_memory
 from ...interfaces.registry import RegistryProtocol
 from ...interfaces.query import RunQueryProtocol
 from ...interfaces.tracker import TrackerProtocol
-from ...models import RunResult, RunSummaryResult
+from ...models import RunResult, RunSummaryResult, SpanLog
+from ...serdes import from_json, to_dict
 from ...types import Period
 
 
@@ -120,15 +121,16 @@ class FileQuery(RunQueryProtocol):
         for name in names:
             if not name.is_file():
                 raise ValueError(f"Run {self._extract_from_path(name)} does not exist")
-            run = self._load(name)
+            run = [from_json(SpanLog, l) for l in name.read_text().splitlines()]
             summary = self.tracker.summarise(run)
-            
 
             # Apply query to logs if provided
             if query is not None:
                 run = jsonry.execution.in_memory.apply(query, run)
 
-            yield from run
+            result = to_dict(summary)
+            result["logs"] = run
+            yield result
 
     @classmethod
     def _extract_from_path(cls, path: AzureBlobPath | Path):

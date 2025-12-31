@@ -7,7 +7,26 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatTableModule } from '@angular/material/table';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
-import { FlowletApi, RunDetailInfo } from '../../services/flowlet-api';
+import { FlowletApi, RunDTO, SpanLogDTO } from '../../services/flowlet-api';
+
+// Interface matching the template's expectations (legacy structure)
+interface RunDetailDisplay {
+  run: {
+    name: string;
+    run_id: string;
+    run_type: string;
+  };
+  logs: {
+    timestamp: string;
+    status: string;
+    log: string;
+  }[];
+  parent: {
+    name: string;
+    run_id: string;
+  } | null;
+  children: RunDetailDisplay[];
+}
 
 @Component({
   selector: 'app-run-detail',
@@ -17,7 +36,7 @@ import { FlowletApi, RunDetailInfo } from '../../services/flowlet-api';
 })
 export class RunDetail implements OnInit {
   runId: string = '';
-  run: RunDetailInfo | null = null;
+  run: RunDetailDisplay | null = null;
   loading = true;
   error: string | null = null;
   logsDisplayedColumns: string[] = ['timestamp', 'status', 'log'];
@@ -39,8 +58,8 @@ export class RunDetail implements OnInit {
     this.loading = true;
     this.error = null;
     this.flowletApi.getRun(this.runId).subscribe({
-      next: (run) => {
-        this.run = run;
+      next: (runDTO: RunDTO) => {
+        this.run = this.transformRunDTO(runDTO);
         this.loading = false;
       },
       error: (err) => {
@@ -48,6 +67,24 @@ export class RunDetail implements OnInit {
         this.loading = false;
       }
     });
+  }
+
+  private transformRunDTO(dto: RunDTO | any): RunDetailDisplay {
+    // Transform RunDTO to match the template's expected structure
+    return {
+      run: {
+        name: dto.span_name,
+        run_id: dto.span_id,
+        run_type: 'flow' // TODO: Get this from span_type if available
+      },
+      logs: (dto.logs || []).map((log: any) => ({
+        timestamp: log.ts || '',
+        status: log.level || '',
+        log: log.message || ''
+      })),
+      parent: null, // Parent info not available in current RunDTO structure
+      children: (dto.children || []).map((child: any) => this.transformRunDTO(child))
+    };
   }
 
   getStatusColor(status: string): 'primary' | 'accent' | 'warn' | undefined {

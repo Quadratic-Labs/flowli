@@ -1,14 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime
 import functools
 import json
 from typing import Any, Callable
 from uuid import UUID
 
+from attrs import asdict
+
 from .models import RunContext, SpanLog, RunSummary
-from .types import RunStatus, SpanType, JsonData
+from .types import SpanType, JsonData
 
 
-class ValueDispatch[T]:
+class ValueDispatch:
     def __init__(self, default: Callable):
         self._default = default
         self._registry: dict[object, Callable] = {}
@@ -28,6 +30,11 @@ class ValueDispatch[T]:
 
 
 valuedispatch = ValueDispatch
+
+
+@functools.singledispatch
+def to_dict(data: Any) -> Any:
+    return asdict(data)
 
 
 @functools.singledispatch
@@ -85,7 +92,7 @@ def to_json(data: Any) -> str:
 
 
 @valuedispatch
-def from_json_data(_, data: JsonData) -> Any:
+def from_json_data(data: JsonData) -> Any:
     return data
 
 
@@ -101,7 +108,7 @@ def _(data: dict[str, Any]) -> RunContext:
     )
 
 
-@from_json_data.register(type(SpanLog))
+@from_json_data.register(SpanLog)
 def _(data: dict[str, Any]) -> SpanLog:
     return SpanLog(
         flow_name = data["flow_name"],
@@ -117,6 +124,14 @@ def _(data: dict[str, Any]) -> SpanLog:
     )
 
 
-@functools.singledispatch
+@valuedispatch
 def from_json(data: str) -> Any:
-    return from_json_data(object, json.loads(data))
+    json_data = json.loads(data)
+    return from_json_data(object, json_data)
+
+
+@from_json.register(SpanLog)
+def _(data: str) -> Any:
+    json_data = json.loads(data)
+    return from_json_data(SpanLog, json_data)
+
