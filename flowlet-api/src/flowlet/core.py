@@ -314,7 +314,7 @@ def configure(configs: FlowletConfig | Mapping | None=None) -> Flowlet:
             fs_log_handler = FilesystemHandler(
                 path=logs_path,
                 level=logging.INFO,
-                router=lambda r: f"{getattr(r, 'run_id')}.jsonl",
+                router=lambda r: f"{getattr(getattr(r, '_span'), 'run_id')}.jsonl",
             )
             fs_log_handler.setFormatter(json_formatter)
             log_handlers.append(fs_log_handler)

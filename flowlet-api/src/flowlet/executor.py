@@ -1,6 +1,5 @@
 import functools
-from typing import Callable, Literal
-from uuid import uuid7
+from typing import Callable
 
 from .interfaces.executor import ExecutorProtocol
 from .interfaces.tracker import TrackerProtocol
@@ -40,6 +39,6 @@ class ExecutorInProcess(ExecutorProtocol):
                 else:
                     self.tracker.logger.success("Success")
             if not self.tracker.context_manager.is_active() and run_id:
-                self.tracker.flush_run(str(run_id))
+                self.tracker.flush_run(run_id)
             return result
         return wrapper

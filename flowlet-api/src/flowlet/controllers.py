@@ -14,7 +14,6 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 
 from .interfaces.query import RunQueryProtocol
 from .interfaces.tracker import TrackerProtocol
-from .models import RunSummary, SpanLog
 from .types import RunStatus, SpanType
 
 
@@ -312,7 +311,6 @@ class FlowController:
             ... )
             >>> results = controller.query_logs(request)
         """
-        breakpoint()
         try:
             # Deserialize dict to Query object if provided, with validation
             query = from_dict(request.query) if request.query else None

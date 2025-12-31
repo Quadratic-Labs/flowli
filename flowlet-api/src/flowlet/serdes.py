@@ -66,6 +66,18 @@ def _(data: SpanLog) -> JsonData:
         "extra": to_json_data(data.extra),
     }
 
+@to_json_data.register(RunSummary)
+def _(data: RunSummary) -> JsonData:
+    return {
+        "span_id": str(data.span_id),
+        "span_name": data.span_name,
+        "status": str(data.status),
+        "start_ts": data.start_ts.isoformat().replace('+00:00', 'Z'),
+        "end_ts": data.end_ts.isoformat().replace('+00:00', 'Z'),
+        "children": [to_json_data(c) for c in data.children]
+
+    }
+
 
 @functools.singledispatch
 def to_json(data: Any) -> str:
