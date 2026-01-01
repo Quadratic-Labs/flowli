@@ -158,4 +158,142 @@ export class FlowletApi {
       })
     );
   }
+
+  // Get dashboard metrics for the last 24 hours
+  async getDashboardMetrics(): Promise<DashboardMetrics> {
+    // Calculate timestamp for 24 hours ago
+    const now = new Date();
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    // Fetch all runs from last 24 hours
+    const allRuns = await this.queryRuns({}).toPromise() || [];
+
+    // Filter runs from last 24 hours
+    const last24hRuns = allRuns.filter(run => {
+      const runStart = new Date(run.start_ts);
+      return runStart >= twentyFourHoursAgo;
+    });
+
+    // Calculate metrics
+    const totalFlows = last24hRuns.length;
+    const successfulFlows = last24hRuns.filter(r => r.status.toLowerCase() === 'success').length;
+    const failedFlows = last24hRuns.filter(r =>
+      r.status.toLowerCase() === 'failed' ||
+      r.status.toLowerCase() === 'error' ||
+      r.status.toLowerCase() === 'critical'
+    ).length;
+    const runningFlows = last24hRuns.filter(r => r.status.toLowerCase() === 'running').length;
+
+    const successRate = totalFlows > 0 ? (successfulFlows / totalFlows) * 100 : 0;
+    const failureRate = totalFlows > 0 ? (failedFlows / totalFlows) * 100 : 0;
+
+    // Get failed runs
+    const failedRuns = last24hRuns.filter(r =>
+      r.status.toLowerCase() === 'failed' ||
+      r.status.toLowerCase() === 'error' ||
+      r.status.toLowerCase() === 'critical'
+    );
+
+    // Get long-running flows (> 2 hours)
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+    const longRunningFlows = last24hRuns.filter(r => {
+      if (!r.duration) return false;
+      const durationMs = this.parseDurationToMs(r.duration);
+      return durationMs > twoHoursInMs;
+    });
+
+    // Calculate total compute time
+    let totalComputeMs = 0;
+    last24hRuns.forEach(run => {
+      if (run.duration) {
+        totalComputeMs += this.parseDurationToMs(run.duration);
+      }
+    });
+    const totalComputeTime = this.humanizeDuration(totalComputeMs);
+
+    // Calculate average execution time
+    const averageMs = totalFlows > 0 ? totalComputeMs / totalFlows : 0;
+    const averageExecutionTime = this.humanizeDuration(averageMs);
+
+    // Determine health status
+    let healthStatus: 'green' | 'orange' | 'red';
+    if (failedFlows > 0) {
+      healthStatus = 'red';
+    } else if (longRunningFlows.length > 0 || runningFlows > 0) {
+      healthStatus = 'orange';
+    } else {
+      healthStatus = 'green';
+    }
+
+    return {
+      healthStatus,
+      totalFlows,
+      successfulFlows,
+      failedFlows,
+      runningFlows,
+      successRate,
+      failureRate,
+      failedRuns,
+      longRunningFlows,
+      totalComputeTime,
+      averageExecutionTime,
+      lastUpdated: new Date()
+    };
+  }
+
+  // Helper: Parse duration string to milliseconds
+  private parseDurationToMs(duration: string): number {
+    // Duration format examples: "1.23s", "2m 34s", "1h 23m", "2d 5h"
+    let totalMs = 0;
+
+    // Match patterns like "2d", "5h", "23m", "1.23s"
+    const dayMatch = duration.match(/(\d+(?:\.\d+)?)\s*d/);
+    const hourMatch = duration.match(/(\d+(?:\.\d+)?)\s*h/);
+    const minMatch = duration.match(/(\d+(?:\.\d+)?)\s*m/);
+    const secMatch = duration.match(/(\d+(?:\.\d+)?)\s*s/);
+
+    if (dayMatch) totalMs += parseFloat(dayMatch[1]) * 24 * 60 * 60 * 1000;
+    if (hourMatch) totalMs += parseFloat(hourMatch[1]) * 60 * 60 * 1000;
+    if (minMatch) totalMs += parseFloat(minMatch[1]) * 60 * 1000;
+    if (secMatch) totalMs += parseFloat(secMatch[1]) * 1000;
+
+    return totalMs;
+  }
+
+  // Helper: Convert milliseconds to human-readable duration
+  private humanizeDuration(ms: number): string {
+    if (ms === 0) return '0s';
+
+    const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+    ms %= 24 * 60 * 60 * 1000;
+    const hours = Math.floor(ms / (60 * 60 * 1000));
+    ms %= 60 * 60 * 1000;
+    const minutes = Math.floor(ms / (60 * 1000));
+    ms %= 60 * 1000;
+    const seconds = Math.floor(ms / 1000);
+
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+
+    return parts.join(' ');
+  }
+}
+
+// Dashboard metrics interface
+export interface DashboardMetrics {
+  healthStatus: 'green' | 'orange' | 'red';
+  totalFlows: number;
+  successfulFlows: number;
+  failedFlows: number;
+  runningFlows: number;
+  successRate: number;
+  failureRate: number;
+  failedRuns: RunSummaryDTO[];
+  longRunningFlows: RunSummaryDTO[];
+  totalComputeTime: string;
+  averageExecutionTime: string;
+  lastUpdated: Date;
 }

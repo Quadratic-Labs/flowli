@@ -1,0 +1,82 @@
+<div style="padding: 24px;">
+  <div style="display: flex; align-items: center; margin-bottom: 24px;">
+    <button mat-icon-button (click)="goBack()" style="margin-right: 16px;">
+      <mat-icon>arrow_back</mat-icon>
+    </button>
+    <h1 style="margin: 0;">Run Flow: {{ flowName }}</h1>
+  </div>
+
+  <div *ngIf="loading" style="display: flex; justify-content: center; padding: 40px;">
+    <mat-spinner></mat-spinner>
+  </div>
+
+  <div *ngIf="error" style="color: #f44336; padding: 16px; background-color: #ffebee; border-radius: 4px; margin-bottom: 16px;">
+    {{ error }}
+  </div>
+
+  <div *ngIf="!loading && !error && flowSchema">
+    <mat-card style="margin-bottom: 24px;">
+      <mat-card-content>
+        <h2>{{ flowSchema.name }}</h2>
+        <p *ngIf="flowSchema.docstring" style="color: #666; margin-bottom: 16px;">
+          {{ flowSchema.docstring }}
+        </p>
+
+        <form [formGroup]="argumentsForm" (ngSubmit)="onSubmit()">
+          <div *ngIf="!flowSchema.parameters || flowSchema.parameters.length === 0"
+               style="padding: 16px; background-color: #e3f2fd; color: #1976d2; border-radius: 4px; margin-bottom: 16px;">
+            This flow has no parameters. Click "Run Flow" to execute it.
+          </div>
+
+          <div *ngFor="let param of flowSchema.parameters" style="margin-bottom: 16px;">
+            <!-- Boolean parameters (checkbox) -->
+            <mat-checkbox
+              *ngIf="isBooleanType(param.type)"
+              [formControlName]="param.name"
+              style="display: block; margin-bottom: 8px;">
+              {{ param.name }}
+              <span *ngIf="param.required" style="color: #f44336;">*</span>
+              <span style="color: #666; font-size: 0.9em; margin-left: 8px;">({{ param.type }})</span>
+            </mat-checkbox>
+
+            <!-- Other parameters (input fields) -->
+            <mat-form-field *ngIf="!isBooleanType(param.type)" appearance="outline" style="width: 100%;">
+              <mat-label>
+                {{ param.name }}
+                <span *ngIf="param.required" style="color: #f44336;">*</span>
+              </mat-label>
+              <input
+                matInput
+                [formControlName]="param.name"
+                [type]="getInputType(param.type)"
+                [placeholder]="'Enter ' + param.name">
+              <mat-hint>Type: {{ param.type }}</mat-hint>
+              <mat-error *ngIf="argumentsForm.get(param.name)?.hasError('required')">
+                {{ param.name }} is required
+              </mat-error>
+            </mat-form-field>
+          </div>
+
+          <div style="display: flex; gap: 12px; margin-top: 24px;">
+            <button
+              mat-raised-button
+              color="primary"
+              type="submit"
+              [disabled]="submitting || argumentsForm.invalid">
+              <mat-icon *ngIf="!submitting">play_arrow</mat-icon>
+              <mat-spinner *ngIf="submitting" diameter="20" style="display: inline-block; margin-right: 8px;"></mat-spinner>
+              {{ submitting ? 'Running...' : 'Run Flow' }}
+            </button>
+            <button
+              mat-button
+              type="button"
+              (click)="goBack()"
+              [disabled]="submitting">
+              Cancel
+            </button>
+          </div>
+        </form>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

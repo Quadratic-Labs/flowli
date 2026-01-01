@@ -8,6 +8,7 @@ import { MatTableModule } from '@angular/material/table';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
 import { FlowletApi, RunDTO, SpanLogDTO } from '../../services/flowlet-api';
+import { RunFlamegraph } from '../run-flamegraph/run-flamegraph';
 
 // Interface matching the template's expectations (legacy structure)
 interface RunDetailDisplay {
@@ -30,13 +31,14 @@ interface RunDetailDisplay {
 
 @Component({
   selector: 'app-run-detail',
-  imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatProgressSpinnerModule, MatTableModule, MatChipsModule, MatIconModule],
+  imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatProgressSpinnerModule, MatTableModule, MatChipsModule, MatIconModule, RunFlamegraph],
   templateUrl: './run-detail.html',
   styleUrl: './run-detail.css',
 })
 export class RunDetail implements OnInit {
   runId: string = '';
   run: RunDetailDisplay | null = null;
+  runDTO: RunDTO | null = null;
   loading = true;
   error: string | null = null;
   logsDisplayedColumns: string[] = ['timestamp', 'status', 'log'];
@@ -59,6 +61,7 @@ export class RunDetail implements OnInit {
     this.error = null;
     this.flowletApi.getRun(this.runId).subscribe({
       next: (runDTO: RunDTO) => {
+        this.runDTO = runDTO;
         this.run = this.transformRunDTO(runDTO);
         this.loading = false;
       },
