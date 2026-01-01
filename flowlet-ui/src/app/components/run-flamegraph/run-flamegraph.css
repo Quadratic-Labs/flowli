@@ -1,0 +1,14 @@
+.flamegraph-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 16px;
+}
+
+.flamegraph-container {
+  min-height: 400px;
+  width: 100%;
+}
+
+:host ::ng-deep .flamegraph-tooltip {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}

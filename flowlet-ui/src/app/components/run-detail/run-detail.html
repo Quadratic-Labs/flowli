@@ -32,6 +32,15 @@
       </mat-card-content>
     </mat-card>
 
+    <mat-card style="margin-bottom: 24px;" *ngIf="runDTO">
+      <mat-card-header>
+        <mat-card-title>Execution Flamegraph</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <app-run-flamegraph [runData]="runDTO"></app-run-flamegraph>
+      </mat-card-content>
+    </mat-card>
+
     <mat-card style="margin-bottom: 24px;">
       <mat-card-header>
         <mat-card-title>Logs</mat-card-title>
