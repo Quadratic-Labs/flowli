@@ -7,6 +7,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatTableModule } from '@angular/material/table';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
+import { MatExpansionModule } from '@angular/material/expansion';
 import { FlowletApi, RunDTO, SpanLogDTO } from '../../services/flowlet-api';
 import { BreadcrumbService } from '../../services/breadcrumb.service';
 import { RunFlamegraph } from '../run-flamegraph/run-flamegraph';
@@ -33,7 +34,7 @@ interface RunDetailDisplay {
 
 @Component({
   selector: 'app-run-detail',
-  imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatProgressSpinnerModule, MatTableModule, MatChipsModule, MatIconModule, RunFlamegraph],
+  imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatProgressSpinnerModule, MatTableModule, MatChipsModule, MatIconModule, MatExpansionModule, RunFlamegraph],
   templateUrl: './run-detail.html',
   styleUrl: './run-detail.css',
 })
@@ -44,7 +45,7 @@ export class RunDetail implements OnInit {
   loading = true;
   error: string | null = null;
   logsDisplayedColumns: string[] = ['timestamp', 'status', 'log'];
-  childrenDisplayedColumns: string[] = ['name', 'runId', 'type', 'actions'];
+  childrenDisplayedColumns: string[] = ['name', 'runId', 'type'];
 
   constructor(
     private route: ActivatedRoute,

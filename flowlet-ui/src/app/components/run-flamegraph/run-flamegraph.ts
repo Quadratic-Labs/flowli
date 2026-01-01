@@ -118,7 +118,6 @@ export class RunFlamegraph implements OnInit, OnChanges {
       .attr('fill', (d: FlamegraphNode) => this.getStatusColor(d.status))
       .attr('stroke', '#fff')
       .attr('stroke-width', 1)
-      .style('cursor', 'pointer')
       .on('mouseover', (event: any, d: FlamegraphNode) => {
         d3.select(event.currentTarget).attr('opacity', 0.7);
         tooltip
