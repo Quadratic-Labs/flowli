@@ -11,6 +11,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatIconModule } from '@angular/material/icon';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { FlowletApi, FlowSchema } from '../../services/flowlet-api';
+import { BreadcrumbService } from '../../services/breadcrumb.service';
 
 @Component({
   selector: 'app-flow-run',
@@ -43,7 +44,8 @@ export class FlowRun implements OnInit {
     private router: Router,
     private flowletApi: FlowletApi,
     private formBuilder: FormBuilder,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private breadcrumbService: BreadcrumbService
   ) {
     this.argumentsForm = this.formBuilder.group({});
   }
@@ -55,6 +57,12 @@ export class FlowRun implements OnInit {
       this.loading = false;
       return;
     }
+
+    this.breadcrumbService.setBreadcrumbs([
+      { label: 'Home', url: '/' },
+      { label: 'Flows', url: '/flows' },
+      { label: `Run Flow: ${this.flowName}`, url: `/flows/${this.flowName}/run` }
+    ]);
 
     this.loadFlowSchema();
   }
@@ -171,9 +179,5 @@ export class FlowRun implements OnInit {
     });
 
     return kwargs;
-  }
-
-  goBack(): void {
-    this.router.navigate(['/']);
   }
 }
