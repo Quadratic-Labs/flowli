@@ -4,15 +4,14 @@ import { RouterModule } from '@angular/router';
 import { MatTableModule } from '@angular/material/table';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
-import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
 import { forkJoin } from 'rxjs';
 
 interface FlowWithStatus {
   name: string;
   status: string | null;
+  recent_statuses: string[];
   finished_ago: string | null;
   duration: string | null;
   doc: string | null;
@@ -20,7 +19,7 @@ interface FlowWithStatus {
 
 @Component({
   selector: 'app-flows-list',
-  imports: [CommonModule, RouterModule, MatTableModule, MatButtonModule, MatProgressSpinnerModule, MatChipsModule, MatIconModule, MatSnackBarModule],
+  imports: [CommonModule, RouterModule, MatTableModule, MatButtonModule, MatProgressSpinnerModule, MatIconModule],
   templateUrl: './flows-list.html',
   styleUrl: './flows-list.css',
 })
@@ -30,7 +29,7 @@ export class FlowsList implements OnInit {
   error: string | null = null;
   displayedColumns: string[] = ['name', 'status', 'finished', 'duration', 'description', 'actions'];
 
-  constructor(private flowletApi: FlowletApi, private snackBar: MatSnackBar) {}
+  constructor(private flowletApi: FlowletApi) {}
 
   ngOnInit(): void {
     this.loadFlows();
@@ -40,7 +39,7 @@ export class FlowsList implements OnInit {
     this.loading = true;
     this.error = null;
 
-    // Fetch both available flows and latest run summaries
+    // Fetch both available flows and recent run summaries (more runs to get history per flow)
     forkJoin({
       flows: this.flowletApi.getFlows(),
       runs: this.flowletApi.queryRuns({
@@ -54,29 +53,39 @@ export class FlowsList implements OnInit {
             },
             {
               type: 'get',
-              keys: [{ _type: 'slice', start: 0, stop: 5, step: 1 }]
+              keys: [{ _type: 'slice', start: 0, stop: 100, step: 1 }]
             }
           ]
         }
       })
     }).subscribe({
       next: ({ flows, runs }) => {
-        // Create a map of latest runs by flow name
-        const runsByFlow = new Map<string, RunSummaryDTO>();
+        // Group runs by flow name and keep the last 5 for each flow
+        const runsByFlow = new Map<string, RunSummaryDTO[]>();
         runs.forEach(run => {
           if (!runsByFlow.has(run.span_name)) {
-            runsByFlow.set(run.span_name, run);
+            runsByFlow.set(run.span_name, []);
+          }
+          const flowRuns = runsByFlow.get(run.span_name)!;
+          if (flowRuns.length < 5) {
+            flowRuns.push(run);
           }
         });
 
-        // Merge flows with their latest run status
-        this.flows = flows.map(flow => ({
-          name: flow.name,
-          status: runsByFlow.get(flow.name)?.status || null,
-          finished_ago: this.calculateTimeAgo(runsByFlow.get(flow.name)?.end_ts),
-          duration: runsByFlow.get(flow.name)?.duration || null,
-          doc: flow.docstring || null
-        }));
+        // Merge flows with their run history
+        this.flows = flows.map(flow => {
+          const flowRuns = runsByFlow.get(flow.name) || [];
+          const latestRun = flowRuns[0];
+
+          return {
+            name: flow.name,
+            status: latestRun?.status || null,
+            recent_statuses: flowRuns.map(run => run.status),
+            finished_ago: this.calculateTimeAgo(latestRun?.end_ts),
+            duration: latestRun?.duration || null,
+            doc: flow.docstring || null
+          };
+        });
 
         this.loading = false;
       },
@@ -104,24 +113,26 @@ export class FlowsList implements OnInit {
     return `${diffDays}d ago`;
   }
 
-  runFlow(flowName: string): void {
-    this.flowletApi.runFlow(flowName).subscribe({
-      next: () => {
-        this.snackBar.open(`Flow "${flowName}" started successfully`, 'Close', { duration: 3000 });
-        this.loadFlows();
-      },
-      error: (err) => {
-        this.snackBar.open('Failed to start flow: ' + err.message, 'Close', { duration: 5000 });
-      }
-    });
-  }
 
-  getStatusColor(status: string): 'primary' | 'accent' | 'warn' | undefined {
-    switch(status) {
-      case 'completed': return 'primary';
-      case 'failed': return 'warn';
-      case 'running': return 'accent';
-      default: return undefined;
+  getStatusColor(status: string): string {
+    const lowerStatus = status?.toLowerCase() || '';
+
+    // Green for success/completed
+    if (lowerStatus.includes('completed') || lowerStatus.includes('success')) {
+      return '#4caf50'; // Green
     }
+
+    // Red for failed/error/critical
+    if (lowerStatus.includes('failed') || lowerStatus.includes('error') || lowerStatus.includes('critical')) {
+      return '#f44336'; // Red
+    }
+
+    // Yellow/Orange for running/warning/pending
+    if (lowerStatus.includes('running') || lowerStatus.includes('warning') || lowerStatus.includes('pending')) {
+      return '#ff9800'; // Orange
+    }
+
+    // Gray for unknown/N/A
+    return '#9e9e9e'; // Gray
   }
 }

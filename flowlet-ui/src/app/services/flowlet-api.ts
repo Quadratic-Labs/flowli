@@ -54,6 +54,7 @@ export interface FlowSchema {
     name: string;
     type: string;
     required: boolean;
+    default?: any;
   }>;
 }
 

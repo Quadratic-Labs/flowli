@@ -1,0 +1,19 @@
+/* Status History Circles */
+.status-history {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-circle {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  cursor: help;
+  transition: transform 0.2s ease;
+}
+
+.status-circle:hover {
+  transform: scale(1.3);
+}
