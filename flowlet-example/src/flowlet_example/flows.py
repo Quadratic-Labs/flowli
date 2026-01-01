@@ -199,21 +199,21 @@ def error_handling_demo_flow(fail_chance: float = 0.5):
     """
     Demonstrates error handling by running a risky operation
     """
-    try:
-        result = risky_operation(fail_probability=fail_chance)
-        send_notification(
-            message="Risky operation succeeded!",
-            recipient="success@example.com"
-        )
-        return {"status": "success", "result": result}
-    except Exception as e:
-        # Even though we catch the exception, the task will be marked as failed
-        # This demonstrates that you can handle errors in your flow logic
-        send_notification(
-            message=f"Risky operation failed: {str(e)}",
-            recipient="alerts@example.com"
-        )
-        return {"status": "handled_error", "error": str(e)}
+    # try:
+    result = risky_operation(fail_probability=fail_chance)
+    send_notification(
+        message="Risky operation succeeded!",
+        recipient="success@example.com"
+    )
+    return {"status": "success", "result": result}
+    # except Exception as e:
+    #     # Even though we catch the exception, the task will be marked as failed
+    #     # This demonstrates that you can handle errors in your flow logic
+    #     send_notification(
+    #         message=f"Risky operation failed: {str(e)}",
+    #         recipient="alerts@example.com"
+    #     )
+    #     return {"status": "handled_error", "error": str(e)}
 
 # ============================================================================
 # endregion

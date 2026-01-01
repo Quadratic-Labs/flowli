@@ -25,6 +25,7 @@ class ExecutorInProcess(ExecutorProtocol):
             run_id = None
             # if not self.tracker.context_manager.is_active():
                 # self.tracker.logger.info(f"Begin Run {run_id}")
+            result = None
             with self.tracker.context_manager.begin_span(name, typ):
                 if run_id is None:
                     root = self.tracker.context_manager.get_root_span()
@@ -34,8 +35,9 @@ class ExecutorInProcess(ExecutorProtocol):
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as err:
-                    self.tracker.logger.exception("Error", err)
-                    raise err
+                    self.tracker.logger.exception(f"Error: {err}")
+                    if not self.tracker.context_manager.is_root():
+                        raise err
                 else:
                     self.tracker.logger.success("Success")
             if not self.tracker.context_manager.is_active() and run_id:

@@ -57,6 +57,11 @@ class ContextManagerProtocol(Protocol):
         return bool(cls.get_all_spans())
 
     @classmethod
+    def is_root(cls) -> bool:
+        """Is current context the root?"""
+        return len(cls.get_all_spans()) == 1
+
+    @classmethod
     def begin_span(
         cls,
         span_name: str,
