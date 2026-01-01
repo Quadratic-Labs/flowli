@@ -7,6 +7,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
 import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+import { BreadcrumbService } from '../../services/breadcrumb.service';
 
 interface RunDisplay {
   name: string;
@@ -30,9 +31,16 @@ export class RunsList implements OnInit {
   limit = 50;
   displayedColumns: string[] = ['name', 'status', 'started', 'finished', 'actions'];
 
-  constructor(private flowletApi: FlowletApi) {}
+  constructor(
+    private flowletApi: FlowletApi,
+    private breadcrumbService: BreadcrumbService
+  ) {}
 
   ngOnInit(): void {
+    this.breadcrumbService.setBreadcrumbs([
+      { label: 'Home', url: '/' },
+      { label: 'Runs', url: '/runs' }
+    ]);
     this.loadRuns();
   }
 

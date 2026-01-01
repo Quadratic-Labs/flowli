@@ -17,3 +17,9 @@
 .status-circle:hover {
   transform: scale(1.3);
 }
+
+.status-placeholder {
+  background-color: #e0e0e0 !important;
+  border: 1px solid #bdbdbd;
+  opacity: 0.5;
+}

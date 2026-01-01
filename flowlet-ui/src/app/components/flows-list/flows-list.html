@@ -24,15 +24,15 @@
       <ng-container matColumnDef="status">
         <th mat-header-cell *matHeaderCellDef>Recent Status</th>
         <td mat-cell *matCellDef="let flow">
-          <div class="status-history" *ngIf="flow.recent_statuses.length > 0">
+          <div class="status-history">
             <span
-              *ngFor="let status of flow.recent_statuses"
+              *ngFor="let i of [0,1,2,3,4]"
               class="status-circle"
-              [style.background-color]="getStatusColor(status)"
-              [title]="status">
+              [class.status-placeholder]="!getStatusAtIndex(flow.recent_statuses, i)"
+              [style.background-color]="getStatusAtIndex(flow.recent_statuses, i) ? getStatusColor(getStatusAtIndex(flow.recent_statuses, i)!) : ''"
+              [title]="getStatusAtIndex(flow.recent_statuses, i) || 'No run'">
             </span>
           </div>
-          <span *ngIf="flow.recent_statuses.length === 0" style="color: #999;">N/A</span>
         </td>
       </ng-container>
 

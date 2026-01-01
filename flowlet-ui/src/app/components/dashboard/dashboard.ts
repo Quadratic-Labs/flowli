@@ -8,6 +8,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { Router } from '@angular/router';
 import { FlowletApi, DashboardMetrics } from '../../services/flowlet-api';
+import { BreadcrumbService } from '../../services/breadcrumb.service';
 
 @Component({
   selector: 'app-dashboard',
@@ -32,10 +33,14 @@ export class Dashboard implements OnInit {
 
   constructor(
     private api: FlowletApi,
-    private router: Router
+    private router: Router,
+    private breadcrumbService: BreadcrumbService
   ) {}
 
   ngOnInit() {
+    this.breadcrumbService.setBreadcrumbs([
+      { label: 'Home', url: '/' }
+    ]);
     this.loadDashboard();
   }
 
@@ -92,7 +97,7 @@ export class Dashboard implements OnInit {
     switch (this.metrics.healthStatus) {
       case 'green': return 'Healthy';
       case 'orange': return 'Warning';
-      case 'red': return 'Critical';
+      case 'red': return 'Degraded';
       default: return 'Unknown';
     }
   }

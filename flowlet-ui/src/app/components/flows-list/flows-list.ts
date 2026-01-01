@@ -6,6 +6,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
 import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+import { BreadcrumbService } from '../../services/breadcrumb.service';
 import { forkJoin } from 'rxjs';
 
 interface FlowWithStatus {
@@ -29,9 +30,16 @@ export class FlowsList implements OnInit {
   error: string | null = null;
   displayedColumns: string[] = ['name', 'status', 'finished', 'duration', 'description', 'actions'];
 
-  constructor(private flowletApi: FlowletApi) {}
+  constructor(
+    private flowletApi: FlowletApi,
+    private breadcrumbService: BreadcrumbService
+  ) {}
 
   ngOnInit(): void {
+    this.breadcrumbService.setBreadcrumbs([
+      { label: 'Home', url: '/' },
+      { label: 'Flows', url: '/flows' }
+    ]);
     this.loadFlows();
   }
 
@@ -113,6 +121,21 @@ export class FlowsList implements OnInit {
     return `${diffDays}d ago`;
   }
 
+
+  getStatusAtIndex(statuses: string[], index: number): string | null {
+    // Right-align the statuses: placeholders on the left, actual runs on the right
+    // If we have 2 runs, they should be at index 3 and 4, with placeholders at 0, 1, 2
+    const totalSlots = 5;
+    const offset = totalSlots - statuses.length;
+
+    if (index < offset) {
+      return null; // Placeholder
+    }
+
+    // Reverse the array so oldest is on the left and newest on the right
+    const reversed = [...statuses].reverse();
+    return reversed[index - offset];
+  }
 
   getStatusColor(status: string): string {
     const lowerStatus = status?.toLowerCase() || '';
