@@ -27,6 +27,7 @@ classifiers = [
 
 dependencies = [
     "attrs>=25.4.0",
+    "click>=8.0.0",
     "isodate>=0.7.2",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
@@ -52,9 +53,10 @@ dev = [
     "httpx>=0.25.0",  # For testing FastAPI
 ]
 
-# Azure Blob Storage support
+# Azure Blob Storage and Queue support
 azure = [
     "azure-storage-blob>=12.19.0",
+    "azure-storage-queue>=12.11.0",
 ]
 
 # Database adapters

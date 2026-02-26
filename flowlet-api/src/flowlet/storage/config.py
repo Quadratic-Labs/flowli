@@ -32,7 +32,7 @@ class AzureBlobStorageConfig(BaseSettings):
         env_nested_max_split=1,
         arbitrary_types_allowed=True
     )
-    
+
     type: Literal["azure_blob"] = "azure_blob"
     connection_string: str = Field(
         description="Azure Storage connection string"

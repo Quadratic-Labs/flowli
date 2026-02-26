@@ -5,7 +5,7 @@ flow execution data, along with SQL query definitions.
 """
 import json
 from pathlib import Path
-from typing import Iterator, Sequence, TypeAlias, TYPE_CHECKING
+from typing import Iterator, Sequence
 from uuid import UUID
 
 from jsonry.model import Query
@@ -19,9 +19,7 @@ from ...serdes import from_json, to_dict
 from ...types import Period
 
 
-if TYPE_CHECKING:
-    from flowlet.storage.azure.path import AzureBlobPath
-    PathLike: TypeAlias = Path | AzureBlobPath
+from flowlet.storage import StoragePath
 
 
 class FileQuery(RunQueryProtocol):
@@ -50,7 +48,7 @@ class FileQuery(RunQueryProtocol):
         *,
         registry: RegistryProtocol,
         tracker: TrackerProtocol,
-        base_path: PathLike,
+        base_path: StoragePath,
         **_
     ):
         """Initialize the query repository.
@@ -133,9 +131,9 @@ class FileQuery(RunQueryProtocol):
             yield result
 
     @classmethod
-    def _extract_from_path(cls, path: AzureBlobPath | Path):
+    def _extract_from_path(cls, path: StoragePath):
         return Path(path.name).stem
 
     @classmethod
-    def _load(cls, path: AzureBlobPath | Path):
+    def _load(cls, path: StoragePath):
         return [json.loads(log) for log in path.read_text().splitlines()]

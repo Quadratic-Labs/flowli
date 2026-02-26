@@ -6,9 +6,23 @@ from uuid import UUID
 
 from attrs import asdict
 
-from .models import RunContext, SpanLog, RunSummary
-from .types import SpanType, JsonData
+from .context import RunContext
+from .models import SpanType, RunLog, RunSummary
+from .types import JsonData
 
+
+# region @valuedispatch
+# ---
+# role: util
+# intent: function dispatching on value of first argument
+# description: >
+#   Similar to singledispatch but where dispatching on value and not the type.
+#   Useful for deserialisation, where the first value is already a type.
+# rules:
+# dependencies:
+# aliases:
+# triggers:
+# ---
 
 class ValueDispatch:
     def __init__(self, default: Callable):
@@ -31,11 +45,42 @@ class ValueDispatch:
 
 valuedispatch = ValueDispatch
 
+# ---
+# endregion
+
+
+# region @serdes.dict
+# ---
+# role: util
+# intent: serdes to from dictionaries
+# description:
+# rules:
+# dependencies:
+# aliases:
+# triggers:
+# ---
 
 @functools.singledispatch
 def to_dict(data: Any) -> Any:
     return asdict(data)
 
+# ---
+# endregion
+
+
+# region @serdes.json_data
+# ---
+# role: util
+# intent: serdes to from json_data
+# description: >
+#   json_data is json represente as python object. It handles dict and list
+#   and atomic types, but nothing else. For example, datetimes must be
+#   represented by str.
+# rules:
+# dependencies:
+# aliases:
+# triggers:
+# ---
 
 @functools.singledispatch
 def to_json_data(data: Any) -> JsonData:
@@ -58,8 +103,9 @@ def _(data: RunContext) -> JsonData:
         "parent_span_id": str(data.parent_span_id) if data.parent_span_id is not None else None
     }
 
-@to_json_data.register(SpanLog)
-def _(data: SpanLog) -> JsonData:
+
+@to_json_data.register(RunLog)
+def _(data: RunLog) -> JsonData:
     return {
         "flow_name": data.flow_name,
         "run_id": str(data.run_id),
@@ -73,6 +119,7 @@ def _(data: SpanLog) -> JsonData:
         "extra": to_json_data(data.extra),
     }
 
+
 @to_json_data.register(RunSummary)
 def _(data: RunSummary) -> JsonData:
     return {
@@ -82,13 +129,7 @@ def _(data: RunSummary) -> JsonData:
         "start_ts": data.start_ts.isoformat().replace('+00:00', 'Z'),
         "end_ts": data.end_ts.isoformat().replace('+00:00', 'Z'),
         "children": [to_json_data(c) for c in data.children]
-
     }
-
-
-@functools.singledispatch
-def to_json(data: Any) -> str:
-    return json.dumps(to_json_data(data))
 
 
 @valuedispatch
@@ -108,9 +149,9 @@ def _(data: dict[str, Any]) -> RunContext:
     )
 
 
-@from_json_data.register(SpanLog)
-def _(data: dict[str, Any]) -> SpanLog:
-    return SpanLog(
+@from_json_data.register(RunLog)
+def _(data: dict[str, Any]) -> RunLog:
+    return RunLog(
         flow_name = data["flow_name"],
         run_id = UUID(data["run_id"]),
         span_type = SpanType(data["span_type"]),
@@ -123,6 +164,25 @@ def _(data: dict[str, Any]) -> SpanLog:
         extra = data["extra"],
     )
 
+# ---
+# endregion
+
+
+# region @serdes.json
+# ---
+# role: util
+# intent: serdes to from json
+# description:
+# rules:
+# dependencies:
+# aliases:
+# triggers:
+# ---
+
+@functools.singledispatch
+def to_json(data: Any) -> str:
+    return json.dumps(to_json_data(data))
+
 
 @valuedispatch
 def from_json(data: str) -> Any:
@@ -130,8 +190,10 @@ def from_json(data: str) -> Any:
     return from_json_data(object, json_data)
 
 
-@from_json.register(SpanLog)
+@from_json.register(RunLog)
 def _(data: str) -> Any:
     json_data = json.loads(data)
-    return from_json_data(SpanLog, json_data)
+    return from_json_data(RunLog, json_data)
 
+# ---
+# endregion

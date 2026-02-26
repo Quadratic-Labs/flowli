@@ -1,18 +1,109 @@
 """
-Filesystem logging handler for Flowlet.
+Flowlet structured logging configuration and run logging.
 
-Provides Python logging Handlers that export log records to the local filesystem
-or Azure Blob Storage, organizing logs by run ID or custom routing logic.
+Provides JSON-formatted logging with automatic context injection (run_id, span_id, etc.)
+and separate handlers for full logs and Flowlet-only logs.
 """
-
+from datetime import datetime, timezone
 import logging
-import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, TypeAlias
+import threading
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from flowlet.storage.azure.path import AzureBlobPath
-    PathLike: TypeAlias = Path | AzureBlobPath
+from .context import ContextManager
+from .models import SpanLog
+from .serdes import to_json
+from .storage import StoragePath
+
+
+# Define custom SUCCESS logging level
+SUCCESS = 25
+logging.addLevelName(SUCCESS, 'SUCCESS')
+
+
+# region @logging
+# ---
+# role: core
+# intent: extend logging with execution context info
+# description:
+# rules:
+#   - SHOULD extend standard logging library
+# dependencies:
+# aliases:
+# triggers:
+# ---
+
+class FlowletLogger(logging.Logger):
+    """Logger with custom SUCCESS level support."""
+
+    def success(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message with severity 'SUCCESS' (level 25)."""
+        if self.isEnabledFor(SUCCESS):
+            self._log(SUCCESS, message, args, **kwargs)
+
+
+# Set FlowletLogger as the default logger class for all loggers created after this point
+logging.setLoggerClass(FlowletLogger)
+
+
+class ContextInjectingFilter(logging.Filter):
+    """
+    Injects execution context (run_id, span_id, etc.) into log records.
+
+    This filter automatically adds flowlet execution context to every log record,
+    making it available to formatters and handlers.
+    """
+    def __init__(self, context: ContextManager):
+        self.context = context
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Add execution context to the log record."""
+        current = self.context.get_current_span()
+        span_data = {
+            "flow_name": getattr(current, 'flow_name', None),
+            "run_id": getattr(current, 'run_id', None),
+            "span_type": getattr(current, 'span_type', None),
+            "span_name": getattr(current, 'span_name', None),
+            "span_id": getattr(current, 'span_id', None),
+            "parent_span_id": getattr(current, 'parent_span_id', None),
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc),
+            "message": record.getMessage(),
+            "level": record.levelname,
+            "extra": {},
+        }
+        setattr(record, "_span", SpanLog(**span_data))
+        # if current:
+        #     record = current.inject_as_str_into(record)
+        return True
+
+
+class JSONSpanFormatter(logging.Formatter):
+    """
+    Formats log records as JSON with execution context.
+
+    Output format matches the example in examples/storage/hello-world/logs/*.jsonl
+    """
+    def format(self, record: logging.LogRecord) -> str:
+        """Format the log record as a JSON string."""
+        span = getattr(record, "_span")
+        if span is None:
+            record.message = "JSONSpanFormatter error: no span to format"
+            return super().format(record)
+
+        # Add exception info if present
+        if record.exc_info:
+            span.extra["exception"] =  self.formatException(record.exc_info)
+
+        # Add any custom extra fields
+        for key, value in record.__dict__.items():
+            if key not in ['name', 'msg', 'args', 'created', 'filename', 'funcName',
+                          'levelname', 'levelno', 'lineno', 'module', 'msecs',
+                          'message', 'pathname', 'process', 'processName', 'relativeCreated',
+                          'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info', ]:
+                if not key.startswith('_'):
+                    span.extra[key] = value
+
+        return to_json(span)
 
 
 class FilesystemHandler(logging.Handler):
@@ -60,7 +151,7 @@ class FilesystemHandler(logging.Handler):
 
     def __init__(
         self,
-        path: PathLike,
+        path: StoragePath,
         level: int = logging.NOTSET,
         encoding: str = 'utf-8',
         router: Callable[[logging.LogRecord], str] | None = None,
@@ -119,7 +210,7 @@ class FilesystemHandler(logging.Handler):
             # Dynamic routing - create base directory
             self.path.mkdir(parents=True, exist_ok=True)
 
-    def _get_file_handle(self, filepath: PathLike):
+    def _get_file_handle(self, filepath: StoragePath):
         """Get or create a file handle for the given filepath."""
         path_key = str(filepath)
         if path_key not in self._file_handles:
@@ -208,3 +299,48 @@ class FilesystemHandler(logging.Handler):
     def closed(self) -> bool:
         """Check if the handler is closed."""
         return self._closed
+
+
+# This goes in the app...
+
+def configure_context_logging(context_manager: ContextManager) -> None:
+    """Attach a ContextInjectingFilter to the flowlet.log logger.
+
+    Call once at application startup so every log record emitted through
+    the flowlet.log logger automatically carries the active span's context.
+
+    Args:
+        context_manager: The ContextManager instance to inject context from.
+    """
+    log = logging.getLogger('flowlet.log')
+    log.setLevel(logging.INFO)
+    log.propagate = True
+    log.addFilter(ContextInjectingFilter(context_manager))
+
+
+def configure_run_file_logging(base_dir: StoragePath) -> None:
+    """Attach a FilesystemHandler routing each span's logs to runs/<name>/<id>.jsonl.
+
+    Must be called after configure_context_logging() so that the
+    ContextInjectingFilter has already populated ``record._span`` by the time
+    the router runs inside FilesystemHandler.emit().
+
+    Each instrumented span writes to its own file:
+    ``<base_dir>/runs/<span_name>/<span_id>.jsonl``
+
+    Args:
+        base_dir: Root directory under which the ``runs/`` tree is created.
+    """
+    def _router(record: logging.LogRecord) -> str:
+        span = getattr(record, "_span", None)
+        if span is None or span.span_id is None:
+            return "unknown/unrouted.jsonl"
+        return f"{span.span_name}/{span.span_id}.jsonl"
+
+    log = logging.getLogger('flowlet.log')
+    handler = FilesystemHandler(base_dir / "runs", router=_router)
+    handler.setFormatter(JSONSpanFormatter())
+    log.addHandler(handler)
+
+# ---
+# endregion

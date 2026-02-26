@@ -1,4 +1,5 @@
-"""FastAPI controllers and API models for Flowlet.
+"""
+FastAPI controllers and API models for Flowlet.
 
 Provides controller classes for handling flow execution and querying,
 along with Pydantic models for API request/response serialization.
@@ -20,7 +21,8 @@ from .types import RunStatus, SpanType
 
 
 def humanize_timedelta(td: timedelta) -> str:
-    """Convert a timedelta into a human-friendly relative time string.
+    """
+    Convert a timedelta into a human-friendly relative time string.
 
     Args:
         td: Timedelta to humanize.
@@ -51,12 +53,14 @@ def humanize_timedelta(td: timedelta) -> str:
         hours = (seconds % 86400) // 3600
         return f"{days}d {hours}h"
 
+
 HumanDuration = Annotated[timedelta, AfterValidator(humanize_timedelta)]
 """Type alias for timedelta that is automatically humanized when validated."""
 
 
 class Base(BaseModel):
-    """Base Pydantic model with common configuration.
+    """
+    Base Pydantic model with common configuration.
 
     Enables automatic conversion from SQLAlchemy ORM objects.
     """
@@ -64,7 +68,8 @@ class Base(BaseModel):
 
 
 class FlowArguments(Base):
-    """API model for flow execution request.
+    """
+    API model for flow execution request.
 
     Accepts keyword arguments to pass to the flow function.
 
@@ -78,32 +83,31 @@ class FlowArguments(Base):
 
 
 class FlowSubmissionResponse(Base):
-    """API model for flow submission response.
+    """
+    API model for flow submission response.
 
     Returned when a flow is successfully submitted to the queue for
     asynchronous execution.
 
     Attributes:
         job_id: Unique job identifier in the queue.
-        run_id: Pre-generated run ID for tracking execution.
         status: Initial status, always "queued".
         submitted_at: Timestamp when job was submitted.
 
     Example:
         >>> response = FlowSubmissionResponse(
         ...     job_id=UUID("..."),
-        ...     run_id=UUID("..."),
         ...     submitted_at=datetime.now()
         ... )
     """
     job_id: UUID
-    run_id: UUID
-    status: str = "queued"
+    status: RunStatus = Field(default=RunStatus.pending)
     submitted_at: datetime
 
 
 class RunQueryRequest(Base):
-    """API model for querying runs with jsonry.
+    """
+    API model for querying runs with jsonry.
 
     Attributes:
         names: Optional list of flow names to filter by.
@@ -127,7 +131,8 @@ class RunQueryRequest(Base):
 
 
 class LogQueryRequest(Base):
-    """API model for querying logs with jsonry.
+    """
+    API model for querying logs with jsonry.
 
     Attributes:
         runs: Optional list of run UUIDs to filter by.
@@ -151,7 +156,8 @@ class LogQueryRequest(Base):
 
 
 class SpanLogDTO(Base):
-    """API model for a run log entry.
+    """
+    API model for a run log entry.
 
     Attributes:
         TODO
@@ -168,7 +174,8 @@ class SpanLogDTO(Base):
 
 
 class RunSummaryDTO(Base):
-    """API model for a single flow run summary.
+    """
+    API model for a single flow run summary.
 
     Attributes:
         span_id: span's identifier.
@@ -191,13 +198,13 @@ class RunSummaryDTO(Base):
         return humanize_timedelta(self.end_ts - self.start_ts)
 
 
-
 class RunDTO(RunSummaryDTO):
     logs: list[SpanLogDTO]
 
 
 class FlowController:
-    """FastAPI controller for flow execution and query endpoints.
+    """
+    FastAPI controller for flow execution and query endpoints.
 
     Provides handler methods for all Flowlet REST API operations including
     flow execution, listing flows, querying runs, and retrieving run details.
@@ -221,7 +228,8 @@ class FlowController:
         queue: JobQueueProtocol | None = None,
         **_
     ):
-        """Initialize the flow controller.
+        """
+        Initialize the flow controller.
 
         Args:
             querier: Querier for querying flow execution history.
@@ -234,26 +242,7 @@ class FlowController:
         self.tracker = tracker
         self.queue = queue
 
-    def run_flow(self, flow_name: str, payload: FlowArguments) -> None:
-        """Execute a registered flow with provided arguments.
-
-        Args:
-            flow_name: Name of the flow to execute.
-            payload: Input model containing kwargs for the flow function.
-
-        Raises:
-            HTTPException: 404 if the flow is not registered.
-            HTTPException: 422 if the provided arguments fail schema validation.
-
-        Note:
-            If the flow has type hints, arguments are validated against the generated schema.
-            Untyped flows execute without validation (backwards compatible).
-            Currently executes flows synchronously. Future versions will
-            support background task scheduling.
-        """
-        if flow_name not in self.registry.list_flows():
-            raise HTTPException(status_code=404, detail="Flow not found")
-
+    def _parse_kwargs(self, flow_name: str, payload: FlowArguments):
         # Get schema for validation
         schema = self.registry.get_flow_schema(flow_name)
 
@@ -274,14 +263,35 @@ class FlowController:
         else:
             # Graceful degradation: no schema, use kwargs as-is
             kwargs = payload.kwargs or {}
+        return kwargs
 
+    def run_flow(self, flow_name: str, payload: FlowArguments) -> None:
+        """
+        Execute a registered flow with provided arguments.
+
+        Args:
+            flow_name: Name of the flow to execute.
+            payload: Input model containing kwargs for the flow function.
+
+        Raises:
+            HTTPException: 404 if the flow is not registered.
+            HTTPException: 422 if the provided arguments fail schema validation.
+
+        Note:
+            If the flow has type hints, arguments are validated against the generated schema.
+            Untyped flows execute without validation (backwards compatible).
+            Currently executes flows synchronously. Future versions will
+            support background task scheduling.
+        """
+        if flow_name not in self.registry.list_flows():
+            raise HTTPException(status_code=404, detail="Flow not found")
         fn = self.registry.get_flow(flow_name)
-        # TODO: schedule background task, get immediate status
-        # TODO: add azure job to execution and PubSub sockets
+        kwargs = self._parse_kwargs(flow_name, payload)
         _ = fn(**kwargs)
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
-        """Submit a flow for asynchronous execution.
+        """
+        Submit a flow for asynchronous execution.
 
         Validates arguments and enqueues the flow job for processing by a worker.
         Returns immediately with job tracking information.
@@ -291,7 +301,7 @@ class FlowController:
             payload: Input model containing kwargs for the flow function.
 
         Returns:
-            FlowSubmissionResponse with job_id, run_id, and submission timestamp.
+            FlowSubmissionResponse with job_id, and submission timestamp.
 
         Raises:
             HTTPException: 503 if queue is not configured.
@@ -314,38 +324,15 @@ class FlowController:
                 detail="Queue not configured. Asynchronous execution is not available. "
                        "Use POST /execute/{flow_name} for synchronous execution."
             )
-
         if flow_name not in self.registry.list_flows():
             raise HTTPException(status_code=404, detail="Flow not found")
 
-        # Get schema for validation (same as run_flow)
-        schema = self.registry.get_flow_schema(flow_name)
-
-        if schema is not None:
-            # Validate kwargs against Pydantic model
-            try:
-                validated_data = schema.pydantic_model(**payload.kwargs)
-                kwargs = validated_data.model_dump()
-            except ValidationError as e:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Invalid flow arguments",
-                        "flow": flow_name,
-                        "errors": e.errors()
-                    }
-                )
-        else:
-            # Graceful degradation: no schema, use kwargs as-is
-            kwargs = payload.kwargs or {}
-
-        # Create job with pre-generated run_id for tracking
+        kwargs = self._parse_kwargs(flow_name, payload)
         job = FlowJob(
             flow_name=flow_name,
             kwargs=kwargs,
         )
 
-        # Enqueue job
         try:
             self.queue.enqueue(job)
         except Exception as e:
@@ -356,12 +343,12 @@ class FlowController:
 
         return FlowSubmissionResponse(
             job_id=job.job_id,
-            run_id=job.run_id,
             submitted_at=job.submitted_at,
         )
 
     def query_runs(self, request: RunQueryRequest) -> list[RunSummaryDTO]:
-        """Query run summaries with flexible jsonry queries.
+        """
+        Query run summaries with flexible jsonry queries.
 
         Supports filtering, projection, aggregation, and transformation of run summary data
         using jsonry query language.
@@ -402,7 +389,8 @@ class FlowController:
             )
 
     def query_logs(self, request: LogQueryRequest) -> list[RunDTO]:
-        """Query runs (logs + summaries) with flexible jsonry queries.
+        """
+        Query runs (logs + summaries) with flexible jsonry queries.
 
         Supports filtering, projection, aggregation, and transformation of run data
         using jsonry query language.
@@ -464,7 +452,8 @@ class FlowController:
             )
 
     def get_flow_schema(self, flow_name: str) -> dict[str, Any]:
-        """Get parameter schema for a specific flow.
+        """
+        Get parameter schema for a specific flow.
 
         Args:
             flow_name: Name of the flow.
@@ -515,7 +504,8 @@ class FlowController:
         }
 
     def list_flows_with_schemas(self) -> list[dict[str, Any]]:
-        """List all flows with their parameter schemas.
+        """
+        List all flows with their parameter schemas.
 
         Returns:
             List of flow metadata dictionaries, each containing:
