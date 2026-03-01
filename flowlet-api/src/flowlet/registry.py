@@ -1,11 +1,11 @@
 """
 Flow and task registration system.
 
-This module provides the FlowRegister class which manages registration of flows
-and tasks, wrapping them with execution tracking context managers.
+This module provides the :class:`Registry` class which manages registration of
+flows and tasks, wrapping them with execution instrumentation.
 
 It also implements schema generation logic from Python type hints for flow
-arguments' validation and introspection.
+argument validation and introspection.
 """
 from inspect import Parameter, signature
 import logging
@@ -15,7 +15,7 @@ from attrs import define
 from pydantic import BaseModel, Field, create_model
 
 from .instrumentation import instrument
-from .models import SpanType
+from .models import RunType
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +23,40 @@ logger = logging.getLogger(__name__)
 # region @registry.parameters
 # ---
 # role: core
-# intent: schema and validation for flows' parameters
+# intent: extract and validate flow/task parameter schemas from type hints
 # description: >
-#   Flows can be invoked through RPC with parameters defined via pydantic
-#   models, explicitely defined or extracted from their signature.
+#   Flows can be invoked through RPC with parameters validated via dynamically
+#   generated Pydantic models. Schemas are derived from Python type annotations,
+#   either explicitly declared or inferred from the function signature.
 # rules:
+#   - MUST extract type hints before the function is wrapped by instrumentation
+#   - SHOULD fall back to __annotations__ when get_type_hints() raises
+#   - MUST skip *args and **kwargs parameters
 # dependencies:
 # aliases:
+#   - schema
+#   - parameters
+#   - flow-schema
 # triggers:
+#   - flow parameters
+#   - schema validation
+#   - pydantic model from signature
+#   - extract flow schema
 # ---
 
 @define(slots=True, kw_only=True)
 class FlowParameterSchema:
-    """Metadata about a single flow parameter."""
+    """Metadata about a single flow parameter.
+
+    Attributes:
+        name (str): Parameter name as it appears in the function signature.
+        type_annotation (type): Resolved Python type annotation; Any when
+            no annotation is present.
+        default (Any): Default value, or inspect.Parameter.empty if required.
+        required (bool): True when the parameter has no default value.
+        description (str | None): Optional human-readable description,
+            reserved for future docstring extraction.
+    """
     name: str
     type_annotation: type
     default: Any
@@ -45,7 +66,18 @@ class FlowParameterSchema:
 
 @define(slots=True, kw_only=True)
 class FlowSchema:
-    """Complete schema for a flow including parameters and metadata."""
+    """Complete schema for a flow, including all parameters and metadata.
+
+    Attributes:
+        flow_name (str): Registered name of the flow.
+        parameters (list[FlowParameterSchema]): Ordered list of parameter
+            descriptors extracted from the function signature.
+        pydantic_model (type[BaseModel]): Dynamically generated Pydantic model
+            used for argument validation and serialisation on RPC invocation.
+        docstring (str | None): Raw docstring of the flow function, if any.
+        return_type (type | None): Resolved return type annotation, or None
+            if absent.
+    """
 
     flow_name: str
     parameters: list[FlowParameterSchema]
@@ -57,16 +89,18 @@ class FlowSchema:
 def python_type_to_pydantic_field(
     param_name: str, param_type: Any, default: Any
 ) -> tuple[Any, Any]:
-    """
-    Convert Python type hint to Pydantic field configuration.
+    """Convert a Python type hint to a Pydantic field configuration.
 
     Args:
-        param_name: Name of the parameter
-        param_type: Python type annotation (can be type, Any, or other typing constructs)
-        default: Default value (Parameter.empty if required)
+        param_name (str): Name of the parameter, used in the field description.
+        param_type (Any): Python type annotation; may be a concrete type, Any,
+            or any typing construct accepted by Pydantic.
+        default (Any): Default value, or Parameter.empty if the field is
+            required.
 
     Returns:
-        Tuple of (field_type, field_info) for Pydantic create_model()
+        tuple[Any, Any]: A (field_type, field_info) pair suitable for passing
+            to pydantic.create_model().
     """
     # Use the type annotation as-is (Pydantic handles Any and other typing constructs)
     field_type = param_type
@@ -82,18 +116,15 @@ def python_type_to_pydantic_field(
 
 
 def extract_flow_schema(fn: Callable, flow_name: str) -> FlowSchema | None:
-    """
-    Extract schema from a flow function using type hints.
+    """Extract a FlowSchema from a callable using its type hints.
 
     Args:
-        fn: The flow function to inspect
-        flow_name: Name of the flow
+        fn (Callable): The flow or task function to inspect.
+        flow_name (str): Name used to label the schema and the generated
+            Pydantic model.
 
     Returns:
-        FlowSchema object or None if schema extraction fails
-
-    Raises:
-        Various exceptions if type hints are invalid or cannot be processed
+        FlowSchema | None: The extracted schema, or None if extraction fails.
     """
     try:
         # Get function signature
@@ -177,43 +208,59 @@ def extract_flow_schema(fn: Callable, flow_name: str) -> FlowSchema | None:
 # region @registry.registry
 # ---
 # role: core
-# intent: registry for flows and tasks
+# intent: store and expose instrumented flows and tasks by name
 # description: >
-#   Global registry for flows and tasks, which are instrumented functions with
-#   unique names. Instrumented means that they include proper run logging.
-#   Registered flows can also be invoked through RPC, so the registry also
-#   keeps flows' arguments schemas.
+#   Global registry for flows and tasks. Each registered callable is wrapped
+#   by the instrumentation layer so every call emits structured run telemetry.
+#   Registered flows can also be invoked through RPC, so the registry keeps
+#   their argument schemas for validation.
 # rules:
+#   - MUST extract schema from the original function before wrapping it
+#   - MUST NOT allow duplicate flow or task names
+#   - SHOULD log a warning and continue when schema extraction fails
 # dependencies:
+#   - registry.parameters
+#   - instrumentation
+#   - models
 # aliases:
+#   - flow-registry
+#   - register
 # triggers:
+#   - register a flow
+#   - register a task
+#   - how to add a flow
+#   - list registered flows
 # ---
 
 @define
 class Registry:
-    """Registry for flows and tasks with automatic execution tracking.
+    """Registry for flows and tasks with automatic execution instrumentation.
 
-    Maintains registries of flows and tasks, providing decorators that wrap
-    functions with execution context managers for database tracking.
+    Stores instrumented callables indexed by name and provides schema lookup
+    for RPC invocation. Each callable registered through this class is wrapped
+    by instrument() so that every call records a structured run entry.
 
     Attributes:
-        tracker: Flow execution tracker for recording runs.
-        db_session_factory: SQLAlchemy session factory.
-        flows: Registry mapping flow names to decorated functions.
-        tasks: Registry mapping task names to decorated functions.
-        flow_schemas: Registry mapping flow names to their type schemas.
-        task_schemas: Registry mapping task names to their type schemas.
+        flows (dict[str, Callable]): Mapping of flow name to instrumented
+            callable.
+        tasks (dict[str, Callable]): Mapping of task name to instrumented
+            callable.
+        flow_schemas (dict[str, FlowSchema]): Mapping of flow name to its
+            extracted FlowSchema.
+        task_schemas (dict[str, FlowSchema]): Mapping of task name to its
+            extracted FlowSchema.
     """
     flows: dict[str, Callable]
     tasks: dict[str, Callable]
     flow_schemas: dict[str, FlowSchema]
+    task_schemas: dict[str, FlowSchema]
 
     def __init__(self, **_):
-        """Initialize the flow register.
+        """Initialize the registry.
 
         Args:
-            tracker: Flow tracker for recording execution.
-            **_: Additional unused dependencies (for flexible dependency injection).
+            **_: Unused keyword arguments accepted for flexible dependency
+                injection compatibility.
         """
         self.flows: dict[str, Callable] = {}
         self.tasks: dict[str, Callable] = {}
@@ -221,16 +268,19 @@ class Registry:
         self.task_schemas: dict[str, FlowSchema] = {}
 
     def __contains__(self, name: str) -> bool:
+        """Return True if name is a registered flow."""
         return name in self.flows.keys()
 
     def has_flow(self, name: str) -> bool:
+        """Return True if a flow with the given name is registered."""
         return name in self.flows.keys()
 
     def has_task(self, name: str) -> bool:
+        """Return True if a task with the given name is registered."""
         return name in self.tasks.keys()
 
     def list_flows(self):
-        """List all registered flow names.
+        """Return the names of all registered flows.
 
         Returns:
             list[str]: Names of registered flows.
@@ -238,7 +288,7 @@ class Registry:
         return list(self.flows.keys())
 
     def list_tasks(self):
-        """List all registered task names.
+        """Return the names of all registered tasks.
 
         Returns:
             list[str]: Names of registered tasks.
@@ -246,30 +296,52 @@ class Registry:
         return list(self.tasks.keys())
 
     def get_flow(self, name: str) -> Callable:
+        """Return the instrumented callable for the named flow.
+
+        Args:
+            name (str): Registered flow name.
+
+        Returns:
+            Callable: The wrapped callable.
+
+        Raises:
+            KeyError: If no flow with name is registered.
+        """
         return self.flows[name]
 
     def get_task(self, name: str) -> Callable:
+        """Return the instrumented callable for the named task.
+
+        Args:
+            name (str): Registered task name.
+
+        Returns:
+            Callable: The wrapped callable.
+
+        Raises:
+            KeyError: If no task with name is registered.
+        """
         return self.tasks[name]
 
     def get_flow_schema(self, name: str) -> FlowSchema | None:
-        """Get the schema for a registered flow.
+        """Return the schema for a registered flow.
 
         Args:
-            name: Name of the flow.
+            name (str): Registered flow name.
 
         Returns:
-            FlowSchema object if available, None otherwise.
+            FlowSchema | None: The schema if available, None otherwise.
         """
         return self.flow_schemas.get(name)
 
     def get_task_schema(self, name: str) -> FlowSchema | None:
-        """Get the schema for a registered task.
+        """Return the schema for a registered task.
 
         Args:
-            name: Name of the task.
+            name (str): Registered task name.
 
         Returns:
-            FlowSchema object if available, None otherwise.
+            FlowSchema | None: The schema if available, None otherwise.
         """
         return self.task_schemas.get(name)
 
@@ -278,14 +350,15 @@ class Registry:
         fn: Callable,
         name: str | None = None,
     ) -> Callable:
-        """Registers a flow and extracts its schema from type hints.
+        """Register a flow and extract its schema from type hints.
 
         Args:
-            fn: The flow function to register.
-            name: Optional custom name for the flow (defaults to function name).
+            fn (Callable): The flow function to register.
+            name (str | None): Custom name for the flow; defaults to
+                fn.__name__.
 
         Returns:
-            The wrapped flow function.
+            Callable: The instrumented flow callable.
 
         Raises:
             ValueError: If a flow with the same name is already registered.
@@ -313,9 +386,9 @@ class Registry:
             )
             schema = None
 
-        wrapper = instrument(fn, flow_name, SpanType.flow)
+        wrapper = instrument(fn, flow_name, RunType.flow)
         setattr(wrapper, "__flow_name__", flow_name)
-        setattr(wrapper, "__flow_type__", SpanType.flow)
+        setattr(wrapper, "__flow_type__", RunType.flow)
         if schema is not None:
             setattr(wrapper, "__flow_schema__", schema)
         self.flows[flow_name] = wrapper
@@ -326,14 +399,15 @@ class Registry:
         fn: Callable,
         name: str | None = None,
     ) -> Callable:
-        """Registers a task and extracts its schema from type hints.
+        """Register a task and extract its schema from type hints.
 
         Args:
-            fn: The task function to register.
-            name: Optional custom name for the task (defaults to function name).
+            fn (Callable): The task function to register.
+            name (str | None): Custom name for the task; defaults to
+                fn.__name__.
 
         Returns:
-            The wrapped task function.
+            Callable: The instrumented task callable.
 
         Raises:
             ValueError: If a task with the same name is already registered.
@@ -355,9 +429,9 @@ class Registry:
             )
             schema = None
 
-        wrapper = instrument(fn, task_name, SpanType.task)
+        wrapper = instrument(fn, task_name, RunType.task)
         setattr(wrapper, "__flow_name__", task_name)
-        setattr(wrapper, "__flow_type__", SpanType.task)
+        setattr(wrapper, "__flow_type__", RunType.task)
         if schema is not None:
             setattr(wrapper, "__flow_schema__", schema)
         self.tasks[task_name] = wrapper

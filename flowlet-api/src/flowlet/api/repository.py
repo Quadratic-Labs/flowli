@@ -22,15 +22,14 @@ from attrs import define, field, Factory
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from ..models import RunSummary
+from ..models import RunState
 from ..storage.types import StoragePath
 from ..types import PeriodUUID, Timestamp
 from .database import (
     Run,
-    RunLink,
     ensure_snapshot_schema,
     get_snapshot_period,
-    insert_new_summaries,
+    insert_new_states,
 )
 
 
@@ -169,12 +168,6 @@ async def _archive_runs(
     """
     runs_result = await session.execute(select(Run).where(Run.run_id.in_(archive_ids)))
     runs = list(runs_result.scalars().all())
-    links_result = await session.execute(
-        select(RunLink).where(
-            RunLink.parent_run_id.in_(archive_ids) & RunLink.child_run_id.in_(archive_ids)
-        )
-    )
-    links = list(links_result.scalars().all())
 
     archived_period = PeriodUUID(start=archive_ids[0], end=archive_ids[-1])
     local_snapshot = SnapshotPath.build(Path(cache_dir), archived_period)
@@ -187,8 +180,6 @@ async def _archive_runs(
         async with arch_factory() as arch_session:
             for run in runs:
                 arch_session.add(Run(**run.to_dict()))
-            for link in links:
-                arch_session.add(RunLink(**link.to_dict()))
             await arch_session.commit()
     finally:
         await arch_engine.dispose()
@@ -197,11 +188,6 @@ async def _archive_runs(
     remote_snapshot.path.parent.mkdir(parents=True, exist_ok=True)
     remote_snapshot.path.write_bytes(local_snapshot.path.read_bytes())
 
-    await session.execute(
-        sa_delete(RunLink).where(
-            RunLink.parent_run_id.in_(archive_ids) | RunLink.child_run_id.in_(archive_ids)
-        )
-    )
     await session.execute(sa_delete(Run).where(Run.run_id.in_(archive_ids)))
     await session.commit()
 
@@ -279,7 +265,7 @@ class TimeRolloutStrategy:
 
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.rollout_seconds_min)
         result = await session.execute(
-            select(Run.run_id).where(Run.start_ts < cutoff).order_by(Run.run_id)
+            select(Run.run_id).where(Run.started_at < cutoff).order_by(Run.run_id)
         )
         archive_ids = list(result.scalars().all())
         if not archive_ids:
@@ -379,14 +365,13 @@ class AnyRolloutStrategy:
                 return result
         return None
 
-
 # ---
 # endregion
 
 
 # region @snapshot.repository
 # ---
-# role: both
+# role: domain data access
 # intent: unified snapshot lifecycle — list, fetch, load, and update with rollout
 # description: >
 #   SnapshotRepository is the single owner of all snapshot I/O:
@@ -394,7 +379,7 @@ class AnyRolloutStrategy:
 #     - find()    — resolve the snapshot covering a point in time.
 #     - fetch()   — download the right SQLite to the local cache.
 #     - load()    — fetch and bind self.engine to the hot snapshot.
-#     - update()  — ingest new runs, then roll out when rollout_strategy fires.
+#     - update()  — ingest new RunState objects, then roll out when rollout_strategy fires.
 #   No manifest file is maintained; the directory listing is the manifest.
 # rules:
 #   - MUST delegate all DB writes to database.snapshot pure functions.
@@ -407,7 +392,6 @@ class AnyRolloutStrategy:
 #   - database.snapshot
 #   - storage.types
 # ---
-
 
 @define(slots=True, kw_only=True)
 class SnapshotRepository:
@@ -425,7 +409,6 @@ class SnapshotRepository:
         rollout_strategy: Optional strategy controlling when and how the hot
             snapshot is archived.
     """
-
     storage_path: StoragePath
     cache_path: Path | None = None
     engine: AsyncEngine = Factory(lambda: create_async_engine("sqlite+aiosqlite:///:memory:"))
@@ -457,7 +440,8 @@ class SnapshotRepository:
             Sorted list of SnapshotPath objects.  The last element is the most
             recent (hot) snapshot.
         """
-        snapshot_dir = self.cache_path if cached else self.storage_path
+        base = self.cache_path if cached else self.storage_path
+        snapshot_dir = base / "snapshots" if base is not None else None
         if snapshot_dir is None or not snapshot_dir.exists():
             return []
         results = [
@@ -521,16 +505,16 @@ class SnapshotRepository:
             return
         self.engine = current.get_engine()
 
-    async def update(self, summaries: dict[UUID, RunSummary]) -> int:
-        """Ingest new run summaries into the hot snapshot, then roll out if needed.
+    async def update(self, states: list[RunState]) -> int:
+        """Ingest new RunState objects into the hot snapshot, then roll out if needed.
 
         Copies the current remote hot snapshot to a temp file, upserts new
-        summaries, optionally archives the oldest runs via rollout_strategy, and
+        states, optionally archives the oldest runs via rollout_strategy, and
         writes the result back to storage_path.  The old file is removed when the
         period name changes.
 
         Args:
-            summaries: New run trees to persist, keyed by flow run_id (UUIDv7).
+            states: New RunState objects to persist.
 
         Returns:
             Number of runs newly inserted (already-present IDs are skipped).
@@ -549,7 +533,7 @@ class SnapshotRepository:
                     engine, class_=AsyncSession, expire_on_commit=False
                 )
                 async with session_factory() as session:
-                    new_count = await insert_new_summaries(session, summaries)
+                    new_count = await insert_new_states(session, states)
                     if new_count == 0:
                         return 0
                     if self.rollout_strategy is not None:

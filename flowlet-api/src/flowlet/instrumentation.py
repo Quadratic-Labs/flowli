@@ -10,7 +10,7 @@ from typing import Callable
 
 from .context import ContextManager
 from .logger import SUCCESS
-from .models import SpanType
+from .models import RunType
 
 logger = logging.getLogger('flowlet.log')
 
@@ -38,7 +38,7 @@ logger = logging.getLogger('flowlet.log')
 #   - what wraps a callable for execution
 # ---
 
-def instrument(fn: Callable, name: str, span_type: SpanType) -> Callable:
+def instrument(fn: Callable, name: str, span_type: RunType) -> Callable:
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         spans = ContextManager.append_new_span(name, span_type)

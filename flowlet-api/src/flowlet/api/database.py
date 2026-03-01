@@ -1,27 +1,23 @@
 """
 Database models and settings for Flowlet flow run tracking.
 
-This module defines SQLAlchemy ORM models for storing flow and task execution
-history. It includes only aggregated summaries of runs for fast retrieval,
-detailed logs stored aside.
+Flat single-table snapshot of worker-owned RunState objects.  The hierarchy
+(RunSummary tree) is computed on-demand from logs by the API — not
+materialised in SQLite.
 """
 import functools
-from datetime import datetime
 import logging
-from uuid import UUID, uuid7
+from datetime import datetime
+from uuid import UUID
 
-from attrs import asdict
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel
-from sqlalchemy import func, select, SmallInteger, create_engine
-from sqlalchemy import DateTime, String, Uuid
-from sqlalchemy import ForeignKey
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import DateTime, String, Uuid, func, select, create_engine
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from ..models import SpanType, RunSummary
+from ..models import RunState
 from ..types import PeriodUUID
 
 logger = logging.getLogger(__name__)
@@ -83,9 +79,12 @@ class DatabaseSettings(BaseSettings):
 # region @database.models
 # ---
 # role: storage
-# intent: database model definition
-# description:
+# intent: database model definition — flat single-table snapshot of RunState
+# description: >
+#   A single Run table stores one row per run.  No parent-child links are
+#   materialised; hierarchy is derived on-demand from log traces.
 # rules:
+#   - RunLink is removed; hierarchy MUST NOT be stored in SQLite.
 # dependencies:
 # aliases:
 # triggers:
@@ -109,54 +108,6 @@ class Base(DeclarativeBase):
         """
         return cls(**data.model_dump())
 
-    @classmethod
-    def from_attrs(cls, data):
-        """Create an ORM instance from an attrs dataclass.
-
-        Args:
-            data: Attrs dataclass instance to convert.
-
-        Returns:
-            ORM model instance.
-        """
-        return cls(**asdict(data))
-
-    def update_from_pydantic(self, data):
-        """Update this instance from a Pydantic model.
-
-        Args:
-            data: Pydantic model with updated values.
-
-        Returns:
-            Self for method chaining.
-
-        Raises:
-            AttributeError: If data contains attributes not in the model.
-        """
-        for key, value in data.model_dump(exclude_unset=True).items():
-            if not hasattr(self, key):
-                raise AttributeError(key)
-            setattr(self, key, value)
-        return self
-
-    def update_from_attrs(self, data):
-        """Update this instance from an attrs dataclass.
-
-        Args:
-            data: Attrs dataclass with updated values.
-
-        Returns:
-            Self for method chaining.
-
-        Raises:
-            AttributeError: If data contains attributes not in the model.
-        """
-        for key, value in asdict(data).items():
-            if not hasattr(self, key):
-                raise AttributeError(key)
-            setattr(self, key, value)
-        return self
-
     def __repr__(self):
         """String representation showing all column values."""
         params = ", ".join(f"{k}={v}" for k, v in self.to_dict().items())
@@ -172,71 +123,33 @@ class Base(DeclarativeBase):
 
 
 class Run(Base):
-    """
-    Database model for a flow or task execution run (current status).
+    """Flat snapshot row for a single flow run.
 
-    Tracks individual executions of flows and tasks with unique identifiers.
-    Forms a hierarchical structure where task runs are children of flow runs.
+    One row per run; updated via upsert on every state transition.
+    Hierarchy is NOT stored here — query logs instead.
 
     Attributes:
-        run_id: Unique identifier for this run.
-        run_type: Type of run, either "flow" or "task".
-        name: Name of the flow or task being executed.
-        logs: Append-only log entries for this run.
-        links: Links where this run is the parent.
-        parent_links: Links where this run is the child.
-        children: Child runs (tasks within a flow).
-        parent: Parent run (flow containing this task).
+        run_id: Unique identifier (UUIDv7, used for time-ordering).
+        flow_name: Name of the flow being executed.
+        status: Current execution status string.
+        worker_id: Identifier of the owning worker.
+        started_at: Wall-clock time when the run started.
+        heartbeat_at: Last heartbeat from the worker.
+        ended_at: Wall-clock time when the run finished (NULL if ongoing).
+        attempt: Current attempt number (1-based).
+        max_retries: Maximum allowed retries.
     """
     __tablename__ = "runs"
+
     run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    run_type: Mapped[str] = mapped_column(String, index=True)  # "flow" or "task"
-    name: Mapped[str] = mapped_column(String, index=True)
-    start_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    end_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String)
-
-    # Relationships
-    children: Mapped[list["Run"]] = relationship(
-        "Run",
-        secondary="run_links",
-        primaryjoin="Run.run_id == RunLink.parent_run_id",
-        secondaryjoin="Run.run_id == RunLink.child_run_id",
-        foreign_keys="[RunLink.parent_run_id, RunLink.child_run_id]",
-        viewonly=True
-    )
-    parent: Mapped["Run"] = relationship(
-        "Run",
-        secondary="run_links",
-        primaryjoin="Run.run_id == RunLink.child_run_id",
-        secondaryjoin="Run.run_id == RunLink.parent_run_id",
-        foreign_keys="[RunLink.parent_run_id, RunLink.child_run_id]",
-        viewonly=True
-    )
-
-
-class RunLink(Base):
-    """Database model for parent-child relationships between runs.
-
-    Creates hierarchical structure linking task runs to their parent flow runs.
-    Enables querying the execution tree and understanding task context.
-
-    Attributes:
-        link_id: Unique identifier for this link.
-        parent_run_id: Foreign key to the parent run (typically a flow).
-        child_run_id: Foreign key to the child run (typically a task).
-        parent_run: Relationship to the parent Run.
-        child_run: Relationship to the child Run.
-    """
-    __tablename__ = "run_links"
-    link_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
-    parent_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
-    child_run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.run_id"), index=True)
-    depth: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-
-    parent_run: Mapped[Run] = relationship("Run", foreign_keys=[parent_run_id])
-    child_run: Mapped[Run] = relationship("Run", foreign_keys=[child_run_id])
-
+    flow_name: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt: Mapped[int] = mapped_column(default=1)
+    max_retries: Mapped[int] = mapped_column(default=3)
 
 # ---
 # endregion
@@ -247,12 +160,12 @@ class RunLink(Base):
 # role: storage
 # intent: pure async functions for building and updating SQLite run-history snapshots
 # description: >
-#   Source of truth are log traces written to blob or file storage.
-#   SQLite snapshots are derived materialised views of those traces for fast
-#   querying.
+#   Source of truth are state files written to blob or file storage.
+#   SQLite snapshots are derived materialised views of those state files for
+#   fast querying.
 # rules:
 #   - MUST be pure functions of their arguments — no storage I/O of any kind.
-#   - MUST NOT discover or fetch log files; logs are passed in as arguments.
+#   - MUST NOT discover or fetch state files; states are passed in as arguments.
 #   - MUST NOT store state derivable from existing rows (normal form — query, don't duplicate).
 # dependencies:
 #   - types.time
@@ -278,8 +191,7 @@ async def get_snapshot_period(session: AsyncSession) -> PeriodUUID:
     """Return the period (min/max run_id) covered by this snapshot.
 
     Both fields are ``None`` when the snapshot is empty.  Derived on demand
-    from MIN/MAX over the indexed primary key — no metadata table needed
-    (normal form).
+    from MIN/MAX over the indexed primary key — no metadata table needed.
 
     Args:
         session: Active async SQLAlchemy session for the snapshot DB.
@@ -292,107 +204,81 @@ async def get_snapshot_period(session: AsyncSession) -> PeriodUUID:
     )
 
 
-async def _upsert_run_tree(
-    session: AsyncSession,
-    summary: RunSummary,
-    parent_id: UUID | None = None,
-    depth: int = 0,
-) -> None:
-    """Recursively upsert a RunSummary tree into runs and run_links.
+async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
+    """Upsert a single RunState into the flat runs table.
 
     Uses SQLite's ``ON CONFLICT DO UPDATE`` so re-processing an existing
-    run_id updates the row instead of raising an error.
+    run_id updates the row instead of raising.
+
+    Args:
+        session: Active async SQLAlchemy session for the snapshot DB.
+        state: RunState to persist.
     """
-    if summary.span_type == SpanType.task:
-        return
-    start_ts = summary.start_ts
-    if start_ts is not None:
-        start_ts = start_ts.value
-    end_ts = summary.end_ts
-    if end_ts is not None:
-        end_ts = end_ts.value
+    started_at = state.started_at.value
+    heartbeat_at = state.heartbeat_at.value
+    ended_at = state.ended_at.value if state.ended_at is not None else None
+
     await session.execute(
         sqlite_insert(Run).values(
-            run_id=summary.span_id,
-            run_type=summary.span_type,
-            name=summary.span_name,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            status=summary.status.value,
+            run_id=state.run_id,
+            flow_name=state.flow_name,
+            status=state.status.value,
+            worker_id=state.worker_id,
+            started_at=started_at,
+            heartbeat_at=heartbeat_at,
+            ended_at=ended_at,
+            attempt=state.attempt,
+            max_retries=state.max_retries,
         ).on_conflict_do_update(
             index_elements=[Run.run_id],
             set_=dict(
-                name=summary.span_name,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                status=summary.status.value,
+                flow_name=state.flow_name,
+                status=state.status.value,
+                worker_id=state.worker_id,
+                heartbeat_at=heartbeat_at,
+                ended_at=ended_at,
+                attempt=state.attempt,
             ),
         )
     )
-    if parent_id is not None:
-        await session.execute(
-            sqlite_insert(RunLink).values(
-                link_id=uuid7(),
-                parent_run_id=parent_id,
-                child_run_id=summary.span_id,
-                depth=depth,
-            ).on_conflict_do_nothing()
-        )
-    for child in summary.children:
-        await _upsert_run_tree(session, child, summary.span_id, depth + 1)
 
 
-async def snapshot_runs(
+async def insert_new_states(
     session: AsyncSession,
-    summaries: list[RunSummary],
-) -> None:
-    """
-    Pure snapshot function: upsert pre-summarised run trees into the DB.
-
-    Callers are responsible for converting raw logs to RunSummary objects
-    (via ``analysis.summarise``) before calling this function, keeping the
-    storage layer free of domain logic.
-
-    Args:
-        session: Active async SQLAlchemy session for the snapshot DB.
-        summaries: Already-summarised run trees to persist.
-    """
-    if not summaries:
-        return
-
-    for summary in summaries:
-        try:
-            await _upsert_run_tree(session, summary)
-        except Exception:
-            logger.exception("snapshot_run_failed", extra={"run_id": str(summary.span_id)})
-
-    await session.commit()
-
-
-async def insert_new_summaries(
-    session: AsyncSession,
-    summaries: dict[UUID, RunSummary],
+    states: list[RunState],
 ) -> int:
-    """
-    Incremental insert: skip run_ids already present in the snapshot.
+    """Insert states whose run_id is not yet in the snapshot.
+
+    Already-present run_ids are skipped so this function is safe to call
+    repeatedly with overlapping state lists.
 
     Args:
         session: Active async SQLAlchemy session for the snapshot DB.
-        summaries: Candidate runs, keyed by flow run_id (UUIDv7).
+        states: Candidate states to insert.
 
     Returns:
-        Number of runs newly inserted.
+        Number of states newly inserted.
     """
-    if not summaries:
+    if not states:
         return 0
 
+    candidate_ids = [s.run_id for s in states]
     result = await session.execute(
-        select(Run.run_id).where(Run.run_id.in_(list(summaries.keys())))
+        select(Run.run_id).where(Run.run_id.in_(candidate_ids))
     )
     existing = set(result.scalars().all())
-    new_summaries = [s for rid, s in summaries.items() if rid not in existing]
-    await snapshot_runs(session, new_summaries)
-    return len(new_summaries)
+    new_states = [s for s in states if s.run_id not in existing]
+
+    for state in new_states:
+        try:
+            await upsert_run_state(session, state)
+        except Exception:
+            logger.exception(
+                "insert_new_state_failed", extra={"run_id": str(state.run_id)}
+            )
+
+    await session.commit()
+    return len(new_states)
 
 # ---
 # endregion

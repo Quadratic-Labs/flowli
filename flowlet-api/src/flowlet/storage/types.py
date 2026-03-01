@@ -93,7 +93,7 @@ class LogPath:
     name: str = attrs.field(init=False)
     id: UUID = attrs.field(init=False)
 
-    @path.validate
+    @path.validator
     def check(self, _, value):
         parts = value.parts
         if not value.suffix == ".jsonl" or len(parts) < 3 or parts[-3] != "runs":
@@ -118,6 +118,85 @@ class LogPath:
             A LogPath pointing to ``root/runs/<name>/<id>.jsonl``.
         """
         return cls(path=root / "runs" / name / f"{id}.jsonl")
+
+# ---
+# endregion
+
+
+# region @storage.types.statepath
+# ---
+# role: storage
+# intent: structured state-file path following the /state/<flow_name>/<run_id>.json schema
+# description: >
+#   StatePath couples a StoragePath with the flow_name and run_id parsed from it.
+#   path is the single source of truth; flow_name and run_id are derived in
+#   __attrs_post_init__. Use build() to construct a new path and from_path() to
+#   parse an existing one.
+# rules:
+#   - path MUST match …/state/<flow_name>/<run_id>.json; raises ValueError otherwise
+#   - flow_name and run_id MUST NOT be set directly; mutate path and re-parse instead
+# dependencies:
+#   - storage.types.storagepath
+# ---
+
+
+@attrs.define(slots=True, kw_only=True)
+class StatePath:
+    """State-file path structured under the ``/state/<flow_name>/<run_id>.json`` schema.
+
+    ``path`` is the single source of truth. ``flow_name`` and ``run_id`` are
+    derived from it on construction and stored for fast access.
+
+    Attributes:
+        path: Full storage path to the state file.
+        flow_name: Flow name extracted from the second-to-last path component.
+        run_id: Run UUID extracted from the file stem.
+    """
+
+    path: StoragePath = attrs.field()
+    flow_name: str = attrs.field(init=False)
+    run_id: UUID = attrs.field(init=False)
+
+    @path.validator
+    def _check(self, _, value: StoragePath) -> None:
+        parts = value.parts
+        if value.suffix != ".json" or len(parts) < 3 or parts[-3] != "state":
+            raise ValueError(
+                f"{value!r} does not match /state/<flow_name>/<run_id>.json"
+            )
+
+    def __attrs_post_init__(self) -> None:
+        self.flow_name = self.path.parts[-2]
+        self.run_id = UUID(self.path.stem)
+
+    @classmethod
+    def build(cls, root: StoragePath, flow_name: str, run_id: UUID) -> "StatePath":
+        """Construct a StatePath from a root directory, flow name, and UUID.
+
+        Args:
+            root: Root storage path.
+            flow_name: Name of the flow.
+            run_id: Run UUID.
+
+        Returns:
+            A StatePath pointing to ``root/state/<flow_name>/<run_id>.json``.
+        """
+        return cls(path=root / "state" / flow_name / f"{run_id}.json")
+
+    @classmethod
+    def from_path(cls, path: StoragePath) -> "StatePath":
+        """Parse a StatePath from an existing storage path.
+
+        Args:
+            path: Storage path matching the state schema.
+
+        Returns:
+            A StatePath with derived flow_name and run_id.
+
+        Raises:
+            ValueError: If the path does not match the expected schema.
+        """
+        return cls(path=path)
 
 # ---
 # endregion

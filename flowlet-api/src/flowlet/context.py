@@ -11,12 +11,14 @@ Key Design Decisions:
     - Supports arbitrarily nested execution contexts
     - Separation of concerns: context management vs. observation/tracking
 """
+import contextlib
 import contextvars
 import typing
-from uuid import UUID, uuid7
+from uuid import UUID
 
-from attrs import Factory, define
-from .models import SpanType
+from attrs import Factory, define, field
+from .models import RunType
+from .types import uuid7_desc
 
 
 # region @context
@@ -50,9 +52,9 @@ class RunContext:
         parent_span_id: parent's span id.
         flow_name: root span's name.
     """
-    run_id: UUID = Factory(uuid7)
+    run_id: UUID = Factory(uuid7_desc)
     span_name: str
-    span_type: SpanType
+    span_type: RunType
     span_id: UUID = Factory(lambda self: self.run_id, takes_self=True)
     parent_span_id: UUID | None = field(default=None)
     flow_name: str = Factory(lambda self: self.span_name, takes_self=True)
@@ -61,7 +63,7 @@ class RunContext:
     def init_root_span(
         cls,
         span_name: str,
-        span_type: SpanType = SpanType.task,
+        span_type: RunType = RunType.task,
         span_id: UUID | None = None,
     ) -> RunContext:
         """Generate a valid root context.
@@ -93,7 +95,7 @@ class RunContext:
     def init_child_span(
         self,
         span_name: str,
-        span_type: SpanType = SpanType.task,
+        span_type: RunType = RunType.task,
         span_id: UUID | None = None,
     ) -> RunContext:
         """Spawn a valid child context from the current context.
@@ -109,7 +111,7 @@ class RunContext:
             run_id = self.run_id,
             span_name = span_name,
             span_type = span_type,
-            span_id = span_id or uuid7(),
+            span_id = span_id or uuid7_desc(),
             parent_span_id = self.span_id,
         )
 
@@ -200,7 +202,7 @@ class ContextManager:
     def append_new_span(
         cls,
         span_name: str,
-        span_type: SpanType = SpanType.task,
+        span_type: RunType = RunType.task,
         span_id: UUID | None = None,
     ) -> tuple[RunContext, ...]:
         parent = cls.get_current_span()
@@ -213,26 +215,36 @@ class ContextManager:
         return cls.get_all_spans() + (ctx,)
 
     @classmethod
+    @contextlib.contextmanager
     def begin_span(
         cls,
         span_name: str,
-        span_type: SpanType = SpanType.task,
+        span_type: RunType = RunType.task,
         span_id: UUID | None = None,
-    ) -> typing.ContextManager[None]:
+    ) -> typing.Iterator[None]:
         spans = cls.append_new_span(
             span_name=span_name, span_type=span_type, span_id=span_id)
-        return typing.cast(typing.ContextManager[None], cls.runs_stack.set(spans))
+        token = cls.runs_stack.set(spans)
+        try:
+            yield
+        finally:
+            cls.runs_stack.reset(token)
 
     @classmethod
+    @contextlib.asynccontextmanager
     async def begin_span_async(
         cls,
         span_name: str,
-        span_type: SpanType = SpanType.task,
+        span_type: RunType = RunType.task,
         span_id: UUID | None = None,
-    ) -> typing.AsyncContextManager[None]:
+    ) -> typing.AsyncIterator[None]:
         spans = cls.append_new_span(
             span_name=span_name, span_type=span_type, span_id=span_id)
-        return typing.cast(typing.AsyncContextManager[None], cls.runs_stack.set(spans))
+        token = cls.runs_stack.set(spans)
+        try:
+            yield
+        finally:
+            cls.runs_stack.reset(token)
 
 # ---
 # endregion

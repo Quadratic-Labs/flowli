@@ -7,10 +7,10 @@ storage layout produced by the instrumentation layer.
 import logging
 from uuid import UUID
 
-from .models import RunLog
-from .serdes import from_json
-from .storage import StoragePath
-from .types import Period, PeriodUUID
+from ..models import RunLog
+from ..serdes import from_json
+from ..storage.types import StoragePath
+from ..types import Period, PeriodUUID
 
 
 logger = logging.getLogger(__name__)
@@ -168,13 +168,13 @@ class LogRepository:
             result.extend(self.get_logs_recursive(child_name, child_id, visited))
         return result
 
-
 # ---
 # endregion
 
 
 # region
-@def _read_file(file: StoragePath) -> list[RunLog]:
+
+def _read_file(file: StoragePath) -> list[RunLog]:
     """Parse all RunLog entries from a single .jsonl log file.
 
     Each non-blank line is expected to be a JSON object whose fields map to
@@ -198,11 +198,12 @@ class LogRepository:
         if not raw:
             continue
         try:
-            logs.append(from_json(RunLog, raw))
+            logs.append(from_json(RunLog)(raw))
         except Exception:
             logger.warning(
                 "skipping_malformed_log_line",
                 extra={"path": str(file), "line": lineno},
             )
     return logs
+
 # endregion

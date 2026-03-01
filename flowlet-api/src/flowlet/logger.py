@@ -11,7 +11,7 @@ import threading
 from typing import Any, Callable
 
 from .context import ContextManager
-from .models import SpanLog
+from .models import RunLog as SpanLog
 from .serdes import to_json
 from .storage import StoragePath
 

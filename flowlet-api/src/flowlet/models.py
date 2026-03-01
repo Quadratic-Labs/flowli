@@ -36,7 +36,7 @@ from .types import JsonData, Timestamp
 #    - what traces do runs leave ?
 # ---
 
-class SpanType(StrEnum):
+class RunType(StrEnum):
     flow = "flow"
     task = "task"
 
@@ -71,6 +71,9 @@ class RunStatus(StrEnum):
         else:
             return cls.running
 
+    def is_closed(self) -> bool:
+        return self.value in ("completed", "canceled", "failed", "warning")
+
 
 @define(slots=True, kw_only=True)
 class RunLog:
@@ -82,7 +85,7 @@ class RunLog:
     """
     flow_name: str
     run_id: UUID
-    span_type: SpanType
+    span_type: RunType
     span_name: str
     span_id: UUID
     parent_span_id: UUID | None
@@ -112,7 +115,7 @@ class RunSummary:
     """
     span_id: UUID
     span_name: str
-    span_type: SpanType
+    span_type: RunType
     status: RunStatus
     start_ts: Timestamp | None = field(default=None)
     end_ts: Timestamp | None = field(default=None)
@@ -143,6 +146,36 @@ class Run(RunSummary):
         logs: All log entries for this run, in chronological order.
     """
     logs: JsonData
+
+
+@define(slots=True, kw_only=True)
+class RunState:
+    """
+    Worker-owned state for a single flow execution.
+
+    Written atomically to the state store on every transition.
+    Acts as the source of truth for liveness detection and retry logic.
+
+    Attributes:
+        run_id: Unique identifier for the run.
+        flow_name: Name of the flow being executed.
+        status: Current execution status.
+        worker_id: Identifier of the owning worker process.
+        started_at: Timestamp when the run was first started.
+        heartbeat_at: Timestamp of the last heartbeat from the worker.
+        ended_at: Timestamp when the run finished (completed or failed).
+        attempt: Current attempt number (1-based).
+        max_retries: Maximum number of retry attempts allowed.
+    """
+    run_id: UUID
+    flow_name: str
+    status: RunStatus
+    worker_id: str
+    started_at: Timestamp
+    heartbeat_at: Timestamp
+    ended_at: Timestamp | None = field(default=None)
+    attempt: int = 1
+    max_retries: int = 3
 
 # ---
 # endregion

@@ -1,24 +1,28 @@
-from datetime import datetime
 import functools
 import json
-from typing import Any, Callable
+from typing import Any, Callable, get_args, get_origin
 from uuid import UUID
 
-from attrs import asdict
-
 from .context import RunContext
-from .models import SpanType, RunLog, RunSummary
-from .types import JsonData
+from .models import RunStatus, RunState, RunType, RunLog, RunSummary
+from .types import JsonAtom, Timestamp
 
 
 # region @valuedispatch
 # ---
 # role: util
-# intent: function dispatching on value of first argument
+# intent: curried function dispatch on a type argument, with generic alias support
 # description: >
-#   Similar to singledispatch but where dispatching on value and not the type.
-#   Useful for deserialisation, where the first value is already a type.
+#   Similar to singledispatch but dispatches on a type value (not the runtime type
+#   of the argument). The __call__ returns a Callable (deserializer), making it
+#   curried: dispatch(Type)(data).
+#   For generic aliases (e.g. list[RunLog]), get_origin/get_args are used to
+#   resolve type parameters into deserializers before passing them to the factory
+#   handler, so composition is automatic: dispatch(list[list[RunLog]]) works.
 # rules:
+#   - Non-generic handlers have signature fn(data) -> T.
+#   - Generic-origin handlers have signature fn(*resolved_deserializers) -> Callable.
+#   - The default is returned as-is for unregistered non-generic types.
 # dependencies:
 # aliases:
 # triggers:
@@ -35,12 +39,15 @@ class ValueDispatch:
             return fn
         return decorator
 
-    def __call__(self, target_type: type, data, *args, **kwargs):
-        try:
-            fn = self._registry[target_type]
-        except KeyError:
-            fn = self._default
-        return fn(data, *args, **kwargs)
+    def __call__(self, target_type: type) -> Callable:
+        origin = get_origin(target_type)
+        if origin is not None:
+            fn = self._registry.get(origin)
+            if fn is None:
+                return self._default
+            resolved = [self(t) for t in get_args(target_type)]
+            return fn(*resolved)
+        return self._registry.get(target_type, self._default)
 
 
 valuedispatch = ValueDispatch
@@ -52,116 +59,144 @@ valuedispatch = ValueDispatch
 # region @serdes.dict
 # ---
 # role: util
-# intent: serdes to from dictionaries
-# description:
-# rules:
-# dependencies:
-# aliases:
-# triggers:
-# ---
-
-@functools.singledispatch
-def to_dict(data: Any) -> Any:
-    return asdict(data)
-
-# ---
-# endregion
-
-
-# region @serdes.json_data
-# ---
-# role: util
-# intent: serdes to from json_data
+# intent: structural serdes between domain models and typed dicts
 # description: >
-#   json_data is json represente as python object. It handles dict and list
-#   and atomic types, but nothing else. For example, datetimes must be
-#   represented by str.
+#   to_dict converts domain models to plain dicts, preserving typed values
+#   (UUID, Timestamp, StrEnum) as-is. list and dict containers are handled
+#   recursively. This is the lossless intermediate layer: to_dict / from_dict
+#   round-trip without any type coercion.
+#   from_dict is curried via ValueDispatch: from_dict(RunLog)(data) or
+#   from_dict(list[RunLog])(data). Generic type args are pre-resolved to
+#   deserializers before being passed to factory handlers.
 # rules:
+#   - to_dict MUST NOT convert UUID, Timestamp, or StrEnum to str.
+#   - from_dict handlers MUST assume typed values (UUID, Timestamp already resolved).
+#   - Generic handlers (list, dict) MUST accept resolved deserializers, not raw types.
 # dependencies:
 # aliases:
 # triggers:
 # ---
 
 @functools.singledispatch
-def to_json_data(data: Any) -> JsonData:
-    return str(data)
+def destructure(data: Any) -> Any:
+    return data
 
 
-@to_json_data.register(dict)
-def _(data: dict) -> JsonData:
-    return {str(key): to_json_data(value) for key, value in data.items()}
+@destructure.register(list)
+def _(data: list) -> list:
+    return [destructure(item) for item in data]
 
 
-@to_json_data.register(RunContext)
-def _(data: RunContext) -> JsonData:
+@destructure.register(dict)
+def _(data: dict) -> dict:
+    return {key: destructure(value) for key, value in data.items()}
+
+
+@destructure.register(RunContext)
+def _(data: RunContext) -> dict:
     return {
         "flow_name": data.flow_name,
-        "run_id": str(data.run_id),
+        "run_id": data.run_id,
         "span_name": data.span_name,
-        "span_type": str(data.span_type),
-        "span_id": str(data.span_id),
-        "parent_span_id": str(data.parent_span_id) if data.parent_span_id is not None else None
+        "span_type": data.span_type,
+        "span_id": data.span_id,
+        "parent_span_id": data.parent_span_id,
     }
 
 
-@to_json_data.register(RunLog)
-def _(data: RunLog) -> JsonData:
+@destructure.register(RunLog)
+def _(data: RunLog) -> dict:
     return {
         "flow_name": data.flow_name,
-        "run_id": str(data.run_id),
+        "run_id": data.run_id,
         "span_name": data.span_name,
-        "span_type": str(data.span_type),
-        "span_id": str(data.span_id),
-        "parent_span_id": str(data.parent_span_id) if data.parent_span_id is not None else None,
-        "ts": data.ts.isoformat().replace('+00:00', 'Z'),
+        "span_type": data.span_type,
+        "span_id": data.span_id,
+        "parent_span_id": data.parent_span_id,
+        "ts": data.ts,
         "message": data.message,
         "level": data.level,
-        "extra": to_json_data(data.extra),
+        "extra": data.extra,
     }
 
 
-@to_json_data.register(RunSummary)
-def _(data: RunSummary) -> JsonData:
+@destructure.register(RunSummary)
+def _(data: RunSummary) -> dict:
     return {
-        "span_id": str(data.span_id),
+        "span_id": data.span_id,
         "span_name": data.span_name,
-        "status": str(data.status),
-        "start_ts": data.start_ts.isoformat().replace('+00:00', 'Z'),
-        "end_ts": data.end_ts.isoformat().replace('+00:00', 'Z'),
-        "children": [to_json_data(c) for c in data.children]
+        "status": data.status,
+        "start_ts": data.start_ts,
+        "end_ts": data.end_ts,
+        "children": destructure(data.children),
+    }
+
+
+@destructure.register(RunState)
+def _(data: RunState) -> dict:
+    return {
+        "run_id": data.run_id,
+        "flow_name": data.flow_name,
+        "status": data.status,
+        "worker_id": data.worker_id,
+        "started_at": data.started_at,
+        "heartbeat_at": data.heartbeat_at,
+        "ended_at": data.ended_at,
+        "attempt": data.attempt,
+        "max_retries": data.max_retries,
     }
 
 
 @valuedispatch
-def from_json_data(data: JsonData) -> Any:
+def structure(data):
     return data
 
 
-@from_json_data.register(RunContext)
-def _(data: dict[str, Any]) -> RunContext:
+@structure.register(list)
+def _(elem_deser: Callable) -> Callable[[list], list]:
+    return lambda data: [elem_deser(item) for item in data]
+
+
+@structure.register(RunContext)
+def _(data: dict) -> RunContext:
     return RunContext(
-        flow_name = data["flow_name"],
-        run_id = UUID(data["run_id"]),
-        span_name = data["span_name"],
-        span_type = SpanType(data["span_type"]),
-        span_id = UUID(data["span_id"]),
-        parent_span_id = UUID(data["parent_span_id"]),
+        flow_name=data["flow_name"],
+        run_id=data["run_id"],
+        span_name=data["span_name"],
+        span_type=data["span_type"],
+        span_id=data["span_id"],
+        parent_span_id=data["parent_span_id"],
     )
 
 
-@from_json_data.register(RunLog)
-def _(data: dict[str, Any]) -> RunLog:
+@structure.register(RunLog)
+def _(data: dict) -> RunLog:
     return RunLog(
-        flow_name = data["flow_name"],
-        run_id = UUID(data["run_id"]),
-        span_type = SpanType(data["span_type"]),
-        span_name = data["span_name"],
-        span_id = UUID(data["span_id"]),
-        parent_span_id = UUID(data["parent_span_id"]) if data["parent_span_id"] is not None else None,
-        ts = datetime.fromisoformat(data["ts"]),
-        message = data["message"],
-        level = data["level"],
-        extra = data["extra"],
+        flow_name=data["flow_name"],
+        run_id=data["run_id"],
+        span_type=data["span_type"],
+        span_name=data["span_name"],
+        span_id=data["span_id"],
+        parent_span_id=data["parent_span_id"],
+        ts=data["ts"],
+        message=data["message"],
+        level=data["level"],
+        extra=data["extra"],
+    )
+
+
+@structure.register(RunState)
+def _(data: dict) -> RunState:
+    return RunState(
+        run_id=data["run_id"],
+        flow_name=data["flow_name"],
+        status=data["status"],
+        worker_id=data["worker_id"],
+        started_at=data["started_at"],
+        heartbeat_at=data["heartbeat_at"],
+        ended_at=data.get("ended_at"),
+        attempt=data.get("attempt", 1),
+        max_retries=data.get("max_retries", 3),
     )
 
 # ---
@@ -171,29 +206,93 @@ def _(data: dict[str, Any]) -> RunLog:
 # region @serdes.json
 # ---
 # role: util
-# intent: serdes to from json
-# description:
+# intent: serdes between domain models and JSON strings, with type coercion
+# description: >
+#   to_json converts a domain model to a JSON string via to_dict + _json_default.
+#   _json_default is a singledispatch encoder for types that json.dumps cannot
+#   handle natively (UUID -> str, Timestamp -> ISO str).
+#   from_json is curried: from_json(RunLog)(raw_str) -> RunLog.
+#   from_json handlers own the full coercion pipeline (json.loads + str -> UUID,
+#   str -> Timestamp), making them the single source of truth for the wire format.
 # rules:
+#   - _json_default MUST use singledispatch (not isinstance chains).
+#   - from_json handlers MUST call json.loads internally.
+#   - StrEnum values are handled natively by json.dumps (no _json_default needed).
 # dependencies:
+#   - serdes.dict
 # aliases:
 # triggers:
 # ---
 
 @functools.singledispatch
+def _json_default(obj) -> JsonAtom:
+    raise TypeError(f"Object of type {type(obj).__name__!r} is not JSON serialisable")
+
+
+@_json_default.register(UUID)
+def _(obj: UUID) -> str:
+    return str(obj)
+
+
+@_json_default.register(Timestamp)
+def _(obj: Timestamp) -> str:
+    return obj.to_iso()
+
+
+@functools.singledispatch
 def to_json(data: Any) -> str:
-    return json.dumps(to_json_data(data))
+    return json.dumps(destructure(data), default=_json_default)
 
 
 @valuedispatch
 def from_json(data: str) -> Any:
-    json_data = json.loads(data)
-    return from_json_data(object, json_data)
+    return json.loads(data)
+
+
+@from_json.register(RunContext)
+def _(data: str) -> RunContext:
+    raw = json.loads(data)
+    return RunContext(
+        flow_name=raw["flow_name"],
+        run_id=UUID(raw["run_id"]),
+        span_name=raw["span_name"],
+        span_type=RunType(raw["span_type"]),
+        span_id=UUID(raw["span_id"]),
+        parent_span_id=UUID(raw["parent_span_id"]) if raw["parent_span_id"] is not None else None,
+    )
 
 
 @from_json.register(RunLog)
-def _(data: str) -> Any:
-    json_data = json.loads(data)
-    return from_json_data(RunLog, json_data)
+def _(data: str) -> RunLog:
+    raw = json.loads(data)
+    return RunLog(
+        flow_name=raw["flow_name"],
+        run_id=UUID(raw["run_id"]),
+        span_type=RunType(raw["span_type"]),
+        span_name=raw["span_name"],
+        span_id=UUID(raw["span_id"]),
+        parent_span_id=UUID(raw["parent_span_id"]) if raw["parent_span_id"] is not None else None,
+        ts=Timestamp.from_iso(raw["ts"]),
+        message=raw["message"],
+        level=raw["level"],
+        extra=raw["extra"],
+    )
+
+
+@from_json.register(RunState)
+def _(data: str) -> RunState:
+    raw = json.loads(data)
+    return RunState(
+        run_id=UUID(raw["run_id"]),
+        flow_name=raw["flow_name"],
+        status=RunStatus(raw["status"]),
+        worker_id=raw["worker_id"],
+        started_at=Timestamp.from_iso(raw["started_at"]),
+        heartbeat_at=Timestamp.from_iso(raw["heartbeat_at"]),
+        ended_at=Timestamp.from_iso(raw["ended_at"]) if raw.get("ended_at") else None,
+        attempt=raw.get("attempt", 1),
+        max_retries=raw.get("max_retries", 3),
+    )
 
 # ---
 # endregion

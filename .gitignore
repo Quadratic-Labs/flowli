@@ -84,6 +84,9 @@ ipython_config.py
 # pyenv
 .python-version
 
+# pyright
+pyrightconfig.json
+
 # pipenv
 Pipfile.lock
 
