@@ -1,79 +1,70 @@
 """
 Factory Boy factories for domain models (attrs-based).
 
-These factories generate domain model objects for testing business logic
-without database dependencies.
+Generates domain model objects for testing without database dependencies.
 """
-import uuid
 from datetime import UTC, datetime
 
 import factory
 
-from flowlet.models import (
-    FlowRunSummary,
-    FlowSummary,
-    RunAttrModel,
-    RunLogAttrModel,
-    RunModel,
-)
+from flowlet.models import RunLog, RunState, RunStatus, RunSummary, RunType
+from flowlet.types import Timestamp, uuid7_desc
 
 
-class RunAttrModelFactory(factory.Factory):
-    """Factory for creating RunAttrModel instances."""
+class TimestampFactory(factory.Factory):
+    """Factory for creating Timestamp instances."""
 
     class Meta:
-        model = RunAttrModel
+        model = Timestamp
 
-    name = factory.Sequence(lambda n: f"test_run_{n}")
-    run_type = "flow"
-    run_id = factory.LazyFunction(uuid.uuid4)
+    value = factory.LazyFunction(lambda: datetime.now(UTC))
 
 
-class RunLogAttrModelFactory(factory.Factory):
-    """Factory for creating RunLogAttrModel instances."""
+class RunLogFactory(factory.Factory):
+    """Factory for domain RunLog instances."""
 
     class Meta:
-        model = RunLogAttrModel
+        model = RunLog
 
-    run_id = factory.LazyFunction(uuid.uuid4)
-    status = "running"
-    log = ""
-    timestamp = factory.LazyFunction(lambda: datetime.now(UTC))
-    log_id = factory.LazyFunction(uuid.uuid4)
-
-
-class FlowSummaryFactory(factory.Factory):
-    """Factory for creating FlowSummary instances."""
-
-    class Meta:
-        model = FlowSummary
-
-    name = factory.Sequence(lambda n: f"test_flow_{n}")
-    status = "success"
-    started_at = factory.LazyFunction(lambda: datetime.now(UTC))
-    ended_at = factory.LazyFunction(lambda: datetime.now(UTC))
-    doc = None
+    flow_name       = factory.Sequence(lambda n: f"flow_{n}")
+    run_id          = factory.LazyFunction(uuid7_desc)
+    span_type       = RunType.flow
+    span_name       = factory.SelfAttribute("flow_name")
+    span_id         = factory.LazyFunction(uuid7_desc)
+    parent_span_id  = None
+    ts              = factory.SubFactory(TimestampFactory)
+    message         = "log entry"
+    level           = "INFO"
+    extra           = factory.LazyFunction(dict)
 
 
-class FlowRunSummaryFactory(factory.Factory):
-    """Factory for creating FlowRunSummary instances."""
+class RunStateFactory(factory.Factory):
+    """Factory for domain RunState instances."""
 
     class Meta:
-        model = FlowRunSummary
+        model = RunState
 
-    name = factory.Sequence(lambda n: f"test_flow_{n}")
-    run_id = factory.LazyFunction(uuid.uuid4)
-    status = "success"
-    ended_at = factory.LazyFunction(lambda: datetime.now(UTC))
+    run_id        = factory.LazyFunction(uuid7_desc)
+    flow_name     = factory.Sequence(lambda n: f"flow_{n}")
+    status        = RunStatus.running
+    worker_id     = "worker-1"
+    started_at    = factory.SubFactory(TimestampFactory)
+    heartbeat_at  = factory.SubFactory(TimestampFactory)
+    ended_at      = None
+    attempt       = 1
+    max_retries   = 3
 
 
-class RunModelFactory(factory.Factory):
-    """Factory for creating RunModel instances."""
+class RunSummaryFactory(factory.Factory):
+    """Factory for domain RunSummary instances."""
 
     class Meta:
-        model = RunModel
+        model = RunSummary
 
-    run = factory.SubFactory(RunAttrModelFactory)
-    logs = factory.List([])
-    parent = None
-    children = factory.List([])
+    span_id    = factory.LazyFunction(uuid7_desc)
+    span_name  = factory.Sequence(lambda n: f"flow_{n}")
+    span_type  = RunType.flow
+    status     = RunStatus.completed
+    start_ts   = factory.SubFactory(TimestampFactory)
+    end_ts     = factory.SubFactory(TimestampFactory)
+    children   = factory.LazyFunction(list)

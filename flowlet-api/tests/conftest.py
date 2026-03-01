@@ -1,208 +1,202 @@
 """
 Pytest configuration and shared fixtures for flowlet tests.
 
-This module provides:
-- Database isolation using SQLite in-memory databases
-- Factory setup for generating test data
-- Mocked dependencies for each layer
-- Common test utilities
+Provides:
+- Async SQLite engine for snapshot database tests
+- Registry and FlowController fixtures for controller tests
+- run_state / run_log factory fixtures (return a builder callable)
+- Mock querier and queue stubs
 """
-import uuid
-from typing import Generator
-from unittest.mock import Mock
-
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+import pytest_asyncio
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
-from flowlet.config import FlowletConfig
-from flowlet.controllers import FlowController
-from flowlet.database import Base, DatabaseSettings
-from flowlet.register import FlowRegister
-from flowlet.repositories.query import FlowQueryRepository
-from flowlet.repositories.tracker import FlowTracker
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from flowlet.api.controller import FlowController
+from flowlet.api.database import Base
+from flowlet.models import RunLog, RunState, RunStatus, RunType
+from flowlet.registry import Registry
+from flowlet.types import Timestamp, uuid7_desc
 
 
 # ============================================================================
-# Database Fixtures - Isolated per test
+# Builder functions — module-level, used by fixtures below and within conftest
 # ============================================================================
 
 
-@pytest.fixture(scope="function")
-def db_engine():
-    """
-    Create an isolated in-memory SQLite database engine for each test.
+def _make_ts(dt: datetime | None = None) -> Timestamp:
+    dt = dt or datetime.now(UTC)
+    return Timestamp(dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt)
 
-    This ensures complete isolation between tests - each test gets a fresh database.
-    """
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    Base.metadata.create_all(engine)
+
+def _make_run_state(
+    *,
+    run_id: UUID | None = None,
+    flow_name: str = "test_flow",
+    status: RunStatus = RunStatus.running,
+    worker_id: str = "worker-1",
+    started_at: Timestamp | None = None,
+    heartbeat_at: Timestamp | None = None,
+    ended_at: Timestamp | None = None,
+    attempt: int = 1,
+    max_retries: int = 3,
+) -> RunState:
+    now = _make_ts()
+    return RunState(
+        run_id=run_id or uuid7_desc(),
+        flow_name=flow_name,
+        status=status,
+        worker_id=worker_id,
+        started_at=started_at or now,
+        heartbeat_at=heartbeat_at or now,
+        ended_at=ended_at,
+        attempt=attempt,
+        max_retries=max_retries,
+    )
+
+
+def _make_run_log(
+    *,
+    flow_name: str = "test_flow",
+    run_id: UUID | None = None,
+    span_type: RunType = RunType.flow,
+    span_name: str = "test_flow",
+    span_id: UUID | None = None,
+    parent_span_id: UUID | None = None,
+    ts: Timestamp | None = None,
+    message: str = "log entry",
+    level: str = "INFO",
+    extra: dict | None = None,
+) -> RunLog:
+    return RunLog(
+        flow_name=flow_name,
+        run_id=run_id or uuid7_desc(),
+        span_type=span_type,
+        span_name=span_name,
+        span_id=span_id or uuid7_desc(),
+        parent_span_id=parent_span_id,
+        ts=ts or _make_ts(),
+        message=message,
+        level=level,
+        extra=extra or {},
+    )
+
+
+# ============================================================================
+# Factory fixtures — inject builder callables into tests
+# ============================================================================
+
+
+@pytest.fixture
+def make_ts():
+    """Return the _make_ts builder callable."""
+    return _make_ts
+
+
+@pytest.fixture
+def make_run_state():
+    """Return the _make_run_state builder callable."""
+    return _make_run_state
+
+
+@pytest.fixture
+def make_run_log():
+    """Return the _make_run_log builder callable."""
+    return _make_run_log
+
+
+# ============================================================================
+# Registry fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def registry() -> Registry:
+    """Empty Registry instance."""
+    return Registry()
+
+
+@pytest.fixture
+def registry_with_flows(registry: Registry) -> Registry:
+    """Registry with two typed flows pre-registered."""
+
+    def my_flow(x: int, y: int) -> int:
+        return x + y
+
+    def other_flow(name: str) -> str:
+        return f"hello {name}"
+
+    registry.register_flow(my_flow, name="my_flow")
+    registry.register_flow(other_flow, name="other_flow")
+    return registry
+
+
+# ============================================================================
+# Controller fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_querier() -> AsyncMock:
+    """AsyncMock stand-in for RunQuery."""
+    querier = AsyncMock()
+    querier.list_recent_states = AsyncMock(return_value=[])
+    querier.get_run = Mock(return_value={})
+    return querier
+
+
+@pytest.fixture
+def mock_queue() -> Mock:
+    """Mock stand-in for a JobQueue."""
+    q = Mock()
+    q.enqueue = Mock()
+    return q
+
+
+@pytest.fixture
+def controller(registry: Registry) -> FlowController:
+    """FlowController with no querier and no queue."""
+    return FlowController(registry=registry)
+
+
+@pytest.fixture
+def controller_with_querier(registry: Registry, mock_querier: AsyncMock) -> FlowController:
+    """FlowController with a mocked querier (for query endpoint tests)."""
+    return FlowController(registry=registry, querier=mock_querier)
+
+
+@pytest.fixture
+def controller_with_queue(registry: Registry, mock_queue: Mock) -> FlowController:
+    """FlowController with a mocked queue (for submit endpoint tests)."""
+    return FlowController(registry=registry, queue=mock_queue)
+
+
+# ============================================================================
+# Async SQLite fixtures (snapshot database layer)
+# ============================================================================
+
+
+@pytest_asyncio.fixture
+async def async_engine():
+    """In-memory async SQLite engine, schema created, disposed after test."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield engine
-    engine.dispose()
+    await engine.dispose()
 
 
-@pytest.fixture(scope="function")
-def db_session_factory(db_engine):
-    """
-    Create a session factory bound to the test database engine.
-
-    Returns a sessionmaker that creates sessions for the test database.
-    """
-    return sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
-
-
-@pytest.fixture(scope="function")
-def db_session(db_session_factory) -> Generator[Session, None, None]:
-    """
-    Create a database session for a test.
-
-    The session is automatically rolled back after the test to ensure isolation.
-    For true isolation, use db_session_factory to create multiple independent sessions.
-    """
-    session = db_session_factory()
-    try:
+@pytest_asyncio.fixture
+async def async_session(async_engine):
+    """Single async SQLAlchemy session, rolled back after each test."""
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
         yield session
-    finally:
-        session.rollback()
-        session.close()
-
-
-# ============================================================================
-# Configuration Fixtures
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def database_settings(db_engine):
-    """Mock DatabaseSettings with test database."""
-    settings = Mock(spec=DatabaseSettings)
-    settings.url = "sqlite:///:memory:"
-    settings.engine = db_engine
-    settings.db_session_factory = sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
-    return settings
-
-
-@pytest.fixture(scope="function")
-def flowlet_config(database_settings):
-    """FlowletConfig with test database settings."""
-    config = Mock(spec=FlowletConfig)
-    config.database = database_settings
-    return config
-
-
-# ============================================================================
-# Repository Layer Fixtures - Isolated from Domain Layer
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def flow_tracker(db_session_factory):
-    """
-    FlowTracker instance for testing write operations.
-
-    This is isolated - it only depends on the database session factory.
-    """
-    return FlowTracker(db_session_factory=db_session_factory)
-
-
-@pytest.fixture(scope="function")
-def mock_flow_register():
-    """
-    Mock FlowRegister for testing repository layer in isolation.
-
-    Use this when testing repositories without needing actual flow registration logic.
-    """
-    register = Mock(spec=FlowRegister)
-    register.list_flows.return_value = []
-    register.list_tasks.return_value = []
-    register.flows = {}
-    register.tasks = {}
-    return register
-
-
-@pytest.fixture(scope="function")
-def flow_query_repository(db_session_factory, mock_flow_register):
-    """
-    FlowQueryRepository instance for testing read operations.
-
-    Uses a mock register to isolate database querying from flow registration.
-    """
-    return FlowQueryRepository(
-        register=mock_flow_register,
-        db_session_factory=db_session_factory
-    )
-
-
-# ============================================================================
-# Domain Layer Fixtures - Isolated from API Layer
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def flow_register(db_session_factory, flow_tracker):
-    """
-    Real FlowRegister instance for testing flow/task registration.
-
-    Use this for integration tests of the domain layer.
-    """
-    return FlowRegister(
-        db_session_factory=db_session_factory,
-        tracker=flow_tracker
-    )
-
-
-# ============================================================================
-# API Layer Fixtures - Isolated from Implementation
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def mock_query_repository():
-    """
-    Mock FlowQueryRepository for testing controllers in isolation.
-
-    Use this when testing API controllers without database dependencies.
-    """
-    repository = Mock(spec=FlowQueryRepository)
-    repository.list_flows.return_value = []
-    repository.list_runs.return_value = []
-    repository.list_runs_by_flow_name.return_value = []
-    repository.get_run_by_id.return_value = None
-    return repository
-
-
-@pytest.fixture(scope="function")
-def flow_controller(mock_query_repository):
-    """
-    FlowController instance for testing API endpoints.
-
-    Uses mocked dependencies to isolate controller logic.
-    """
-    mock_query_repository.register = Mock(spec=FlowRegister)
-    mock_query_repository.register.list_flows.return_value = []
-    mock_query_repository.register.flows = {}
-
-    return FlowController(query_repository=mock_query_repository)
-
-
-# ============================================================================
-# Test Data Helpers
-# ============================================================================
-
-
-@pytest.fixture(scope="function")
-def sample_run_id():
-    """Generate a consistent run ID for tests."""
-    return uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-
-@pytest.fixture(scope="function")
-def sample_flow_name():
-    """Sample flow name for tests."""
-    return "test_flow"
-
-
-@pytest.fixture(scope="function")
-def sample_task_name():
-    """Sample task name for tests."""
-    return "test_task"
+        await session.rollback()

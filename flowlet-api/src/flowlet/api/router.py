@@ -176,7 +176,7 @@ def _wire(router: APIRouter, spec: RouteSpec, endpoint: Callable) -> None:
     )
 
 
-def build_router(controller: FlowController) -> APIRouter:
+def build_router(controller: FlowController, **_) -> APIRouter:
     """Assemble and return the Flowlet APIRouter.
 
     Attaches each RouteSpec to the matching FlowController method.

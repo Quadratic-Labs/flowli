@@ -1,54 +1,33 @@
 """
-Factory Boy factories for SQLAlchemy ORM models.
+Factory Boy factories for the snapshot database ORM model.
 
-These factories generate database records (ORM objects) for testing
-database layer operations.
+The Run table is flat (no RunLink); hierarchy is derived from log files.
 """
-import uuid
 from datetime import UTC, datetime
 
 import factory
-from factory.alchemy import SQLAlchemyModelFactory
 
-from flowlet.database import Run, RunLink, RunLog
+from flowlet.api.database import Run
+from flowlet.models import RunStatus
+from flowlet.types import uuid7_desc
 
 
-class RunFactory(SQLAlchemyModelFactory):
-    """Factory for creating Run ORM instances."""
+class RunOrmFactory(factory.Factory):
+    """Factory for the flat Run ORM snapshot row.
+
+    Does NOT use SQLAlchemyModelFactory so it can be used without a DB session.
+    Use ``session.add(RunOrmFactory())`` explicitly when a live session is needed.
+    """
 
     class Meta:
         model = Run
-        sqlalchemy_session = None  # Will be set by the fixture
-        sqlalchemy_session_persistence = "commit"
 
-    run_id = factory.LazyFunction(uuid.uuid4)
-    run_type = "flow"
-    name = factory.Sequence(lambda n: f"test_flow_{n}")
-
-
-class RunLogFactory(SQLAlchemyModelFactory):
-    """Factory for creating RunLog ORM instances."""
-
-    class Meta:
-        model = RunLog
-        sqlalchemy_session = None  # Will be set by the fixture
-        sqlalchemy_session_persistence = "commit"
-
-    log_id = factory.LazyFunction(uuid.uuid4)
-    run_id = factory.LazyFunction(uuid.uuid4)
-    timestamp = factory.LazyFunction(lambda: datetime.now(UTC))
-    status = "running"
-    log = ""
-
-
-class RunLinkFactory(SQLAlchemyModelFactory):
-    """Factory for creating RunLink ORM instances."""
-
-    class Meta:
-        model = RunLink
-        sqlalchemy_session = None  # Will be set by the fixture
-        sqlalchemy_session_persistence = "commit"
-
-    link_id = factory.LazyFunction(uuid.uuid4)
-    parent_run_id = factory.LazyFunction(uuid.uuid4)
-    child_run_id = factory.LazyFunction(uuid.uuid4)
+    run_id        = factory.LazyFunction(uuid7_desc)
+    flow_name     = factory.Sequence(lambda n: f"flow_{n}")
+    status        = RunStatus.running.value
+    worker_id     = "worker-1"
+    started_at    = factory.LazyFunction(lambda: datetime.now(UTC))
+    heartbeat_at  = factory.LazyFunction(lambda: datetime.now(UTC))
+    ended_at      = None
+    attempt       = 1
+    max_retries   = 3

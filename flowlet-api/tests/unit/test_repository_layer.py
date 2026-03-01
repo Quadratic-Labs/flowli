@@ -1,378 +1,167 @@
 """
-Unit tests for the repository layer (FlowTracker and FlowQueryRepository).
+Unit tests for the storage repository layer.
 
-These tests verify:
-- Write operations (FlowTracker)
-- Read operations (FlowQueryRepository)
-- Repository isolation from domain logic
-- Proper session management
-
-Best practices:
-- Repository tests use real database but mock domain dependencies
-- Each test has an isolated database
-- Focus on repository behavior, not ORM details
+Covers:
+- StateRepository: write → read round-trip on local filesystem
+- StateRepository: missing file returns None
+- StateRepository: delete removes state file
+- StateRepository: list_states returns persisted states
+- LogRepository: get_logs returns empty list when file absent
+- LogRepository: list_run_ids returns ids for present log files
+- LogRepository: get_logs_recursive follows child references
 """
-import uuid
-from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from flowlet.database import Run, RunLink, RunLog
-from flowlet.models import RunAttrModel, RunLogAttrModel
+from flowlet.models import RunLog, RunType
+from flowlet.repository.log import LogRepository
+from flowlet.repository.state import StateRepository
+from flowlet.serdes import to_json
+from flowlet.types import uuid7_desc
+
+
+# ============================================================================
+# StateRepository
+# ============================================================================
+
+
+@pytest.fixture
+def state_repo(tmp_path: Path) -> StateRepository:
+    return StateRepository(root=tmp_path)
 
 
 @pytest.mark.unit
-class TestFlowTracker:
-    """Test FlowTracker write operations."""
+class TestStateRepository:
+    def test_write_and_read_round_trip(self, state_repo, make_run_state):
+        state = make_run_state(flow_name="my_flow")
+        assert state_repo.write(state) is True
 
-    def test_create_run(self, flow_tracker, db_session):
-        """Test creating a new run record."""
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(
-            run_id=run_id,
-            run_type="flow",
-            name="test_flow"
-        )
+        restored = state_repo.read(state.flow_name, state.run_id)
+        assert restored is not None
+        assert restored.run_id == state.run_id
+        assert restored.flow_name == state.flow_name
+        assert restored.status == state.status
 
-        result = flow_tracker.create_run(run_data, db=db_session)
+    def test_read_missing_returns_none(self, state_repo):
+        assert state_repo.read("no_such_flow", uuid7_desc()) is None
 
-        # Verify the result
-        assert result.run_id == run_id
-        assert result.run_type == "flow"
-        assert result.name == "test_flow"
+    def test_write_updates_on_second_call(self, state_repo, make_run_state):
+        from attrs import evolve
+        from flowlet.models import RunStatus
 
-        # Verify database record
-        db_run = db_session.query(Run).filter_by(run_id=run_id).first()
-        assert db_run is not None
-        assert db_run.run_id == run_id
-        assert db_run.run_type == "flow"
+        state   = make_run_state(status=RunStatus.running)
+        state_repo.write(state)
+        state_repo.write(evolve(state, status=RunStatus.completed))
 
-    def test_create_run_without_session(self, flow_tracker):
-        """Test creating a run without passing a session (uses session factory)."""
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(
-            run_id=run_id,
-            run_type="flow",
-            name="test_flow"
-        )
+        restored = state_repo.read(state.flow_name, state.run_id)
+        assert restored.status == RunStatus.completed
 
-        # Should create its own session
-        result = flow_tracker.create_run(run_data)
+    def test_delete_removes_file(self, state_repo, make_run_state):
+        state = make_run_state(flow_name="temp_flow")
+        state_repo.write(state)
+        state_repo.delete(state.flow_name, state.run_id)
+        assert state_repo.read(state.flow_name, state.run_id) is None
 
-        assert result.run_id == run_id
-        assert result.run_type == "flow"
+    def test_list_states_returns_all(self, state_repo, make_run_state):
+        states = [make_run_state(flow_name="batch_flow") for _ in range(3)]
+        for s in states:
+            state_repo.write(s)
 
-    def test_link_runs(self, flow_tracker, db_session):
-        """Test linking parent and child runs."""
-        # Create parent and child runs
-        parent_id = uuid.uuid4()
-        child_id = uuid.uuid4()
+        listed = state_repo.list_states(flow_name="batch_flow")
+        assert {s.run_id for s in listed} == {s.run_id for s in states}
 
-        parent_data = RunAttrModel(run_id=parent_id, run_type="flow", name="parent")
-        child_data = RunAttrModel(run_id=child_id, run_type="task", name="child")
+    def test_list_states_filtered_by_flow(self, state_repo, make_run_state):
+        state_repo.write(make_run_state(flow_name="flow_a"))
+        state_repo.write(make_run_state(flow_name="flow_b"))
 
-        flow_tracker.create_run(parent_data, db=db_session)
-        flow_tracker.create_run(child_data, db=db_session)
+        only_a = state_repo.list_states(flow_name="flow_a")
+        assert len(only_a) == 1
+        assert only_a[0].flow_name == "flow_a"
 
-        # Link them
-        flow_tracker.link_runs(parent_data, child_data, db=db_session)
+    def test_list_states_empty_when_no_state_dir(self, state_repo):
+        assert state_repo.list_states() == []
 
-        # Verify link exists
-        link = db_session.query(RunLink).filter_by(
-            parent_run_id=parent_id,
-            child_run_id=child_id
-        ).first()
-        assert link is not None
-        assert link.parent_run_id == parent_id
-        assert link.child_run_id == child_id
 
-    def test_link_runs_with_none_parent(self, flow_tracker, db_session):
-        """Test that linking with None parent does nothing."""
-        child_data = RunAttrModel(
-            run_id=uuid.uuid4(),
-            run_type="task",
-            name="child"
-        )
+# ============================================================================
+# LogRepository helpers
+# ============================================================================
 
-        # Should not raise an error
-        flow_tracker.link_runs(None, child_data, db=db_session)
 
-        # Verify no links created
-        links = db_session.query(RunLink).all()
-        assert len(links) == 0
+def _write_log_file(base: Path, flow_name: str, span_id, logs: list[RunLog]) -> None:
+    """Write a .jsonl log file in the expected runs/<name>/<uuid>.jsonl layout."""
+    span_dir = base / "runs" / flow_name
+    span_dir.mkdir(parents=True, exist_ok=True)
+    (span_dir / f"{span_id}.jsonl").write_text(
+        "\n".join(to_json(log) for log in logs), encoding="utf-8"
+    )
 
-    def test_link_runs_with_none_child(self, flow_tracker, db_session):
-        """Test that linking with None child does nothing."""
-        parent_data = RunAttrModel(
-            run_id=uuid.uuid4(),
-            run_type="flow",
-            name="parent"
-        )
 
-        # Should not raise an error
-        flow_tracker.link_runs(parent_data, None, db=db_session)
-
-        # Verify no links created
-        links = db_session.query(RunLink).all()
-        assert len(links) == 0
-
-    def test_log(self, flow_tracker, db_session):
-        """Test adding a log entry to a run."""
-        # Create a run
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(run_id=run_id, run_type="flow", name="test_flow")
-        flow_tracker.create_run(run_data, db=db_session)
-
-        # Add a log
-        log_id = uuid.uuid4()
-        timestamp = datetime.now(UTC)
-        log_data = RunLogAttrModel(
-            log_id=log_id,
-            run_id=run_id,
-            timestamp=timestamp,
-            status="running",
-            log="Flow started"
-        )
-
-        result = flow_tracker.log(log_data, db=db_session)
-
-        # Verify result
-        assert result.log_id == log_id
-        assert result.run_id == run_id
-        assert result.status == "running"
-
-        # Verify database record
-        db_log = db_session.query(RunLog).filter_by(log_id=log_id).first()
-        assert db_log is not None
-        assert db_log.run_id == run_id
-        assert db_log.status == "running"
-        assert db_log.log == "Flow started"
-
-    def test_log_without_session(self, flow_tracker, db_session):
-        """Test logging without passing a session."""
-        # Create a run first
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(run_id=run_id, run_type="flow", name="test_flow")
-        flow_tracker.create_run(run_data, db=db_session)
-
-        # Add log without session
-        log_data = RunLogAttrModel(
-            run_id=run_id,
-            status="running",
-            log="Test log"
-        )
-
-        result = flow_tracker.log(log_data)
-        assert result.run_id == run_id
+@pytest.fixture
+def log_repo(tmp_path: Path) -> LogRepository:
+    return LogRepository(base_path=tmp_path)
 
 
 @pytest.mark.unit
-class TestFlowQueryRepository:
-    """Test FlowQueryRepository read operations."""
+class TestLogRepository:
+    def test_get_logs_missing_file_returns_empty(self, log_repo):
+        assert log_repo.get_logs("ghost_flow", uuid7_desc()) == []
 
-    def test_list_flows_empty(self, flow_query_repository, mock_flow_register):
-        """Test listing flows when none exist."""
-        mock_flow_register.list_flows.return_value = []
+    def test_get_logs_returns_written_entries(self, log_repo, tmp_path, make_run_log):
+        run_id  = uuid7_desc()
+        span_id = uuid7_desc()
+        entries = [
+            make_run_log(run_id=run_id, span_id=span_id, level="INFO"),
+            make_run_log(run_id=run_id, span_id=span_id, level="SUCCESS"),
+        ]
+        _write_log_file(tmp_path, "my_flow", span_id, entries)
 
-        flows = flow_query_repository.list_flows()
+        assert len(log_repo.get_logs("my_flow", span_id)) == 2
 
-        assert flows == []
+    def test_list_run_ids_for_flow(self, log_repo, tmp_path, make_run_log):
+        span_id = uuid7_desc()
+        _write_log_file(tmp_path, "my_flow", span_id, [make_run_log(span_id=span_id)])
 
-    def test_list_flows_without_runs(self, flow_query_repository, mock_flow_register):
-        """Test listing registered flows that have no runs."""
-        mock_flow_register.list_flows.return_value = ["flow_1", "flow_2"]
+        results = log_repo.list_run_ids(flow_name="my_flow")
+        assert results == [("my_flow", span_id)]
 
-        flows = flow_query_repository.list_flows()
+    def test_list_run_ids_empty_when_no_runs_dir(self, log_repo):
+        assert log_repo.list_run_ids() == []
 
-        assert len(flows) == 2
-        assert flows[0].name == "flow_1"
-        assert flows[0].status is None
-        assert flows[1].name == "flow_2"
-        assert flows[1].status is None
-
-    def test_list_flows_with_runs(
-        self, flow_query_repository, mock_flow_register, db_session, flow_tracker
+    def test_get_logs_recursive_follows_child_references(
+        self, log_repo, tmp_path, make_run_log
     ):
-        """Test listing flows with execution history."""
-        # Register a flow
-        mock_flow_register.list_flows.return_value = ["test_flow"]
+        run_id       = uuid7_desc()
+        flow_span_id = uuid7_desc()
+        task_span_id = uuid7_desc()
 
-        # Create run and logs
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(run_id=run_id, run_type="flow", name="test_flow")
-        flow_tracker.create_run(run_data, db=db_session)
-
-        start_time = datetime.now(UTC)
-        end_time = start_time + timedelta(seconds=5)
-
-        log1 = RunLogAttrModel(
-            run_id=run_id,
-            timestamp=start_time,
-            status="running",
-            log="Started"
+        parent_log = make_run_log(
+            flow_name="my_flow", run_id=run_id, span_id=flow_span_id,
+            span_type=RunType.flow, level="INFO",
+            extra={"child_span_id": str(task_span_id), "child_span_name": "my_task"},
         )
-        log2 = RunLogAttrModel(
-            run_id=run_id,
-            timestamp=end_time,
-            status="success",
-            log="Finished"
+        child_log = make_run_log(
+            flow_name="my_flow", run_id=run_id, span_id=task_span_id,
+            span_type=RunType.task, level="SUCCESS",
         )
-        flow_tracker.log(log1, db=db_session)
-        flow_tracker.log(log2, db=db_session)
+        _write_log_file(tmp_path, "my_flow", flow_span_id, [parent_log])
+        _write_log_file(tmp_path, "my_task", task_span_id, [child_log])
 
-        # Query flows
-        flows = flow_query_repository.list_flows(db=db_session)
+        all_logs  = log_repo.get_logs_recursive("my_flow", flow_span_id)
+        span_ids  = {log.span_id for log in all_logs}
+        assert len(all_logs) == 2
+        assert flow_span_id in span_ids
+        assert task_span_id in span_ids
 
-        assert len(flows) == 1
-        assert flows[0].name == "test_flow"
-        assert flows[0].status == "success"
-        # Note: SQLite doesn't preserve timezone, so we compare without timezone
-        assert flows[0].started_at.replace(tzinfo=None) == start_time.replace(tzinfo=None)
-        assert flows[0].ended_at.replace(tzinfo=None) == end_time.replace(tzinfo=None)
-
-    def test_list_runs(self, flow_query_repository, db_session, flow_tracker):
-        """Test listing all runs."""
-        # Create multiple runs
-        for i in range(3):
-            run_id = uuid.uuid4()
-            run_data = RunAttrModel(
-                run_id=run_id,
-                run_type="flow",
-                name=f"flow_{i}"
-            )
-            flow_tracker.create_run(run_data, db=db_session)
-
-            log_data = RunLogAttrModel(
-                run_id=run_id,
-                status="success",
-                log="Finished"
-            )
-            flow_tracker.log(log_data, db=db_session)
-
-        # Query runs
-        runs = flow_query_repository.list_runs(limit=10, db=db_session)
-
-        assert len(runs) == 3
-
-    def test_list_runs_pagination(self, flow_query_repository, db_session, flow_tracker):
-        """Test pagination when listing runs."""
-        # Create 5 runs
-        for i in range(5):
-            run_id = uuid.uuid4()
-            run_data = RunAttrModel(
-                run_id=run_id,
-                run_type="flow",
-                name=f"flow_{i}"
-            )
-            flow_tracker.create_run(run_data, db=db_session)
-
-            log_data = RunLogAttrModel(run_id=run_id, status="success", log="Done")
-            flow_tracker.log(log_data, db=db_session)
-
-        # Get first page
-        page1 = flow_query_repository.list_runs(offset=0, limit=2, db=db_session)
-        assert len(page1) == 2
-
-        # Get second page
-        page2 = flow_query_repository.list_runs(offset=2, limit=2, db=db_session)
-        assert len(page2) == 2
-
-        # Verify different runs
-        page1_ids = {run.run_id for run in page1}
-        page2_ids = {run.run_id for run in page2}
-        assert page1_ids.isdisjoint(page2_ids)
-
-    def test_list_runs_by_flow_name(
-        self, flow_query_repository, db_session, flow_tracker
+    def test_get_logs_recursive_guards_against_cycles(
+        self, log_repo, tmp_path, make_run_log
     ):
-        """Test listing runs for a specific flow."""
-        # Create runs for different flows
-        target_flow_runs = []
-        for i in range(2):
-            run_id = uuid.uuid4()
-            run_data = RunAttrModel(
-                run_id=run_id,
-                run_type="flow",
-                name="target_flow"
-            )
-            flow_tracker.create_run(run_data, db=db_session)
-            log_data = RunLogAttrModel(run_id=run_id, status="success", log="Done")
-            flow_tracker.log(log_data, db=db_session)
-            target_flow_runs.append(run_id)
-
-        # Create runs for other flow
-        other_run_id = uuid.uuid4()
-        other_data = RunAttrModel(
-            run_id=other_run_id,
-            run_type="flow",
-            name="other_flow"
+        span_id   = uuid7_desc()
+        log_entry = make_run_log(
+            span_id=span_id, level="INFO",
+            extra={"child_span_id": str(span_id), "child_span_name": "my_flow"},
         )
-        flow_tracker.create_run(other_data, db=db_session)
-        log_data = RunLogAttrModel(run_id=other_run_id, status="success", log="Done")
-        flow_tracker.log(log_data, db=db_session)
+        _write_log_file(tmp_path, "my_flow", span_id, [log_entry])
 
-        # Query runs for target flow
-        runs = flow_query_repository.list_runs_by_flow_name("target_flow", db=db_session)
-
-        assert len(runs) == 2
-        assert all(run.name == "target_flow" for run in runs)
-
-    def test_get_run_by_id(self, flow_query_repository, db_session, flow_tracker):
-        """Test getting a specific run by ID."""
-        # Create a run
-        run_id = uuid.uuid4()
-        run_data = RunAttrModel(run_id=run_id, run_type="flow", name="test_flow")
-        flow_tracker.create_run(run_data, db=db_session)
-
-        # Add logs
-        log_data = RunLogAttrModel(run_id=run_id, status="running", log="Started")
-        flow_tracker.log(log_data, db=db_session)
-
-        # Query by ID
-        run = flow_query_repository.get_run_by_id(run_id, db=db_session)
-
-        assert run is not None
-        assert run.run.run_id == run_id
-        assert run.run.name == "test_flow"
-        assert len(run.logs) == 1
-
-    def test_get_run_by_id_not_found(self, flow_query_repository, db_session):
-        """Test getting a non-existent run."""
-        non_existent_id = uuid.uuid4()
-        run = flow_query_repository.get_run_by_id(non_existent_id, db=db_session)
-
-        assert run is None
-
-    def test_get_run_with_children(
-        self, flow_query_repository, db_session, flow_tracker
-    ):
-        """Test getting a run with child tasks."""
-        # Create parent flow
-        parent_id = uuid.uuid4()
-        parent_data = RunAttrModel(
-            run_id=parent_id,
-            run_type="flow",
-            name="parent_flow"
-        )
-        flow_tracker.create_run(parent_data, db=db_session)
-
-        # Create child tasks
-        child_ids = []
-        for i in range(2):
-            child_id = uuid.uuid4()
-            child_data = RunAttrModel(
-                run_id=child_id,
-                run_type="task",
-                name=f"task_{i}"
-            )
-            flow_tracker.create_run(child_data, db=db_session)
-            flow_tracker.link_runs(parent_data, child_data, db=db_session)
-            child_ids.append(child_id)
-
-        # Query parent run
-        run = flow_query_repository.get_run_by_id(parent_id, db=db_session)
-
-        assert run is not None
-        assert len(run.children) == 2
-        retrieved_child_ids = {child.run.run_id for child in run.children}
-        assert retrieved_child_ids == set(child_ids)
+        logs = log_repo.get_logs_recursive("my_flow", span_id)
+        assert len(logs) == 1

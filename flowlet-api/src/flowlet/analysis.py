@@ -38,7 +38,7 @@ def summarise(spans: list[RunLog]) -> RunSummary:
     info: dict[UUID, RunSummary] = {}
     flow_name = None
     for span_id, span_log_list in span_logs.items():
-        span_log_list = sorted(span_log_list, key=lambda l: l.ts)
+        span_log_list = sorted(span_log_list, key=lambda l: l.ts.value)
         start_log = span_log_list[0]
         end_log = span_log_list[-1]
 
