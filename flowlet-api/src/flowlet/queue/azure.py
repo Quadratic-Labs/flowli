@@ -3,13 +3,16 @@
 Provides production-ready queue backend using Azure Queue Storage
 with support for visibility timeouts, TTL, and reliable message delivery.
 """
-import json
-from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
-from attrs import define, field
+from attrs import define, evolve, field
 
 from ..models import FlowJob
+from ..serdes import from_json, to_json
 from .config import AzureQueueStorageConfig
+
+if TYPE_CHECKING:
+    from azure.storage.queue import QueueClient, QueueMessage
 
 
 @define
@@ -56,7 +59,7 @@ class AzureQueueStorage:
     _message_cache: dict[UUID, _MessageMetadata] = field(factory=dict, init=False)
 
     @classmethod
-    def setup(cls, config: AzureQueueStorageConfig) -> 'AzureQueueStorage':
+    def setup(cls, config: AzureQueueStorageConfig) -> AzureQueueStorage:
         """Factory method for dependency injection integration.
 
         Args:
@@ -90,22 +93,8 @@ class AzureQueueStorage:
             >>> job = FlowJob(flow_name="my_flow", kwargs={"x": 1})
             >>> job_id = queue.enqueue(job)
         """
-        # Serialize job to JSON
-        job_dict = {
-            'job_id': str(job.job_id),
-            'run_id': str(job.run_id),
-            'flow_name': job.flow_name,
-            'kwargs': job.kwargs,
-            'submitted_at': job.submitted_at.isoformat(),
-            'retry_count': job.retry_count,
-            'max_retries': job.max_retries,
-            'visibility_timeout': job.visibility_timeout,
-        }
-        message = json.dumps(job_dict)
-
-        # Send to queue
         self.config.queue_client.send_message(
-            message,
+            to_json(job),
             time_to_live=self.config.message_ttl
         )
 
@@ -140,19 +129,7 @@ class AzureQueueStorage:
         )
 
         for message in messages:
-            # Deserialize job from JSON
-            job_dict = json.loads(message.content)
-
-            job = FlowJob(
-                job_id=UUID(job_dict['job_id']),
-                run_id=UUID(job_dict['run_id']),
-                flow_name=job_dict['flow_name'],
-                kwargs=job_dict['kwargs'],
-                submitted_at=datetime.fromisoformat(job_dict['submitted_at']),
-                retry_count=job_dict['retry_count'],
-                max_retries=job_dict['max_retries'],
-                visibility_timeout=job_dict['visibility_timeout'],
-            )
+            job = from_json(FlowJob)(message.content)
 
             # Cache message metadata for ack/nack
             self._message_cache[job.job_id] = _MessageMetadata(
@@ -244,17 +221,7 @@ class AzureQueueStorage:
             return
 
         # Increment retry count and rebuild message
-        updated_job_dict = {
-            'job_id': str(job.job_id),
-            'run_id': str(job.run_id),
-            'flow_name': job.flow_name,
-            'kwargs': job.kwargs,
-            'submitted_at': job.submitted_at.isoformat(),
-            'retry_count': current_retry_count + 1,
-            'max_retries': max_retries,
-            'visibility_timeout': job.visibility_timeout,
-        }
-        updated_message = json.dumps(updated_job_dict)
+        updated_message = to_json(evolve(job, retry_count=current_retry_count + 1))
 
         # Calculate exponential backoff: 2^retry_count seconds
         backoff_seconds = 2 ** current_retry_count

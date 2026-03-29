@@ -5,12 +5,15 @@ import time
 import random
 from datetime import datetime
 
-from flowlet import configure
+from flowlet.app import Flowlet
 
 
 # flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
 # flowlet.init_database()
-flowlet = configure({"storage": [{"type": "filesystem", "base_path": "./storage"}]})
+flowlet = Flowlet.configure({
+    "storage": {"type": "filesystem", "base_path": "./storage"},
+    "queue": {"type": "memory"},
+})
 
 
 # region Tasks
@@ -20,7 +23,7 @@ flowlet = configure({"storage": [{"type": "filesystem", "base_path": "./storage"
 def fetch_data(source: str):
     """Simulate fetching data from a source"""
     print(f"Fetching data from {source}...")
-    time.sleep(0.5)
+    time.sleep(15)
     return {
         "source": source,
         "data": [1, 2, 3, 4, 5],

@@ -13,7 +13,8 @@ from uuid import UUID
 import pytest
 
 from flowlet.models import FlowJob, RunStatus, RunSummary, RunType
-from flowlet.types import uuid7_desc
+from flowlet.types import Timestamp, uuid7_desc
+from flowlet.worker import JobState, existing_state_case
 
 
 @pytest.mark.unit
@@ -123,6 +124,71 @@ class TestRunState:
     def test_run_id_is_uuid(self, make_run_state):
         state = make_run_state()
         assert isinstance(state.run_id, UUID)
+
+
+@pytest.mark.unit
+class TestExistingStateCase:
+    """existing_state_case maps RunState (or None) to JobState correctly."""
+
+    _STALE_THRESHOLD = 90  # seconds
+
+    def test_no_state_returns_new(self):
+        assert existing_state_case(None, self._STALE_THRESHOLD) == JobState.new
+
+    def test_closed_status_returns_closed(self, make_run_state):
+        for status in (RunStatus.completed, RunStatus.failed, RunStatus.canceled):
+            state = make_run_state(status=status)
+            assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.closed
+
+    def test_pending_status_returns_ready(self, make_run_state):
+        state = make_run_state(status=RunStatus.pending)
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.ready
+
+    def test_live_heartbeat_no_deadline_returns_busy(self, make_run_state):
+        state = make_run_state(status=RunStatus.running, heartbeat_at=Timestamp.now())
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.busy
+
+    def test_stale_heartbeat_under_max_retries_returns_stale(self, make_run_state, make_ts):
+        old_hb = make_ts(datetime.now(UTC) - timedelta(seconds=200))
+        state = make_run_state(status=RunStatus.running, heartbeat_at=old_hb, attempt=1, max_retries=3)
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.stale
+
+    def test_stale_heartbeat_at_max_retries_returns_failed(self, make_run_state, make_ts):
+        old_hb = make_ts(datetime.now(UTC) - timedelta(seconds=200))
+        state = make_run_state(status=RunStatus.running, heartbeat_at=old_hb, attempt=3, max_retries=3)
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.failed
+
+    def test_live_heartbeat_past_deadline_returns_stale(self, make_run_state, make_ts):
+        """A live heartbeat should not block takeover once deadline_at has passed."""
+        past_deadline = make_ts(datetime.now(UTC) - timedelta(seconds=1))
+        state = make_run_state(
+            status=RunStatus.running,
+            heartbeat_at=Timestamp.now(),
+            deadline_at=past_deadline,
+            attempt=1,
+            max_retries=3,
+        )
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.stale
+
+    def test_live_heartbeat_past_deadline_at_max_retries_returns_failed(self, make_run_state, make_ts):
+        past_deadline = make_ts(datetime.now(UTC) - timedelta(seconds=1))
+        state = make_run_state(
+            status=RunStatus.running,
+            heartbeat_at=Timestamp.now(),
+            deadline_at=past_deadline,
+            attempt=3,
+            max_retries=3,
+        )
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.failed
+
+    def test_live_heartbeat_before_deadline_returns_busy(self, make_run_state, make_ts):
+        future_deadline = make_ts(datetime.now(UTC) + timedelta(seconds=300))
+        state = make_run_state(
+            status=RunStatus.running,
+            heartbeat_at=Timestamp.now(),
+            deadline_at=future_deadline,
+        )
+        assert existing_state_case(state, self._STALE_THRESHOLD) == JobState.busy
 
 
 @pytest.mark.unit

@@ -10,7 +10,7 @@ app = FastAPI(
     description="Example application demonstrating the Flowlet workflow orchestration framework",
     version="0.1.0"
 )
-app.include_router(flows.flowlet.get_router(), prefix="", tags=["Flowlet"])
+app.include_router(flows.flowlet.router, prefix="", tags=["Flowlet"])
 
 
 @app.get("/")
@@ -20,12 +20,14 @@ def root():
         "name": "Flowlet Example",
         "version": "0.1.0",
         "description": "Example application demonstrating Flowlet framework",
-        "flows": list(flows.flowlet.registry.list_flows()),
-        "endpoints": {
-            "flows": "/flows",
-            "runs": "/runs",
-            "api_docs": "/docs"
-        }
+        "docs": {
+            "intent": "visit the API's documentation",
+            "route": "/docs",
+        },
+        "flows": {
+            "intent": "list available flows",
+            "route": "/flows",
+        },
     }
 
 

@@ -6,7 +6,7 @@ from pydantic import Field, Discriminator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
-    from flowlet.storage.azure.path import AzureBlobPath
+    from .azure import AzureBlobPath
     from sqlalchemy.engine import Engine
     from sqlalchemy.orm import Session
 
@@ -196,3 +196,8 @@ StorageConfig = Annotated[
     ],
     Discriminator('type'),
 ]
+"""Discriminated union of supported user-facing storage backends.
+
+SQLite is intentionally excluded; it is used internally by SnapshotRepository
+as the hot-snapshot engine and is not a user-facing storage option.
+"""

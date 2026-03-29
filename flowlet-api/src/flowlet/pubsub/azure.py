@@ -7,13 +7,25 @@ Install the Azure SDK to use this backend::
 
     pip install azure-messaging-webpubsubservice
 """
-import json
 import logging
-from collections.abc import Iterator
+import queue as _queue
+import threading
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING
 
-from attrs import define, field
+from attrs import define
 
-from ..types import JsonData
+from .config import AzureWebPubSubConfig
+
+if TYPE_CHECKING:
+    import websocket  # type: ignore[import-untyped]
+    from azure.messaging.webpubsubservice import WebPubSubServiceClient  # type: ignore[import-untyped]
+
+try:
+    from azure.messaging.webpubsubservice import WebPubSubServiceClient  # type: ignore[import-untyped]
+    import websocket  # type: ignore[import-untyped]
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -23,97 +35,82 @@ logger = logging.getLogger(__name__)
 # role: adapter
 # intent: cloud-scale PubSub via Azure Web PubSub service
 # description: >
-#   AzureWebPubSub delegates publish to the Azure Web PubSub REST SDK
-#   (send_to_all) and subscribe to a WebSocket connection established via
+#   AzureWebPubSub[T] delegates publish to the Azure Web PubSub REST SDK
+#   (send_to_group) and subscribe to a WebSocket connection established via
 #   the service client.  Hub name maps to the application name; channel
-#   names become group names within the hub.
+#   names become group names within the hub.  Callers work with domain
+#   objects of type T; the injected serializer/deserializer pair handles
+#   the wire format (JSON string) transparently.
 # rules:
 #   - publish MUST NOT raise; log and swallow on SDK errors.
-#   - subscribe MUST yield JSON-decoded dicts from the WebSocket message stream.
+#   - subscribe MUST yield deserialised domain objects from the WebSocket stream.
 #   - connection_string MUST be provided at construction time.
+#   - serializer / deserializer MUST be provided at construction.
 # dependencies:
 #   - pubsub
 # ---
 
 
 @define(slots=False, kw_only=True)
-class AzureWebPubSub:
+class AzureWebPubSub[T]:
     """Azure Web PubSub backed publish/subscribe bus.
 
+    Callers publish and receive domain objects of type ``T``; JSON
+    serialisation is handled internally.
+
     Attributes:
+        serializer: Converts a domain object to a JSON string.
+        deserializer: Reconstructs a domain object from a JSON string.
         connection_string: Azure Web PubSub service connection string.
         hub: Hub name (maps to the application / service group).
     """
 
-    connection_string: str
-    hub: str = field(default="flowlet")
+    config: AzureWebPubSubConfig
+    serializer: Callable[[T], str]
+    deserializer: Callable[[str], T]
 
-    def _client(self):
-        try:
-            from azure.messaging.webpubsubservice import WebPubSubServiceClient  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "Install 'azure-messaging-webpubsubservice' to use AzureWebPubSub"
-            ) from exc
+    def _client(self) -> WebPubSubServiceClient:
         return WebPubSubServiceClient.from_connection_string(
-            self.connection_string, hub=self.hub
+            self.config.connection_string, hub=self.config.hub
         )
 
-    def publish(self, channel: str, event: JsonData) -> None:
-        """Publish *event* to all subscribers of *channel* via Azure Web PubSub.
+    def publish(self, channel: str, event: T) -> None:
+        """Publish a domain event to all subscribers of *channel* via Azure Web PubSub.
 
         Args:
             channel: Logical channel name; mapped to a Web PubSub group.
-            event: JSON-serialisable event payload.
+            event: Domain object to publish.
         """
         try:
             client = self._client()
             client.send_to_group(
                 group=channel,
-                message=json.dumps(event),
+                message=self.serializer(event),
                 content_type="application/json",
             )
         except Exception:
             logger.exception("azure_pubsub_publish_error", extra={"channel": channel})
 
-    def subscribe(self, channel: str) -> Iterator[JsonData]:
+    def subscribe(self, channel: str) -> Iterator[T]:
         """Subscribe to *channel* via an Azure Web PubSub WebSocket connection.
 
         Opens a WebSocket to the service, joins the *channel* group, and yields
-        decoded event payloads as they arrive.
+        deserialised domain objects as they arrive.
 
         Args:
             channel: Logical channel name (Web PubSub group).
 
         Yields:
-            Decoded JSON payloads from the service.
+            Domain objects from the service.
         """
-        try:
-            from azure.messaging.webpubsubservice import WebPubSubServiceClient  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "Install 'azure-messaging-webpubsubservice' to use AzureWebPubSub"
-            ) from exc
-
         client = self._client()
         token = client.get_client_access_token(groups=[channel])
         ws_url: str = token["url"]
 
-        try:
-            import websocket  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "Install 'websocket-client' to use AzureWebPubSub.subscribe"
-            ) from exc
-
-        import queue as _queue
-        q: _queue.Queue[JsonData | None] = _queue.Queue()
+        q: _queue.Queue[T | None] = _queue.Queue()
 
         def _on_message(ws, message: str) -> None:
-            try:
-                q.put(json.loads(message))
-            except json.JSONDecodeError:
-                logger.warning("azure_pubsub_invalid_json", extra={"channel": channel})
+            q.put(self.deserializer(message))
 
         def _on_error(ws, err) -> None:
             logger.error("azure_pubsub_ws_error", extra={"error": str(err)})
@@ -128,7 +125,6 @@ class AzureWebPubSub:
             on_error=_on_error,
             on_close=_on_close,
         )
-        import threading
         t = threading.Thread(target=ws.run_forever, daemon=True)
         t.start()
 
@@ -137,7 +133,7 @@ class AzureWebPubSub:
                 item = q.get()
                 if item is None:
                     return
-                yield item
+                yield item  # type: ignore[misc]
         finally:
             ws.close()
 

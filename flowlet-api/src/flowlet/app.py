@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from .api.controller import FlowController
     from .api.query import RunQuery
     from .api.repository import SnapshotRepository
+    from .api.subscriber import SnapshotSubscriber
+    from .api.ws import ConnectionManager
+    from .models import RunState
+    from .pubsub import PubSubProtocol
     from .queue import JobQueueProtocol
     from .repository.log import LogRepository
 
@@ -80,6 +84,9 @@ class FlowletDeps(TypedDict, total=False):
     snapshot_repo: SnapshotRepository
     querier: RunQuery | None
     queue: JobQueueProtocol | None
+    pubsub: "PubSubProtocol[RunState] | None"
+    subscriber: "SnapshotSubscriber | None"
+    connection_manager: "ConnectionManager | None"
     controller: FlowController
     router: APIRouter
 
@@ -118,6 +125,9 @@ class Flowlet:
         self.registry: Registry = deps["registry"]  # type: ignore[assignment]
         self.controller: FlowController = deps["controller"]  # type: ignore[assignment]
         self.router: APIRouter = deps["router"]  # type: ignore[assignment]
+        self.pubsub = deps.get("pubsub")
+        self._subscriber = deps.get("subscriber")
+        self._connection_manager = deps.get("connection_manager")
 
     @classmethod
     def configure(cls, configs: FlowletConfig | Mapping | None = None) -> "Flowlet":
@@ -179,6 +189,22 @@ class Flowlet:
             deps["snapshot_repo"] = SnapshotRepository.from_configs(configs=configs)
             deps["querier"] = RunQuery(**deps)
 
+            from .serdes import to_json, from_json
+            from .models import RunState as _RunState
+            from .pubsub.memory import InMemoryPubSub
+            from .api.subscriber import SnapshotSubscriber
+            from .api.ws import ConnectionManager
+            deps["pubsub"] = InMemoryPubSub[_RunState](
+                serializer=to_json,
+                deserializer=from_json(_RunState),
+            )
+            deps["connection_manager"] = ConnectionManager()
+            deps["subscriber"] = SnapshotSubscriber(**deps)
+        else:
+            deps["pubsub"] = None
+            deps["connection_manager"] = None
+            deps["subscriber"] = None
+
         deps["queue"] = None
         if configs.queue is not None:
             from .queue.config import AzureQueueStorageConfig, InMemoryQueueConfig
@@ -197,6 +223,61 @@ class Flowlet:
         deps["router"] = build_router(**deps)
 
         return cls(**deps)
+
+    def start(self) -> None:
+        """Start background subscribers.
+
+        Must be called after all flows and tasks have been registered.
+        Idempotent: safe to call multiple times.
+
+        Example:
+            >>> # In a FastAPI lifespan:
+            >>> @asynccontextmanager
+            ... async def lifespan(app):
+            ...     flowlet.start()
+            ...     yield
+            ...     flowlet.stop()
+        """
+        if self._subscriber is not None:
+            self._subscriber.start()
+
+    def stop(self) -> None:
+        """Stop background subscribers and the WebSocket broadcast loop.
+
+        Idempotent: safe to call multiple times or before start().
+        """
+        if self._subscriber is not None:
+            self._subscriber.stop()
+        if self._connection_manager is not None:
+            self._connection_manager.stop()
+
+    @property
+    def lifespan(self):
+        """FastAPI lifespan context manager that starts and stops all background services.
+
+        Starts the pubsub subscriber threads and the WebSocket broadcast loop on
+        startup; stops them cleanly on shutdown.  Pass this to ``FastAPI(lifespan=...)``.
+
+        Example:
+            >>> app = FastAPI(lifespan=flowlet.lifespan)
+        """
+        from contextlib import asynccontextmanager
+        import asyncio
+
+        @asynccontextmanager
+        async def _lifespan(app):
+            task = None
+            if self._connection_manager is not None:
+                task = asyncio.create_task(self._connection_manager.run())
+            self.start()
+            try:
+                yield
+            finally:
+                self.stop()
+                if task is not None:
+                    await task  # exits after stop() sends the None sentinel
+
+        return _lifespan
 
     def list_flows(self) -> list[str]:
         """Return the names of all registered flows.

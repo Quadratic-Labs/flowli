@@ -4,7 +4,7 @@ from typing import Any, Callable, get_args, get_origin
 from uuid import UUID
 
 from .context import RunContext
-from .models import RunStatus, RunState, RunType, RunLog, RunSummary
+from .models import FlowJob, RunStatus, RunState, RunType, RunLog, RunSummary
 from .types import JsonAtom, Timestamp
 
 
@@ -142,8 +142,24 @@ def _(data: RunState) -> dict:
         "started_at": data.started_at,
         "heartbeat_at": data.heartbeat_at,
         "ended_at": data.ended_at,
+        "deadline_at": data.deadline_at,
         "attempt": data.attempt,
         "max_retries": data.max_retries,
+    }
+
+
+@destructure.register(FlowJob)
+def _(data: FlowJob) -> dict:
+    return {
+        "job_id": data.job_id,
+        "run_id": data.run_id,
+        "flow_name": data.flow_name,
+        "kwargs": data.kwargs,
+        "submitted_at": data.submitted_at,
+        "retry_count": data.retry_count,
+        "max_retries": data.max_retries,
+        "visibility_timeout": data.visibility_timeout,
+        "timeout_seconds": data.timeout_seconds,
     }
 
 
@@ -195,6 +211,7 @@ def _(data: dict) -> RunState:
         started_at=data["started_at"],
         heartbeat_at=data["heartbeat_at"],
         ended_at=data.get("ended_at"),
+        deadline_at=data.get("deadline_at"),
         attempt=data.get("attempt", 1),
         max_retries=data.get("max_retries", 3),
     )
@@ -290,8 +307,25 @@ def _(data: str) -> RunState:
         started_at=Timestamp.from_iso(raw["started_at"]),
         heartbeat_at=Timestamp.from_iso(raw["heartbeat_at"]),
         ended_at=Timestamp.from_iso(raw["ended_at"]) if raw.get("ended_at") else None,
+        deadline_at=Timestamp.from_iso(raw["deadline_at"]) if raw.get("deadline_at") else None,
         attempt=raw.get("attempt", 1),
         max_retries=raw.get("max_retries", 3),
+    )
+
+
+@from_json.register(FlowJob)
+def _(data: str) -> FlowJob:
+    raw = json.loads(data)
+    return FlowJob(
+        job_id=UUID(raw["job_id"]),
+        run_id=UUID(raw["run_id"]),
+        flow_name=raw["flow_name"],
+        kwargs=raw["kwargs"],
+        submitted_at=Timestamp.from_iso(raw["submitted_at"]),
+        retry_count=raw["retry_count"],
+        max_retries=raw["max_retries"],
+        visibility_timeout=raw["visibility_timeout"],
+        timeout_seconds=raw.get("timeout_seconds"),
     )
 
 # ---

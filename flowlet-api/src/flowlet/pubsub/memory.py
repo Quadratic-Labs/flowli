@@ -8,11 +8,9 @@ they subscribed — i.e. late-join semantics.
 import logging
 import threading
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from attrs import define, field
-
-from ..types import JsonData
 
 logger = logging.getLogger(__name__)
 
@@ -22,46 +20,56 @@ logger = logging.getLogger(__name__)
 # role: adapter
 # intent: thread-safe in-memory PubSub for tests and single-process usage
 # description: >
-#   InMemoryPubSub stores published events in per-channel queues protected by
-#   a shared Condition variable.  Each subscriber holds its own read cursor so
-#   that multiple concurrent subscribers on the same channel are independent.
+#   InMemoryPubSub[T] stores published events as JSON strings in per-channel
+#   queues protected by a shared Condition variable.  Serialization and
+#   deserialization are handled internally via the injected serializer /
+#   deserializer pair; callers work with domain objects of type T.
+#   Each subscriber holds its own read cursor so that multiple concurrent
+#   subscribers on the same channel are independent.
 # rules:
 #   - MUST be thread-safe.
 #   - publish MUST NOT raise.
 #   - subscribe MUST yield events in publish order.
+#   - serializer / deserializer MUST be provided at construction.
 # dependencies:
 #   - pubsub
 # ---
 
 
 @define(slots=False, kw_only=True)
-class InMemoryPubSub:
+class InMemoryPubSub[T]:
     """Thread-safe in-memory publish/subscribe bus.
 
     Suitable for unit tests and single-process integration scenarios.
+    Callers publish and receive domain objects of type ``T``; JSON
+    serialisation is handled internally.
 
     Attributes:
-        _store: Per-channel list of accumulated event payloads.
+        serializer: Converts a domain object to a JSON string.
+        deserializer: Reconstructs a domain object from a JSON string.
+        _store: Per-channel list of accumulated wire payloads (JSON strings).
         _cond: Condition variable used to wake sleeping subscribers.
         _closed: When True, all subscribe generators will stop iteration.
     """
 
-    _store: dict[str, list[JsonData]] = field(factory=lambda: defaultdict(list), alias="_store")
+    serializer: Callable[[T], str]
+    deserializer: Callable[[str], T]
+    _store: dict[str, list[str]] = field(factory=lambda: defaultdict(list), alias="_store")
     _cond: threading.Condition = field(factory=threading.Condition, alias="_cond")
     _closed: bool = field(default=False, alias="_closed")
 
-    def publish(self, channel: str, event: JsonData) -> None:
-        """Publish an event to all subscribers of *channel*.
+    def publish(self, channel: str, event: T) -> None:
+        """Publish a domain event to all subscribers of *channel*.
 
         Args:
             channel: Logical channel name.
-            event: JSON-serialisable event payload.
+            event: Domain object to publish.
         """
         with self._cond:
-            self._store[channel].append(event)
+            self._store[channel].append(self.serializer(event))
             self._cond.notify_all()
 
-    def subscribe(self, channel: str) -> Iterator[JsonData]:
+    def subscribe(self, channel: str) -> Iterator[T]:
         """Yield events on *channel* in publish order, blocking between events.
 
         The generator starts from the next event published *after* the call to
@@ -71,7 +79,7 @@ class InMemoryPubSub:
             channel: Logical channel name.
 
         Yields:
-            Event payloads in arrival order.
+            Domain objects in arrival order.
         """
         with self._cond:
             cursor = len(self._store.get(channel, []))
@@ -87,9 +95,9 @@ class InMemoryPubSub:
                 if self._closed:
                     return
 
-                events = self._store[channel]
-                while cursor < len(events):
-                    yield events[cursor]
+                raw_events = self._store[channel]
+                while cursor < len(raw_events):
+                    yield self.deserializer(raw_events[cursor])
                     cursor += 1
 
     def close(self) -> None:
@@ -98,7 +106,7 @@ class InMemoryPubSub:
             self._closed = True
             self._cond.notify_all()
 
-    def events(self, channel: str) -> list[JsonData]:
+    def events(self, channel: str) -> list[T]:
         """Return a snapshot of all events published to *channel*.
 
         Intended for test assertions.
@@ -107,10 +115,10 @@ class InMemoryPubSub:
             channel: Logical channel name.
 
         Returns:
-            Immutable copy of the event list.
+            Immutable copy of the deserialised event list.
         """
         with self._cond:
-            return list(self._store.get(channel, []))
+            return [self.deserializer(raw) for raw in self._store.get(channel, [])]
 
 # ---
 # endregion

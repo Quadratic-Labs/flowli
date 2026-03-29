@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Union
 from pydantic import Field, Discriminator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from flowlet.storage.config import AzureBlobStorageConfig, FilesystemStorageConfig
+from flowlet.storage.config import StorageConfig
 from flowlet.queue.config import QueueConfig
 
 if TYPE_CHECKING:
@@ -42,17 +42,6 @@ if TYPE_CHECKING:
 #   - storage configuration
 #   - queue configuration
 # ---
-
-
-StorageRoot = Annotated[
-    Union[FilesystemStorageConfig, AzureBlobStorageConfig],
-    Discriminator("type"),
-]
-"""Discriminated union of supported user-facing storage backends.
-
-SQLite is intentionally excluded; it is used internally by SnapshotRepository
-as the hot-snapshot engine and is not a user-facing storage option.
-"""
 
 
 class FlowletConfig(BaseSettings):
@@ -89,7 +78,7 @@ class FlowletConfig(BaseSettings):
         arbitrary_types_allowed=True,
     )
 
-    storage: StorageRoot | None = Field(
+    storage: StorageConfig | None = Field(
         default=None,
         description=(
             "Storage backend for logs and run state files. "

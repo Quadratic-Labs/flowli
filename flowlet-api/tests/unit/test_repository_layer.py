@@ -35,10 +35,13 @@ def state_repo(tmp_path: Path) -> StateRepository:
 class TestStateRepository:
     def test_write_and_read_round_trip(self, state_repo, make_run_state):
         state = make_run_state(flow_name="my_flow")
-        assert state_repo.write(state) is True
+        ok, etag = state_repo.write(state, etag=None)
+        assert ok is True
+        assert etag is not None
 
-        restored = state_repo.read(state.flow_name, state.run_id)
-        assert restored is not None
+        result = state_repo.read(state.flow_name, state.run_id)
+        assert result is not None
+        restored, _ = result
         assert restored.run_id == state.run_id
         assert restored.flow_name == state.flow_name
         assert restored.status == state.status
@@ -46,34 +49,68 @@ class TestStateRepository:
     def test_read_missing_returns_none(self, state_repo):
         assert state_repo.read("no_such_flow", uuid7_desc()) is None
 
+    def test_write_returns_false_on_stale_etag(self, state_repo, make_run_state):
+        """A write with a stale ETag must be rejected."""
+        from attrs import evolve
+        from flowlet.models import RunStatus
+
+        state = make_run_state(status=RunStatus.running)
+        ok, etag_v1 = state_repo.write(state, etag=None)
+        assert ok
+
+        # Second write with a correct ETag succeeds and mints a new ETag.
+        ok2, etag_v2 = state_repo.write(evolve(state, status=RunStatus.completed), etag=etag_v1)
+        assert ok2
+        assert etag_v2 != etag_v1
+
+        # Third write reusing the first (stale) ETag must be rejected.
+        ok3, etag_v3 = state_repo.write(evolve(state, status=RunStatus.running), etag=etag_v1)
+        assert ok3 is False
+        assert etag_v3 is None
+
     def test_write_updates_on_second_call(self, state_repo, make_run_state):
         from attrs import evolve
         from flowlet.models import RunStatus
 
-        state   = make_run_state(status=RunStatus.running)
-        state_repo.write(state)
-        state_repo.write(evolve(state, status=RunStatus.completed))
+        state = make_run_state(status=RunStatus.running)
+        ok, etag = state_repo.write(state, etag=None)
+        assert ok
 
-        restored = state_repo.read(state.flow_name, state.run_id)
+        ok2, _ = state_repo.write(evolve(state, status=RunStatus.completed), etag=etag)
+        assert ok2
+
+        result = state_repo.read(state.flow_name, state.run_id)
+        assert result is not None
+        restored, _ = result
         assert restored.status == RunStatus.completed
+
+    def test_write_new_fails_when_file_already_exists(self, state_repo, make_run_state):
+        """etag=None asserts the file does not exist — must fail if it does."""
+        state = make_run_state()
+        ok, _ = state_repo.write(state, etag=None)
+        assert ok
+
+        ok2, _ = state_repo.write(state, etag=None)
+        assert ok2 is False
 
     def test_delete_removes_file(self, state_repo, make_run_state):
         state = make_run_state(flow_name="temp_flow")
-        state_repo.write(state)
+        ok, _ = state_repo.write(state, etag=None)
+        assert ok
         state_repo.delete(state.flow_name, state.run_id)
         assert state_repo.read(state.flow_name, state.run_id) is None
 
     def test_list_states_returns_all(self, state_repo, make_run_state):
         states = [make_run_state(flow_name="batch_flow") for _ in range(3)]
         for s in states:
-            state_repo.write(s)
+            state_repo.write(s, etag=None)
 
         listed = state_repo.list_states(flow_name="batch_flow")
         assert {s.run_id for s in listed} == {s.run_id for s in states}
 
     def test_list_states_filtered_by_flow(self, state_repo, make_run_state):
-        state_repo.write(make_run_state(flow_name="flow_a"))
-        state_repo.write(make_run_state(flow_name="flow_b"))
+        state_repo.write(make_run_state(flow_name="flow_a"), etag=None)
+        state_repo.write(make_run_state(flow_name="flow_b"), etag=None)
 
         only_a = state_repo.list_states(flow_name="flow_a")
         assert len(only_a) == 1

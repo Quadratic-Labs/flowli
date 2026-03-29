@@ -6,7 +6,7 @@ Provides the FlowController class for handling flow execution and query endpoint
 from inspect import Parameter
 from typing import TYPE_CHECKING, Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, WebSocketDisconnect, WebSocket
 from pydantic import ValidationError
 
 from ..models import FlowJob
@@ -23,6 +23,7 @@ from .query import RunQuery
 
 if TYPE_CHECKING:
     from ..registry import Registry
+    from .ws import ConnectionManager
 
 
 # region @controller
@@ -78,6 +79,7 @@ class FlowController:
         registry: Registry,
         querier: RunQuery | None = None,
         queue: JobQueueProtocol | None = None,
+        connection_manager: ConnectionManager | None = None,
         **_,
     ):
         """Initialise the flow controller.
@@ -87,11 +89,14 @@ class FlowController:
             querier: RunQuery providing read access to run states and logs.
                 When None the query endpoints return 503.
             queue: Optional job queue for asynchronous flow submission.
+            connection_manager: ConnectionManager providing WebSocket broadcast.
+                When None the ``/ws/runs`` endpoint is unavailable.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.registry = registry
         self.querier = querier
         self.queue = queue
+        self.connection_manager = connection_manager
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -317,6 +322,30 @@ class FlowController:
             flows.append(flow_info)
 
         return flows
+
+    # ------------------------------------------------------------------
+    # WebSocket endpoint
+    # ------------------------------------------------------------------
+
+    async def ws_runs(self, websocket: WebSocket) -> None:
+        """WebSocket endpoint that streams RunState events in real-time.
+
+        Accepts the connection and keeps it open until the client disconnects.
+        All state broadcasts are pushed by ConnectionManager independently.
+
+        Args:
+            websocket: Incoming WebSocket connection.
+
+        Raises:
+            WebSocketDisconnect: handled internally; connection is removed cleanly.
+        """
+        assert self.connection_manager is not None
+        await self.connection_manager.connect(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            self.connection_manager.disconnect(websocket)
 
 # ---
 # endregion

@@ -195,6 +195,8 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     """
     router = APIRouter()
 
+    _wire(router, _LIST_FLOWS, controller.list_flows_with_schemas)
+    _wire(router, _FLOW_SCHEMA, controller.get_flow_schema)
     _wire(router, _EXECUTE_FLOW, controller.run_flow)
     if not _SUBMIT_FLOW.requires_queue or controller.queue is not None:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
@@ -202,8 +204,9 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _RUNS_QUERY, controller.query_runs)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _LOGS_QUERY, controller.query_logs)
-    _wire(router, _LIST_FLOWS, controller.list_flows_with_schemas)
-    _wire(router, _FLOW_SCHEMA, controller.get_flow_schema)
+
+    if controller.connection_manager is not None:
+        router.add_api_websocket_route("/ws/runs", controller.ws_runs)
 
     return router
 

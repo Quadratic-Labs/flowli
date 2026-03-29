@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 from flowlet.api.controller import FlowController
 from flowlet.api.database import Base
-from flowlet.models import RunLog, RunState, RunStatus, RunType
+from flowlet.models import FlowJob, RunLog, RunState, RunStatus, RunType
 from flowlet.registry import Registry
 from flowlet.types import Timestamp, uuid7_desc
 
@@ -45,6 +45,7 @@ def _make_run_state(
     started_at: Timestamp | None = None,
     heartbeat_at: Timestamp | None = None,
     ended_at: Timestamp | None = None,
+    deadline_at: Timestamp | None = None,
     attempt: int = 1,
     max_retries: int = 3,
 ) -> RunState:
@@ -57,8 +58,28 @@ def _make_run_state(
         started_at=started_at or now,
         heartbeat_at=heartbeat_at or now,
         ended_at=ended_at,
+        deadline_at=deadline_at,
         attempt=attempt,
         max_retries=max_retries,
+    )
+
+
+def _make_flow_job(
+    *,
+    flow_name: str = "test_flow",
+    kwargs: dict | None = None,
+    retry_count: int = 0,
+    max_retries: int = 3,
+    visibility_timeout: int = 300,
+    timeout_seconds: int | None = None,
+) -> FlowJob:
+    return FlowJob(
+        flow_name=flow_name,
+        kwargs=kwargs or {},
+        retry_count=retry_count,
+        max_retries=max_retries,
+        visibility_timeout=visibility_timeout,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -104,6 +125,12 @@ def make_ts():
 def make_run_state():
     """Return the _make_run_state builder callable."""
     return _make_run_state
+
+
+@pytest.fixture
+def make_flow_job():
+    """Return the _make_flow_job builder callable."""
+    return _make_flow_job
 
 
 @pytest.fixture

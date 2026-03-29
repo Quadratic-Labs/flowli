@@ -174,6 +174,7 @@ class RunState:
     started_at: Timestamp
     heartbeat_at: Timestamp
     ended_at: Timestamp | None = field(default=None)
+    deadline_at: Timestamp | None = field(default=None)
     attempt: int = 1
     max_retries: int = 3
 
@@ -231,6 +232,7 @@ class FlowJob:
     retry_count: int = 0
     max_retries: int = 3
     visibility_timeout: int = 300  # 5 minutes default
+    timeout_seconds: int | None = field(default=None)
 
 # ---
 # endregion

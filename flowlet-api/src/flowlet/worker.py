@@ -22,6 +22,7 @@ the six ``JobState`` values:
 State is written to the ``StateRepository`` on every transition and published on
 the ``PubSub`` bus so the API and dashboards can observe liveness.
 """
+from datetime import timedelta
 from enum import StrEnum
 import logging
 import threading
@@ -31,7 +32,7 @@ from .models import RunState, RunStatus, RunType
 from .pubsub import PubSubProtocol
 from .queue import JobQueueProtocol
 from .registry import Registry
-from .state_repository import StateRepository
+from .repository import StateRepository
 from .types import Timestamp
 
 logger = logging.getLogger(__name__)
@@ -85,10 +86,30 @@ def existing_state_case(existing, stale_threshold) -> JobState:
     if existing.status != RunStatus.running:
         return JobState.ready
     if not _is_heartbeat_stale(existing, stale_threshold):
+        # Live heartbeat — still check wall-clock deadline so a stuck-but-alive
+        # worker can be preempted even when its heartbeat is fresh.
+        if _is_deadline_exceeded(existing):
+            if existing.attempt >= existing.max_retries:
+                return JobState.failed
+            return JobState.stale
         return JobState.busy
     if existing.attempt >= existing.max_retries:
         return JobState.failed
     return JobState.stale
+
+
+def _is_deadline_exceeded(state: RunState) -> bool:
+    """Return True if the run has exceeded its wall-clock deadline.
+
+    Args:
+        state: The run state to inspect.
+
+    Returns:
+        True when ``deadline_at`` is set and the current time is past it.
+    """
+    if state.deadline_at is None:
+        return False
+    return Timestamp.now().value > state.deadline_at.value
 
 
 def _publish_state(pubsub: PubSubProtocol, state: RunState) -> None:
@@ -99,18 +120,7 @@ def _publish_state(pubsub: PubSubProtocol, state: RunState) -> None:
         state: Current run state to broadcast.
     """
     try:
-        pubsub.publish(
-            f"state/{state.flow_name}",
-            {
-                "run_id": str(state.run_id),
-                "flow_name": state.flow_name,
-                "status": state.status.value,
-                "worker_id": state.worker_id,
-                "attempt": state.attempt,
-                "heartbeat_at": state.heartbeat_at.to_iso(),
-                "ended_at": state.ended_at.to_iso() if state.ended_at is not None else None,
-            },
-        )
+        pubsub.publish(f"state/{state.flow_name}", state)
     except Exception:
         logger.exception("pubsub_publish_failed", extra={"run_id": str(state.run_id)})
 
@@ -120,30 +130,41 @@ def _heartbeat_loop(
     pubsub: PubSubProtocol,
     state: RunState,
     stop_event: threading.Event,
+    abort_event: threading.Event,
+    etag_holder: list[str | None],
     interval: int = _HEARTBEAT_INTERVAL,
 ) -> None:
     """Background thread that refreshes heartbeat_at periodically.
 
-    Mutates ``state.heartbeat_at`` in place, then writes and publishes.
+    Mutates ``state.heartbeat_at`` in place, writes with the tracked ETag,
+    and updates ``etag_holder[0]`` on success.  If the write is rejected
+    (another worker has taken ownership), sets ``abort_event`` so the main
+    thread can detect the loss after the current flow call returns.
     Runs until ``stop_event`` is set.
 
     Args:
-        state_repo: State repository for atomic writes.
+        state_repo: State repository for conditional writes.
         pubsub: PubSub bus for broadcasting heartbeats.
         state: Mutable RunState owned by the current worker.
         stop_event: Signal to stop the heartbeat loop.
+        abort_event: Set when ownership is lost; signals the main thread.
+        etag_holder: Single-element list holding the current ETag.
+            Updated in place on each successful write.
         interval: Seconds between heartbeats.
     """
     while not stop_event.wait(interval):
         state.heartbeat_at = Timestamp.now()
-        ok = state_repo.write(state)
+        ok, new_etag = state_repo.write(state, etag_holder[0])
         if ok:
+            etag_holder[0] = new_etag
             _publish_state(pubsub, state)
         else:
             logger.warning(
                 "heartbeat_ownership_lost",
                 extra={"run_id": str(state.run_id)},
             )
+            abort_event.set()
+            return
 
 
 def _is_heartbeat_stale(state: RunState, stale_threshold: int) -> bool:
@@ -194,6 +215,21 @@ def _is_heartbeat_stale(state: RunState, stale_threshold: int) -> bool:
 #   - what happens when a job fails
 # ---
 
+def _compute_deadline(timeout_seconds: int | None) -> Timestamp | None:
+    """Compute a wall-clock deadline from a timeout duration.
+
+    Args:
+        timeout_seconds: Maximum allowed execution time in seconds, or None
+            for no deadline.
+
+    Returns:
+        A Timestamp representing ``now + timeout_seconds``, or None.
+    """
+    if timeout_seconds is None:
+        return None
+    return Timestamp(Timestamp.now().value + timedelta(seconds=timeout_seconds))
+
+
 def execute_job(
     queue: JobQueueProtocol,
     registry: Registry,
@@ -205,15 +241,21 @@ def execute_job(
 ) -> int:
     """Execute a single job from the queue using the full state machine.
 
-    Dequeues one job, resolves the ``JobState``, acquires ownership via an
-    atomic write, runs the flow under a heartbeat thread, then transitions
-    the state on completion or failure.  See the module docstring for the
-    full state transition table.
+    Dequeues one job, resolves the ``JobState``, acquires ownership via a
+    conditional write (ETag-verified), runs the flow under a heartbeat thread,
+    then transitions the state on completion or failure.  See the module
+    docstring for the full state transition table.
+
+    The heartbeat thread tracks ownership via a shared ETag.  If another
+    worker takes over (stale or deadline takeover), the heartbeat write will
+    be rejected, ``abort_event`` will be set, and any subsequent state writes
+    by this worker will also be rejected — preventing duplicate ACKs and
+    inconsistent state.
 
     Args:
         queue: Job queue to dequeue from.
         registry: Flow registry for retrieving flow functions.
-        state_repo: State repository for atomic state R/W.
+        state_repo: State repository for conditional state R/W.
         pubsub: PubSub bus for broadcasting state transitions.
         worker_id: Unique identifier for this worker instance.
         timeout: Optional visibility timeout override in seconds.
@@ -237,7 +279,9 @@ def execute_job(
         },
     )
 
-    existing = state_repo.read(job.flow_name, job.run_id)
+    read_result = state_repo.read(job.flow_name, job.run_id)
+    existing = read_result[0] if read_result is not None else None
+    read_etag = read_result[1] if read_result is not None else None
     job_state = existing_state_case(existing, stale_threshold)
 
     # Do NOT execute states.
@@ -262,7 +306,7 @@ def execute_job(
             attempt=existing.attempt,
             max_retries=existing.max_retries,
         )
-        state_repo.write(state)
+        state_repo.write(state, read_etag)
         _publish_state(pubsub, state)
         queue.ack(job.job_id)
         logger.warning(
@@ -278,7 +322,10 @@ def execute_job(
         )
         return 2
 
-    # Execute states
+    # Execute states — build the new RunState for this worker.
+    # deadline_at is always reset per execution attempt so that a takeover
+    # worker gets a fresh window (timeout is per attempt, not per job).
+    deadline_at = _compute_deadline(job.timeout_seconds)
     if job_state == JobState.stale:
         assert existing is not None
         attempt = existing.attempt + 1
@@ -289,6 +336,7 @@ def execute_job(
             worker_id=worker_id,
             started_at=existing.started_at,
             heartbeat_at=Timestamp.now(),
+            deadline_at=deadline_at,
             attempt=attempt,
             max_retries=existing.max_retries,
         )
@@ -305,6 +353,7 @@ def execute_job(
             worker_id=worker_id,
             started_at=existing.started_at,
             heartbeat_at=Timestamp.now(),
+            deadline_at=deadline_at,
             attempt=existing.attempt,
             max_retries=existing.max_retries,
         )
@@ -317,12 +366,16 @@ def execute_job(
             worker_id=worker_id,
             started_at=Timestamp.now(),
             heartbeat_at=Timestamp.now(),
+            deadline_at=deadline_at,
             attempt=1,
             max_retries=job.max_retries,
         )
 
-    # Try to acquire ownership via atomic write.
-    if not state_repo.write(state):
+    # Try to acquire ownership via conditional write.
+    # etag=None for new files; read_etag for takeover of existing state.
+    write_etag = None if job_state == JobState.new else read_etag
+    ok, current_etag = state_repo.write(state, write_etag)
+    if not ok:
         logger.info(
             "job_ownership_lost",
             extra={"run_id": str(job.run_id)},
@@ -331,11 +384,14 @@ def execute_job(
 
     _publish_state(pubsub, state)
 
-    # Execute with heartbeat thread
+    # Shared ETag — updated by heartbeat thread on every successful write.
+    # The main thread reads it for final state transitions.
+    etag_holder: list[str | None] = [current_etag]
+    abort_event = threading.Event()
     stop_event = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(state_repo, pubsub, state, stop_event),
+        args=(state_repo, pubsub, state, stop_event, abort_event, etag_holder),
         daemon=True,
     )
     heartbeat_thread.start()
@@ -345,39 +401,70 @@ def execute_job(
         with ContextManager.begin_span(job.flow_name, RunType.flow, span_id=job.run_id):
             fn(**job.kwargs)
 
-        # Success path.
+        # If the heartbeat detected ownership loss while the flow was running,
+        # do not write final state or ACK — another worker owns this run.
+        if abort_event.is_set():
+            logger.warning(
+                "job_aborted_ownership_lost",
+                extra={"run_id": str(job.run_id)},
+            )
+            return 2
+
+        # Success path — conditional write guards against last-moment takeover.
         state.status = RunStatus.completed
         state.ended_at = Timestamp.now()
         state.heartbeat_at = Timestamp.now()
-        state_repo.write(state)
-        _publish_state(pubsub, state)
-        queue.ack(job.job_id)
-        logger.info("job_completed", extra={"run_id": str(job.run_id)})
-        return 0
+        ok, _ = state_repo.write(state, etag_holder[0])
+        if ok:
+            _publish_state(pubsub, state)
+            queue.ack(job.job_id)
+            logger.info("job_completed", extra={"run_id": str(job.run_id)})
+            return 0
+        else:
+            logger.warning(
+                "job_completion_ownership_lost",
+                extra={"run_id": str(job.run_id)},
+            )
+            return 2
 
     except Exception:
         logger.exception("job_failed", extra={"run_id": str(job.run_id)})
 
+        if abort_event.is_set():
+            return 2
+
         if state.attempt < state.max_retries:
             state.status = RunStatus.pending
             state.heartbeat_at = Timestamp.now()
-            state_repo.write(state)
-            queue.nack(job.job_id, requeue=True)
-            logger.info(
-                "job_requeued",
-                extra={"run_id": str(job.run_id), "attempt": state.attempt},
-            )
+            ok, _ = state_repo.write(state, etag_holder[0])
+            if ok:
+                queue.nack(job.job_id, requeue=True)
+                logger.info(
+                    "job_requeued",
+                    extra={"run_id": str(job.run_id), "attempt": state.attempt},
+                )
+            else:
+                logger.warning(
+                    "job_requeue_ownership_lost",
+                    extra={"run_id": str(job.run_id)},
+                )
         else:
             state.status = RunStatus.failed
             state.ended_at = Timestamp.now()
             state.heartbeat_at = Timestamp.now()
-            state_repo.write(state)
-            _publish_state(pubsub, state)
-            queue.ack(job.job_id)
-            logger.warning(
-                "job_failed_permanently",
-                extra={"run_id": str(job.run_id), "attempt": state.attempt},
-            )
+            ok, _ = state_repo.write(state, etag_holder[0])
+            if ok:
+                _publish_state(pubsub, state)
+                queue.ack(job.job_id)
+                logger.warning(
+                    "job_failed_permanently",
+                    extra={"run_id": str(job.run_id), "attempt": state.attempt},
+                )
+            else:
+                logger.warning(
+                    "job_failure_ownership_lost",
+                    extra={"run_id": str(job.run_id)},
+                )
 
         return 1
 

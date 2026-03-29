@@ -51,6 +51,7 @@ class RunStateFactory(factory.Factory):
     started_at    = factory.SubFactory(TimestampFactory)
     heartbeat_at  = factory.SubFactory(TimestampFactory)
     ended_at      = None
+    deadline_at   = None
     attempt       = 1
     max_retries   = 3
 

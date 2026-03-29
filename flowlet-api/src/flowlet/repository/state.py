@@ -13,10 +13,9 @@ from uuid import UUID
 
 from attrs import define
 
-from ..models import RunState, RunStatus
+from ..models import RunState
 from ..serdes import to_json, from_json
 from ..storage.types import StatePath, StoragePath
-from ..types import Timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -39,23 +38,8 @@ logger = logging.getLogger(__name__)
 #   - serdes.json
 # ---
 
-
 class ConditionalWriteError(Exception):
     """Raised when a conditional (ETag) PUT is rejected by Azure (HTTP 412)."""
-
-
-def _dict_to_state(data: dict) -> RunState:
-    return RunState(
-        run_id=UUID(data["run_id"]),
-        flow_name=data["flow_name"],
-        status=RunStatus(data["status"]),
-        worker_id=data["worker_id"],
-        started_at=Timestamp.from_iso(data["started_at"]),
-        heartbeat_at=Timestamp.from_iso(data["heartbeat_at"]),
-        ended_at=Timestamp.from_iso(data["ended_at"]) if data.get("ended_at") else None,
-        attempt=data.get("attempt", 1),
-        max_retries=data.get("max_retries", 3),
-    )
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -101,44 +85,47 @@ class StateRepository:
     # Public API
     # ------------------------------------------------------------------
 
-    def read(self, flow_name: str, run_id: UUID) -> RunState | None:
-        """Read the current state for a run.
+    def read(self, flow_name: str, run_id: UUID) -> tuple[RunState, str] | None:
+        """Read the current state for a run, returning the state and its ETag.
+
+        The ETag must be passed back to ``write()`` to perform a conditional
+        write that fails if another worker has written in the meantime.
 
         Args:
             flow_name: Name of the flow.
             run_id: UUID identifying the run.
 
         Returns:
-            The parsed RunState, or None if the state file does not exist.
+            A ``(RunState, etag)`` pair, or None if the state file does not exist.
         """
         sp = self._state_path(flow_name, run_id)
-        try:
-            raw = sp.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return None
-        try:
-            return from_json(RunState)(raw)
-        except Exception:
-            logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
-            return None
+        if isinstance(sp.path, Path):
+            return self._read_local(sp)
+        return self._read_azure(sp)
 
-    def write(self, state: RunState) -> bool:
-        """Write a RunState atomically.
+    def write(self, state: RunState, etag: str | None) -> tuple[bool, str | None]:
+        """Write a RunState conditionally, using an ETag for ownership tracking.
 
-        Uses an exclusive ``.lock`` file on local paths and ETag conditional
-        PUTs on Azure blob paths.
+        The ``etag`` must be the value returned by the previous ``read()`` or
+        ``write()`` call for this run.  Pass ``None`` only when creating a
+        new state file for the first time (expects no pre-existing file).
+
+        Uses an exclusive ``.lock`` file on local paths (mtime-verified inside
+        the lock) and ETag conditional PUTs on Azure blob paths.
 
         Args:
             state: The new state to persist.
+            etag: ETag from the caller's last successful read or write.
+                ``None`` asserts that the file does not yet exist.
 
         Returns:
-            True if the write succeeded; False if ownership was lost (another
-            worker holds the lock or the ETag no longer matches).
+            ``(True, new_etag)`` on success; ``(False, None)`` if ownership
+            was lost (stale ETag, concurrent write, or lock contention).
         """
         sp = self._state_path(state.flow_name, state.run_id)
         if isinstance(sp.path, Path):
-            return self._write_local(sp, state)
-        return self._write_azure(sp, state)
+            return self._write_local(sp, state, etag)
+        return self._write_azure(sp, state, etag)
 
     def delete(self, flow_name: str, run_id: UUID) -> None:
         """Remove the state file for a completed run.
@@ -181,26 +168,90 @@ class StateRepository:
                     sp = StatePath.from_path(p)
                 except ValueError:
                     continue
-                s = self.read(sp.flow_name, sp.run_id)
-                if s is not None:
-                    results.append(s)
+                result = self.read(sp.flow_name, sp.run_id)
+                if result is not None:
+                    results.append(result[0])
         return results
 
     # ------------------------------------------------------------------
     # Local filesystem — lock-file strategy
     # ------------------------------------------------------------------
 
-    def _write_local(self, sp: StatePath, state: RunState) -> bool:
+    def _read_local(self, sp: StatePath) -> tuple[RunState, str] | None:
+        """Read state and version-based ETag from a local file.
+
+        The ETag is the ``_v`` counter embedded in the JSON — a monotonically
+        increasing integer that changes on every write, immune to filesystem
+        mtime resolution issues.
+
+        Args:
+            sp: Resolved local StatePath.
+
+        Returns:
+            A ``(RunState, etag)`` pair, or None if the file does not exist.
+        """
+        assert isinstance(sp.path, Path)
+        try:
+            raw = sp.path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return None
+        try:
+            data = json.loads(raw)
+            version = data.get("_v", 0)
+            state = from_json(RunState)(raw)  # _v is an unknown field — silently ignored
+            return state, str(version)
+        except Exception:
+            logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
+            return None
+
+    def _write_local(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
+        """Write state atomically using a lock file and version counter.
+
+        The ``_v`` counter inside the JSON acts as the ETag.  All version
+        checks happen inside the exclusive lock so no concurrent writer can
+        slip between the check and the write.
+
+        Args:
+            sp: Resolved local StatePath.
+            state: State to persist.
+            etag: Expected current version as a string, or ``None`` to assert
+                the file does not yet exist.
+
+        Returns:
+            ``(True, new_etag)`` on success; ``(False, None)`` on conflict.
+        """
+        assert isinstance(sp.path, Path)
         lock_path = self._lock_path(sp)
         sp.path.parent.mkdir(parents=True, exist_ok=True)
 
         acquired = self._acquire_lock(lock_path)
         if not acquired:
-            return False
+            return False, None
 
         try:
-            sp.path.write_text(to_json(state))
-            return True
+            # Version check inside the lock — the only window where two
+            # workers could race is the (sub-ms) acquire→write interval,
+            # which is serialised by the lock file itself.
+            if sp.path.exists():
+                if etag is None:
+                    return False, None  # expected new file, but one exists
+                try:
+                    current_data = json.loads(sp.path.read_text(encoding="utf-8"))
+                    current_version = current_data.get("_v", 0)
+                except Exception:
+                    return False, None
+                if str(current_version) != etag:
+                    return False, None  # stale ETag — another worker wrote
+                new_version = current_version + 1
+            else:
+                if etag is not None:
+                    return False, None  # expected existing file, but it's gone
+                new_version = 1
+
+            state_data = json.loads(to_json(state))
+            state_data["_v"] = new_version
+            sp.path.write_text(json.dumps(state_data))
+            return True, str(new_version)
         finally:
             try:
                 lock_path.unlink(missing_ok=True)
@@ -284,15 +335,48 @@ class StateRepository:
     # Azure blob storage — ETag strategy
     # ------------------------------------------------------------------
 
-    def _write_azure(self, sp: StatePath, state: RunState) -> bool:
+    def _read_azure(self, sp: StatePath) -> tuple[RunState, str] | None:
+        """Read state and ETag from Azure blob storage.
+
+        Args:
+            sp: Resolved StatePath (remote).
+
+        Returns:
+            A ``(RunState, etag)`` pair, or None if the blob does not exist.
+        """
+        try:
+            from .storage.azure import AzureBlobPath  # type: ignore[import]
+        except ImportError:
+            raise RuntimeError(
+                "azure-storage-blob is required for Azure state reads"
+            )
+
+        path: AzureBlobPath = sp.path  # type: ignore[assignment]
+        try:
+            raw, azure_etag = path.read_text_with_etag(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        try:
+            return from_json(RunState)(raw), azure_etag
+        except Exception:
+            logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
+            return None
+
+    def _write_azure(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
         """Write state using ETag conditional PUT (Azure blob storage).
+
+        Uses the caller's ETag — which was captured at the last successful
+        read or write — so that concurrent writes by another worker cause a
+        412 and return ``(False, None)``.
 
         Args:
             sp: Resolved StatePath (remote).
             state: State to persist.
+            etag: ETag from the caller's last read/write. ``None`` asserts
+                the blob does not yet exist (``If-None-Match: *``).
 
         Returns:
-            True on success; False if the ETag no longer matches (412).
+            ``(True, new_etag)`` on success; ``(False, None)`` on 412.
         """
         try:
             from .storage.azure import AzureBlobPath  # type: ignore[import]
@@ -305,14 +389,13 @@ class StateRepository:
         path: AzureBlobPath = sp.path  # type: ignore[assignment]
 
         try:
-            etag = path.etag() if path.exists() else None
             if etag is not None:
-                path.write_bytes_if_match(payload, etag=etag)
+                new_etag = path.write_bytes_if_match(payload, etag=etag)
             else:
-                path.write_bytes_if_none_match(payload)
-            return True
+                new_etag = path.write_bytes_if_none_match(payload)
+            return True, new_etag
         except ConditionalWriteError:
-            return False
+            return False, None
 
 # ---
 # endregion
