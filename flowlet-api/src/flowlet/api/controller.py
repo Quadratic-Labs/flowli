@@ -5,12 +5,15 @@ Provides the FlowController class for handling flow execution and query endpoint
 """
 from inspect import Parameter
 from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid7
 
 from fastapi import HTTPException, WebSocketDisconnect, WebSocket
 from pydantic import ValidationError
 
 from ..models import FlowJob
+from ..pubsub import PubSubProtocol
 from ..queue import JobQueueProtocol
+from .repository import SnapshotRepository
 from .models import (
     FlowArguments,
     FlowSubmissionResponse,
@@ -66,6 +69,8 @@ class FlowController:
         querier: RunQuery instance for reading run states and log details.
         registry: Flow registry, accessed via querier.
         queue: Optional job queue for asynchronous execution.
+        pubsub: Optional pubsub for publishing state events.
+        snapshot_repo: Optional snapshot repository for persisting state.
 
     Example:
         >>> controller = FlowController(querier=run_query)
@@ -80,6 +85,8 @@ class FlowController:
         querier: RunQuery | None = None,
         queue: JobQueueProtocol | None = None,
         connection_manager: ConnectionManager | None = None,
+        pubsub: PubSubProtocol[RunStateDTO] | None = None,
+        snapshot_repo: SnapshotRepository | None = None,
         **_,
     ):
         """Initialise the flow controller.
@@ -91,12 +98,16 @@ class FlowController:
             queue: Optional job queue for asynchronous flow submission.
             connection_manager: ConnectionManager providing WebSocket broadcast.
                 When None the ``/ws/runs`` endpoint is unavailable.
+            pubsub: Optional pubsub for publishing state events.
+            snapshot_repo: Optional snapshot repository for persisting state.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.registry = registry
         self.querier = querier
         self.queue = queue
         self.connection_manager = connection_manager
+        self.pubsub = pubsub
+        self.snapshot_repo = snapshot_repo
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -138,7 +149,65 @@ class FlowController:
             raise HTTPException(status_code=404, detail="Flow not found")
         fn = self.registry.get_flow(flow_name)
         kwargs = self._parse_kwargs(flow_name, payload)
-        fn(**kwargs)
+
+        run_id = uuid7()
+        from ..pubsub import PubSubProtocol
+        from ..models import RunState, RunStatus, RunType, Timestamp
+        from ..context import ContextManager
+
+        pubsub: PubSubProtocol | None = getattr(self, "pubsub", None)
+        snapshot_repo = getattr(self, "snapshot_repo", None)
+
+        state = RunState(
+            run_id=run_id,
+            flow_name=flow_name,
+            status=RunStatus.running,
+            worker_id="sync-worker",
+            started_at=Timestamp.now(),
+            heartbeat_at=Timestamp.now(),
+        )
+
+        if snapshot_repo is not None:
+            snapshot_repo.update(state)
+
+        if pubsub is not None:
+            try:
+                pubsub.publish(f"state/{flow_name}", state)
+            except Exception:
+                pass
+
+        try:
+            with ContextManager.begin_span(flow_name, RunType.flow, span_id=run_id):
+                fn(**kwargs)
+
+            state.status = RunStatus.completed
+            state.ended_at = Timestamp.now()
+            state.heartbeat_at = Timestamp.now()
+
+            if snapshot_repo is not None:
+                snapshot_repo.update(state)
+
+            if pubsub is not None:
+                try:
+                    pubsub.publish(f"state/{flow_name}", state)
+                except Exception:
+                    pass
+
+        except Exception:
+            state.status = RunStatus.failed
+            state.ended_at = Timestamp.now()
+            state.heartbeat_at = Timestamp.now()
+
+            if snapshot_repo is not None:
+                snapshot_repo.update(state)
+
+            if pubsub is not None:
+                try:
+                    pubsub.publish(f"state/{flow_name}", state)
+                except Exception:
+                    pass
+
+            raise
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
         """Submit a flow for asynchronous execution via the job queue.
@@ -214,6 +283,34 @@ class FlowController:
             return [RunStateDTO.model_validate(row) for row in rows]
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query failed: {e}")
+
+    async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> RunDTO:
+        """Fetch a run by its ID alone, looking up flow_name from the database.
+
+        Convenience wrapper around ``query_logs`` that first queries the
+        database to discover which flow owns the run.
+
+        Args:
+            run_id: UUID of the run to fetch.
+            with_logs: Include log entries in the response (default: True).
+
+        Returns:
+            RunDTO containing the summary tree and (optionally) all log entries.
+
+        Raises:
+            HTTPException: 503 when no storage backend is configured.
+            HTTPException: 404 if the run cannot be found.
+            HTTPException: 400 on any other failure.
+        """
+        if self.querier is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        try:
+            result = await self.querier.get_run_by_run_id(run_id, with_logs)
+            return RunDTO.model_validate(result)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     def query_logs(self, request: LogQueryRequest) -> RunDTO:
         """Fetch a single run with its full log detail.

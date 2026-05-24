@@ -5,7 +5,7 @@ import { MatTableModule } from '@angular/material/table';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
-import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+import { FlowletApi, RunStateDTO } from '../../services/flowlet-api';
 import { BreadcrumbService } from '../../services/breadcrumb.service';
 import { forkJoin } from 'rxjs';
 
@@ -50,31 +50,16 @@ export class FlowsList implements OnInit {
     // Fetch both available flows and recent run summaries (more runs to get history per flow)
     forkJoin({
       flows: this.flowletApi.getFlows(),
-      runs: this.flowletApi.queryRuns({
-        query: {
-          type: 'pipe',
-          queries: [
-            {
-              type: 'sort',
-              key: { type: 'get', keys: ['span_id'] },
-              reverse: true
-            },
-            {
-              type: 'get',
-              keys: [{ _type: 'slice', start: 0, stop: 100, step: 1 }]
-            }
-          ]
-        }
-      })
+      runs: this.flowletApi.getRuns(0, 100)
     }).subscribe({
       next: ({ flows, runs }) => {
         // Group runs by flow name and keep the last 5 for each flow
-        const runsByFlow = new Map<string, RunSummaryDTO[]>();
+        const runsByFlow = new Map<string, RunStateDTO[]>();
         runs.forEach(run => {
-          if (!runsByFlow.has(run.span_name)) {
-            runsByFlow.set(run.span_name, []);
+          if (!runsByFlow.has(run.flow_name)) {
+            runsByFlow.set(run.flow_name, []);
           }
-          const flowRuns = runsByFlow.get(run.span_name)!;
+          const flowRuns = runsByFlow.get(run.flow_name)!;
           if (flowRuns.length < 5) {
             flowRuns.push(run);
           }
@@ -84,13 +69,16 @@ export class FlowsList implements OnInit {
         this.flows = flows.map(flow => {
           const flowRuns = runsByFlow.get(flow.name) || [];
           const latestRun = flowRuns[0];
+          const duration = latestRun?.ended_at
+            ? this.humanizeDurationMs(new Date(latestRun.ended_at).getTime() - new Date(latestRun.started_at).getTime())
+            : null;
 
           return {
             name: flow.name,
             status: latestRun?.status || null,
             recent_statuses: flowRuns.map(run => run.status),
-            finished_ago: this.calculateTimeAgo(latestRun?.end_ts),
-            duration: latestRun?.duration || null,
+            finished_ago: this.calculateTimeAgo(latestRun?.ended_at ?? undefined),
+            duration,
             doc: flow.docstring || null
           };
         });
@@ -102,6 +90,16 @@ export class FlowsList implements OnInit {
         this.loading = false;
       }
     });
+  }
+
+  private humanizeDurationMs(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
   }
 
   private calculateTimeAgo(timestamp: string | undefined): string | null {

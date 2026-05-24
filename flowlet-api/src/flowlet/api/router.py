@@ -100,6 +100,7 @@ _RUNS_QUERY = RouteSpec(
     path="/runs/query",
     method="POST",
     summary="List recent run states",
+    description="Return the most recent run states per flow with optional filtering by flow name and result limit.",
     tags=["Query"],
     response_model=list[RunStateDTO],
     responses={503: {"description": "Storage not configured"}},
@@ -113,6 +114,20 @@ _LOGS_QUERY = RouteSpec(
     tags=["Query"],
     response_model=RunDTO,
     responses={503: {"description": "Storage not configured"}},
+    requires_querier=True,
+)
+
+_RUN_BY_ID = RouteSpec(
+    path="/runs/{run_id}",
+    method="GET",
+    summary="Fetch a run by its ID",
+    description="Look up a run using only its run_id without needing flow_name.",
+    tags=["Query"],
+    response_model=RunDTO,
+    responses={
+        503: {"description": "Storage not configured"},
+        404: {"description": "Run not found"},
+    },
     requires_querier=True,
 )
 
@@ -204,6 +219,8 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _RUNS_QUERY, controller.query_runs)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _LOGS_QUERY, controller.query_logs)
+    if not _RUN_BY_ID.requires_querier or controller.querier is not None:
+        _wire(router, _RUN_BY_ID, controller.get_run_by_run_id)
 
     if controller.connection_manager is not None:
         router.add_api_websocket_route("/ws/runs", controller.ws_runs)

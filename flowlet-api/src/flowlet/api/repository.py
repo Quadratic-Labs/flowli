@@ -10,6 +10,7 @@ Layer separation
 - repository layer: SnapshotRepository — single owner of all snapshot I/O.
                     Bridges remote storage with the active SQLAlchemy engine.
 """
+import asyncio
 import logging
 import shutil
 import tempfile
@@ -29,7 +30,7 @@ from .database import (
     Run,
     ensure_snapshot_schema,
     get_snapshot_period,
-    insert_new_states,
+    upsert_run_state,
 )
 
 
@@ -113,12 +114,16 @@ class SnapshotPath:
     def get_engine(self) -> AsyncEngine:
         """Create a SQLAlchemy engine bound to this snapshot file.
 
+        Uses NullPool so no connections are retained between queries — this
+        makes the engine safe to create in one event loop and use in another.
+
         Raises:
             ValueError: If the snapshot path is not a local filesystem path.
         """
         if not isinstance(self.path, Path):
             raise ValueError(f"No support for SQLite connections to remote paths: {self.path}")
-        return create_async_engine(f"sqlite+aiosqlite:///{self.path}")
+        from sqlalchemy.pool import NullPool
+        return create_async_engine(f"sqlite+aiosqlite:///{self.path}", poolclass=NullPool)
 
 # ---
 # endregion
@@ -425,10 +430,19 @@ class SnapshotRepository:
         Returns:
             A SnapshotRepository bound to the configured paths.
         """
-        return cls(
+        repo = cls(
             storage_path=configs.snapshot_storage_path,
             cache_path=configs.snapshot_cache_path,
         )
+        repo._ensure_schema()
+        repo.load()
+        return repo
+
+    def _ensure_schema(self) -> None:
+        """Create all ORM-defined tables if not present."""
+        from .database import ensure_snapshot_schema
+
+        asyncio.run(ensure_snapshot_schema(self.engine))
 
     def ls(self, cached: bool = False) -> list[SnapshotPath]:
         """Enumerate all snapshot files, oldest-first by end UUID.
@@ -517,7 +531,7 @@ class SnapshotRepository:
             states: New RunState objects to persist.
 
         Returns:
-            Number of runs newly inserted (already-present IDs are skipped).
+            Number of states upserted (0 when states is empty).
         """
         current = self.find(at=None, cached=False)
         tmp_dir = tempfile.mkdtemp()
@@ -533,9 +547,11 @@ class SnapshotRepository:
                     engine, class_=AsyncSession, expire_on_commit=False
                 )
                 async with session_factory() as session:
-                    new_count = await insert_new_states(session, states)
-                    if new_count == 0:
+                    if not states:
                         return 0
+                    for state in states:
+                        await upsert_run_state(session, state)
+                    await session.commit()
                     if self.rollout_strategy is not None:
                         archived = await self.rollout_strategy.snapshot(session)
                         if archived is not None:
@@ -556,9 +572,9 @@ class SnapshotRepository:
 
             logger.info(
                 "snapshot_update_done",
-                extra={"new_runs": new_count, "hot_end": str(hot_period.end)},
+                extra={"upserted": len(states), "hot_end": str(hot_period.end)},
             )
-            return new_count
+            return len(states)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

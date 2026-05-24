@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Union
 from pydantic import Field, Discriminator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from flowlet.storage.config import StorageConfig
+from flowlet.storage.config import StorageConfig, FilesystemStorageConfig
 from flowlet.queue.config import QueueConfig
 
 if TYPE_CHECKING:

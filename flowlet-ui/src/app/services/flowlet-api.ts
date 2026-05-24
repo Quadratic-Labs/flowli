@@ -30,19 +30,15 @@ export interface RunDTO extends RunSummaryDTO {
   logs: SpanLogDTO[];
 }
 
-// Query request models
-export interface RunQueryRequest {
-  names?: string[] | null;
-  query?: any | null;
-}
 
-export interface LogQueryRequest {
-  runs?: string[] | null;
-  query?: any | null;
-}
 
 export interface StartFlowRequest {
   kwargs?: { [key: string]: any };
+}
+
+export interface FlowSubmissionResponse {
+  job_id: string;
+  submitted_at: string;
 }
 
 // Flow schema from /flows endpoint
@@ -56,6 +52,19 @@ export interface FlowSchema {
     required: boolean;
     default?: any;
   }>;
+}
+
+// RunStateDTO — matches POST /runs/query response (worker execution state from SQLite snapshot)
+export interface RunStateDTO {
+  run_id: string;
+  flow_name: string;
+  status: string;
+  worker_id: string;
+  started_at: string;
+  heartbeat_at: string;
+  ended_at: string | null;
+  attempt: number;
+  max_retries: number;
 }
 
 // Legacy interfaces for backward compatibility (to be removed)
@@ -110,54 +119,44 @@ export class FlowletApi {
     return this.http.get<FlowSchema[]>(`${this.apiUrl}/flows`);
   }
 
-  // Run a flow
+  // Run a flow synchronously
   runFlow(flowName: string, payload: StartFlowRequest = {}): Observable<void> {
     return this.http.post<void>(`${this.apiUrl}/execute/${flowName}`, payload);
   }
 
-  // Query run summaries using new API
-  queryRuns(request: RunQueryRequest = {}): Observable<RunSummaryDTO[]> {
-    return this.http.post<RunSummaryDTO[]>(`${this.apiUrl}/runs/query`, request);
+  // Submit a flow for asynchronous execution
+  submitFlow(flowName: string, payload: StartFlowRequest = {}): Observable<FlowSubmissionResponse> {
+    return this.http.post<FlowSubmissionResponse>(`${this.apiUrl}/submit/${flowName}`, payload);
+  }
+
+  // Query run states using new API — returns RunStateDTO (worker execution state)
+  queryRuns(names?: string[], last_n: number = 5): Observable<RunStateDTO[]> {
+    const request: { names?: string[]; last_n?: number } = { last_n };
+    if (names && names.length > 0) {
+      request.names = names;
+    }
+    return this.http.post<RunStateDTO[]>(`${this.apiUrl}/runs/query`, request);
   }
 
   // Get list of runs with sorting and pagination
-  getRuns(offset: number = 0, limit: number = 50): Observable<RunSummaryDTO[]> {
-    const query = {
-      type: 'pipe',
-      queries: [
-        {
-          type: 'sort',
-          key: { type: 'get', keys: ['span_id'] },
-          reverse: true
-        },
-        {
-          type: 'get',
-          keys: [{ _type: 'slice', start: offset, stop: offset + limit, step: 1 }]
-        }
-      ]
-    };
-    return this.queryRuns({ query });
+  getRuns(offset: number = 0, limit: number = 50): Observable<RunStateDTO[]> {
+    return this.queryRuns(undefined, limit);
   }
 
-  // Query logs using new API
-  queryLogs(request: LogQueryRequest = {}): Observable<RunDTO[]> {
-    return this.http.post<RunDTO[]>(`${this.apiUrl}/logs/query`, request);
-  }
+   // Query logs using new API (requires both flow_name and run_id)
+   queryLogs(flow_name: string, run_id: string, with_logs: boolean = true): Observable<RunDTO[]> {
+     return this.http.post<RunDTO[]>(`${this.apiUrl}/logs/query`, { flow_name, run_id, with_logs });
+   }
 
-  // Get a specific run with logs
-  getRun(runId: string): Observable<RunDTO> {
-    return this.http.post<RunDTO[]>(`${this.apiUrl}/logs/query`, {
-      runs: [runId]
-    }).pipe(
-      // Extract the first (and only) result
-      map((results: RunDTO[]) => {
-        if (results.length === 0) {
-          throw new Error(`Run ${runId} not found`);
-        }
-        return results[0];
-      })
-    );
-  }
+   // Get a specific run by run_id (backend looks up flow_name)
+   getRunById(runId: string, with_logs: boolean = true): Observable<RunDTO> {
+     return this.http.get<RunDTO>(`${this.apiUrl}/runs/${runId}?with_logs=${with_logs}`);
+   }
+
+   // Get a specific run with logs (requires flow_name)
+   getRun(flowName: string, runId: string): Observable<RunDTO> {
+     return this.queryLogs(flowName, runId, true).pipe(map(results => results[0]));
+   }
 
   // Get dashboard metrics for the last 24 hours
   async getDashboardMetrics(): Promise<DashboardMetrics> {
@@ -166,17 +165,17 @@ export class FlowletApi {
     const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
     // Fetch all runs from last 24 hours
-    const allRuns = await this.queryRuns({}).toPromise() || [];
+    const allRuns = await this.queryRuns(undefined, 100).toPromise() || [];
 
     // Filter runs from last 24 hours
     const last24hRuns = allRuns.filter(run => {
-      const runStart = new Date(run.start_ts);
+      const runStart = new Date(run.started_at);
       return runStart >= twentyFourHoursAgo;
     });
 
     // Calculate metrics
     const totalFlows = last24hRuns.length;
-    const successfulFlows = last24hRuns.filter(r => r.status.toLowerCase() === 'success').length;
+    const successfulFlows = last24hRuns.filter(r => r.status.toLowerCase() === 'completed').length;
     const failedFlows = last24hRuns.filter(r =>
       r.status.toLowerCase() === 'failed' ||
       r.status.toLowerCase() === 'error' ||
@@ -197,16 +196,16 @@ export class FlowletApi {
     // Get long-running flows (> 2 hours)
     const twoHoursInMs = 2 * 60 * 60 * 1000;
     const longRunningFlows = last24hRuns.filter(r => {
-      if (!r.duration) return false;
-      const durationMs = this.parseDurationToMs(r.duration);
+      if (!r.ended_at) return false;
+      const durationMs = new Date(r.ended_at).getTime() - new Date(r.started_at).getTime();
       return durationMs > twoHoursInMs;
     });
 
     // Calculate total compute time
     let totalComputeMs = 0;
     last24hRuns.forEach(run => {
-      if (run.duration) {
-        totalComputeMs += this.parseDurationToMs(run.duration);
+      if (run.ended_at) {
+        totalComputeMs += new Date(run.ended_at).getTime() - new Date(run.started_at).getTime();
       }
     });
     const totalComputeTime = this.humanizeDuration(totalComputeMs);
@@ -291,8 +290,8 @@ export interface DashboardMetrics {
   runningFlows: number;
   successRate: number;
   failureRate: number;
-  failedRuns: RunSummaryDTO[];
-  longRunningFlows: RunSummaryDTO[];
+  failedRuns: RunStateDTO[];
+  longRunningFlows: RunStateDTO[];
   totalComputeTime: string;
   averageExecutionTime: string;
   lastUpdated: Date;

@@ -116,7 +116,7 @@ def _(data: RunLog) -> dict:
         "ts": data.ts,
         "message": data.message,
         "level": data.level,
-        "extra": data.extra,
+        "extra": {k: str(v) for k, v in data.extra.items() if v is not None},
     }
 
 
@@ -125,6 +125,7 @@ def _(data: RunSummary) -> dict:
     return {
         "span_id": data.span_id,
         "span_name": data.span_name,
+        "span_type": data.span_type,
         "status": data.status,
         "start_ts": data.start_ts,
         "end_ts": data.end_ts,

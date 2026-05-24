@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .pubsub import PubSubProtocol
     from .queue import JobQueueProtocol
     from .repository.log import LogRepository
+    from .repository.state import StateRepository
 
 
 # region @app
@@ -81,6 +82,7 @@ class FlowletDeps(TypedDict, total=False):
     registry: Registry
     context_manager: ContextManager
     log_repo: LogRepository
+    state_repo: StateRepository
     snapshot_repo: SnapshotRepository
     querier: RunQuery | None
     queue: JobQueueProtocol | None
@@ -125,6 +127,8 @@ class Flowlet:
         self.registry: Registry = deps["registry"]  # type: ignore[assignment]
         self.controller: FlowController = deps["controller"]  # type: ignore[assignment]
         self.router: APIRouter = deps["router"]  # type: ignore[assignment]
+        self.queue = deps.get("queue")
+        self.state_repo = deps.get("state_repo")
         self.pubsub = deps.get("pubsub")
         self._subscriber = deps.get("subscriber")
         self._connection_manager = deps.get("connection_manager")
@@ -185,7 +189,9 @@ class Flowlet:
 
             # LogRepository and SnapshotRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
+            from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(base_path=storage_path)
+            deps["state_repo"] = StateRepository(root=storage_path)
             deps["snapshot_repo"] = SnapshotRepository.from_configs(configs=configs)
             deps["querier"] = RunQuery(**deps)
 
@@ -217,7 +223,14 @@ class Flowlet:
                 deps["queue"] = InMemoryQueue.setup(configs.queue)
 
         from .api.controller import FlowController
-        deps["controller"] = FlowController(**deps)
+        deps["controller"] = FlowController(
+            registry=deps["registry"],
+            querier=deps["querier"],
+            queue=deps["queue"],
+            connection_manager=deps.get("connection_manager"),
+            pubsub=deps.get("pubsub"),
+            snapshot_repo=deps.get("snapshot_repo"),
+        )
 
         from .api.router import build_router
         deps["router"] = build_router(**deps)

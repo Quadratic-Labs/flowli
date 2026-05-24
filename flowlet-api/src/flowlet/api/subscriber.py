@@ -59,6 +59,7 @@ class SnapshotSubscriber:
         pubsub: PubSub bus to subscribe to.
         snapshot_repo: Repository that persists incoming RunState events.
         registry: Flow registry consulted when start() is called.
+        connection_manager: Optional WebSocket connection manager.
     """
 
     pubsub: "PubSubProtocol[RunState]"
@@ -67,6 +68,23 @@ class SnapshotSubscriber:
     connection_manager: "ConnectionManager | None" = field(default=None)
     _stop_event: threading.Event = field(factory=threading.Event, alias="_stop_event")
     _started: bool = field(default=False, alias="_started")
+
+    def __init__(self, *, pubsub, snapshot_repo, registry, connection_manager=None, **_):
+        """Initialize from dependency injection dict.
+
+        Args:
+            pubsub: PubSub bus to subscribe to.
+            snapshot_repo: Repository that persists incoming RunState events.
+            registry: Flow registry consulted when start() is called.
+            connection_manager: Optional WebSocket connection manager.
+            **_: Absorbs any unused keys from full dependency dict.
+        """
+        self.pubsub = pubsub
+        self.snapshot_repo = snapshot_repo
+        self.registry = registry
+        self.connection_manager = connection_manager
+        self._stop_event = threading.Event()
+        self._started = False
 
     def start(self) -> None:
         """Spawn one subscription thread per registered flow.  Idempotent."""

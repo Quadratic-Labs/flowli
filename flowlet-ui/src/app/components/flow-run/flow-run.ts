@@ -152,15 +152,15 @@ export class FlowRun implements OnInit {
     this.submitting = true;
     const kwargs = this.prepareKwargs();
 
-    this.flowletApi.runFlow(this.flowName, { kwargs }).subscribe({
+    this.flowletApi.submitFlow(this.flowName, { kwargs }).subscribe({
       next: () => {
-        this.snackBar.open(`Flow "${this.flowName}" started successfully`, 'Close', { duration: 3000 });
+        this.snackBar.open(`Flow "${this.flowName}" submitted for execution`, 'Close', { duration: 3000 });
         this.submitting = false;
         // Navigate to runs list
         this.router.navigate(['/runs']);
       },
       error: (err) => {
-        this.snackBar.open('Failed to start flow: ' + err.message, 'Close', { duration: 5000 });
+        this.snackBar.open('Failed to submit flow: ' + err.message, 'Close', { duration: 5000 });
         this.submitting = false;
       }
     });

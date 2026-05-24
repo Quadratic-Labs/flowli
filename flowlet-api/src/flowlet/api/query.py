@@ -82,7 +82,7 @@ class RunQuery:
     SQL_RECENT_STATES = (
         select(RunRow)
         .where(RunRow.flow_name == bindparam("flow_name"))
-        .order_by(RunRow.run_id)
+        .order_by(RunRow.run_id.desc())
         .limit(bindparam("last_n"))
     )
     SQL_STATES = (
@@ -113,11 +113,9 @@ class RunQuery:
         self.log_repo = log_repo
 
     def _session_factory(self) -> async_sessionmaker[AsyncSession]:
-        return async_sessionmaker(
-            self.snapshot_repo.engine,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
+        current = self.snapshot_repo.find(at=None, cached=False)
+        engine = current.get_engine() if current is not None else self.snapshot_repo.engine
+        return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     @classmethod
     def _sql_id_range(cls, stmt: Select) -> Select:
@@ -131,7 +129,7 @@ class RunQuery:
     def _sql_limit_offset(cls, stmt: Select) -> Select:
         return (
             stmt
-            .order_by(RunRow.run_id)
+            .order_by(RunRow.run_id.desc())
             .limit(bindparam("limit"))
             .offset(bindparam("offset"))
         )
@@ -211,6 +209,32 @@ class RunQuery:
                 result = await session.execute(stmt, {"flow_name": name, **params})
                 rows.extend(result.scalars().all())
         return rows
+
+    async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> dict:
+        """Load a run by run_id alone, looking up flow_name from the database.
+
+        Convenience wrapper around ``get_run`` that first queries the SQLite
+        snapshot to discover which flow owns the run.
+
+        Args:
+            run_id: UUID of the run to fetch.
+            with_logs: should or not include logs in the return value
+
+        Returns:
+            Dict with ``RunSummaryDTO``-compatible keys plus a ``"logs"`` list
+            if requested.  Suitable for ``RunDTO.model_validate(result)``.
+
+        Raises:
+            ValueError: When no run with the given ``run_id`` exists.
+        """
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                select(RunRow).where(RunRow.run_id == run_id)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                raise ValueError(f"Run {run_id} not found")
+            return self.get_run(row.flow_name, run_id, with_logs)
 
     def get_run(self, flow_name: str, run_id: UUID, with_logs: bool = True) -> dict:
         """Load all logs for a run and compute its hierarchical summary.

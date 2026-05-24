@@ -64,14 +64,14 @@ export class RunDetail implements OnInit {
         this.loadBreadcrumbsSimple(this.runId);
       }
 
-      this.loadRun();
+      this.loadRun(this.runId);
     });
   }
 
-  loadRun(): void {
+  loadRun(runId: string): void {
     this.loading = true;
     this.error = null;
-    this.flowletApi.getRun(this.runId).subscribe({
+    this.flowletApi.getRunById(runId).subscribe({
       next: (runDTO: RunDTO) => {
         this.runDTO = runDTO;
         this.run = this.transformRunDTO(runDTO);
@@ -111,7 +111,7 @@ export class RunDetail implements OnInit {
     ]);
 
     // Update with actual run name after data loads
-    this.flowletApi.getRun(runId).subscribe({
+    this.flowletApi.getRunById(runId).subscribe({
       next: (runDTO: RunDTO) => {
         this.breadcrumbService.setBreadcrumbs([
           { label: 'Home', url: '/' },
@@ -141,8 +141,8 @@ export class RunDetail implements OnInit {
 
     // Fetch both parent and child run data
     forkJoin({
-      parent: this.flowletApi.getRun(parentId),
-      child: this.flowletApi.getRun(runId)
+      parent: this.flowletApi.getRunById(parentId),
+      child: this.flowletApi.getRunById(runId)
     }).subscribe({
       next: ({ parent, child }) => {
         this.breadcrumbService.setBreadcrumbs([

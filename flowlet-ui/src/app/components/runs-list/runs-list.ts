@@ -6,7 +6,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
-import { FlowletApi, RunSummaryDTO } from '../../services/flowlet-api';
+import { FlowletApi, RunStateDTO } from '../../services/flowlet-api';
 import { BreadcrumbService } from '../../services/breadcrumb.service';
 
 interface RunDisplay {
@@ -48,14 +48,13 @@ export class RunsList implements OnInit {
     this.loading = true;
     this.error = null;
     this.flowletApi.getRuns(this.offset, this.limit).subscribe({
-      next: (runs: RunSummaryDTO[]) => {
-        // Map RunSummaryDTO to RunDisplay format for the template
+      next: (runs: RunStateDTO[]) => {
         this.runs = runs.map(run => ({
-          name: run.span_name,
-          run_id: run.span_id,
+          name: run.flow_name,
+          run_id: run.run_id,
           status: run.status,
-          started_at: run.start_ts,
-          ended_at: run.end_ts
+          started_at: run.started_at,
+          ended_at: run.ended_at
         }));
         this.loading = false;
       },

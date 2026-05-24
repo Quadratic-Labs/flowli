@@ -6,6 +6,8 @@ and separate handlers for full logs and Flowlet-only logs.
 """
 from datetime import datetime, timezone
 import logging
+
+from .types import Timestamp
 from pathlib import Path
 import threading
 from typing import Any, Callable
@@ -66,7 +68,7 @@ class ContextInjectingFilter(logging.Filter):
             "span_name": getattr(current, 'span_name', None),
             "span_id": getattr(current, 'span_id', None),
             "parent_span_id": getattr(current, 'parent_span_id', None),
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc),
+            "ts": Timestamp.from_datetime(datetime.fromtimestamp(record.created, tz=timezone.utc)),
             "message": record.getMessage(),
             "level": record.levelname,
             "extra": {},
@@ -100,8 +102,8 @@ class JSONSpanFormatter(logging.Formatter):
                           'levelname', 'levelno', 'lineno', 'module', 'msecs',
                           'message', 'pathname', 'process', 'processName', 'relativeCreated',
                           'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info', ]:
-                if not key.startswith('_'):
-                    span.extra[key] = value
+                if not key.startswith('_') and value is not None:
+                    span.extra[key] = str(value)
 
         return to_json(span)
 
