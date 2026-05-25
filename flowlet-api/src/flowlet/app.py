@@ -4,8 +4,11 @@ Provides the Flowlet class with flow/task registration decorators and the
 configure() classmethod that wires the full dependency graph from a
 FlowletConfig.
 """
+import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Callable, TypedDict
+
+logger = logging.getLogger(__name__)
 
 from .config import FlowletConfig
 from .context import ContextManager
@@ -166,6 +169,8 @@ class Flowlet:
         elif isinstance(configs, Mapping):
             configs = FlowletConfig.model_validate(configs)
 
+        logger.info("flowlet_configure_start")
+
         deps: dict = {}
         deps["configs"] = configs
         deps["registry"] = Registry(**deps)
@@ -186,6 +191,7 @@ class Flowlet:
             storage_path = configs.storage_path
             assert storage_path is not None  # guaranteed: configs.storage is not None
             configure_run_file_logging(storage_path)
+            logger.info("flowlet_storage_configured", extra={"path": str(storage_path)})
 
             # LogRepository and SnapshotRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
@@ -221,6 +227,11 @@ class Flowlet:
                 deps["queue"] = AzureQueueStorage.setup(configs.queue)
             elif isinstance(configs.queue, InMemoryQueueConfig):
                 deps["queue"] = InMemoryQueue.setup(configs.queue)
+            if deps["queue"] is not None:
+                logger.info(
+                    "flowlet_queue_configured",
+                    extra={"queue_type": type(deps["queue"]).__name__},
+                )
 
         from .api.controller import FlowController
         deps["controller"] = FlowController(
@@ -235,6 +246,7 @@ class Flowlet:
         from .api.router import build_router
         deps["router"] = build_router(**deps)
 
+        logger.info("flowlet_configured")
         return cls(**deps)
 
     def start(self) -> None:
@@ -253,6 +265,7 @@ class Flowlet:
         """
         if self._subscriber is not None:
             self._subscriber.start()
+        logger.info("flowlet_started")
 
     def stop(self) -> None:
         """Stop background subscribers and the WebSocket broadcast loop.
@@ -263,6 +276,7 @@ class Flowlet:
             self._subscriber.stop()
         if self._connection_manager is not None:
             self._connection_manager.stop()
+        logger.info("flowlet_stopped")
 
     @property
     def lifespan(self):

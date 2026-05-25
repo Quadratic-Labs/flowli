@@ -166,6 +166,11 @@ class RunQuery:
             for name in names:
                 result = await session.execute(stmt, {"flow_name": name, "last_n": last_n})
                 rows.extend(result.scalars().all())
+
+        logger.debug(
+            "list_recent_states",
+            extra={"flows": len(names), "rows": len(rows), "last_n": last_n},
+        )
         return rows
 
     async def list_states(
@@ -208,6 +213,8 @@ class RunQuery:
             for name in names:
                 result = await session.execute(stmt, {"flow_name": name, **params})
                 rows.extend(result.scalars().all())
+
+        logger.debug("list_states", extra={"flows": len(names), "rows": len(rows)})
         return rows
 
     async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> dict:
@@ -265,6 +272,10 @@ class RunQuery:
                 (propagated from :func:`~flowlet.analysis.summarise`).
         """
         logs = self.log_repo.get_logs_recursive(flow_name, run_id)
+        logger.debug(
+            "get_run",
+            extra={"flow_name": flow_name, "run_id": str(run_id), "logs": len(logs)},
+        )
         summary = analysis.summarise(logs)
         result = destructure(summary)
         if with_logs:

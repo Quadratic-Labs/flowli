@@ -68,6 +68,7 @@ class InMemoryPubSub[T]:
         with self._cond:
             self._store[channel].append(self.serializer(event))
             self._cond.notify_all()
+        logger.debug("pubsub_publish", extra={"channel": channel})
 
     def subscribe(self, channel: str) -> Iterator[T]:
         """Yield events on *channel* in publish order, blocking between events.
@@ -105,6 +106,7 @@ class InMemoryPubSub[T]:
         with self._cond:
             self._closed = True
             self._cond.notify_all()
+        logger.info("pubsub_closed")
 
     def events(self, channel: str) -> list[T]:
         """Return a snapshot of all events published to *channel*.

@@ -92,7 +92,8 @@ class SnapshotSubscriber:
             return
         self._started = True
         self._stop_event.clear()
-        for flow_name in self.registry.list_flows():
+        flows = self.registry.list_flows()
+        for flow_name in flows:
             t = threading.Thread(
                 target=self._subscribe,
                 args=(flow_name,),
@@ -100,10 +101,12 @@ class SnapshotSubscriber:
                 daemon=True,
             )
             t.start()
+        logger.info("snapshot_subscriber_threads_started", extra={"flows": len(flows)})
 
     def stop(self) -> None:
         """Signal all subscription threads to stop.  Idempotent."""
         self._stop_event.set()
+        logger.info("snapshot_subscriber_stopped")
 
     def _subscribe(self, flow_name: str) -> None:
         """Subscribe to a single flow's state channel and persist each event.

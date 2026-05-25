@@ -73,6 +73,10 @@ class ConnectionManager:
         """
         await ws.accept()
         self._connections.append(ws)
+        logger.info(
+            "ws_connected",
+            extra={"client": str(ws.client), "active": len(self._connections)},
+        )
 
     def disconnect(self, ws: WebSocket) -> None:
         """Deregister a WebSocket connection.
@@ -84,6 +88,10 @@ class ConnectionManager:
             self._connections.remove(ws)
         except ValueError:
             pass
+        logger.info(
+            "ws_disconnected",
+            extra={"client": str(ws.client), "active": len(self._connections)},
+        )
 
     async def _broadcast(self, state: RunState) -> None:
         message = to_json(state)

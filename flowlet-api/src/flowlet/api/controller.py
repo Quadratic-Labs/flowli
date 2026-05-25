@@ -3,9 +3,12 @@ FastAPI controllers for Flowlet.
 
 Provides the FlowController class for handling flow execution and query endpoints.
 """
+import logging
 from inspect import Parameter
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
+
+logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, WebSocketDisconnect, WebSocket
 from pydantic import ValidationError
@@ -155,6 +158,11 @@ class FlowController:
         from ..models import RunState, RunStatus, RunType, Timestamp
         from ..context import ContextManager
 
+        logger.info(
+            "flow_run_started",
+            extra={"flow_name": flow_name, "run_id": str(run_id)},
+        )
+
         pubsub: PubSubProtocol | None = getattr(self, "pubsub", None)
         snapshot_repo = getattr(self, "snapshot_repo", None)
 
@@ -193,7 +201,16 @@ class FlowController:
                 except Exception:
                     pass
 
+            logger.info(
+                "flow_run_completed",
+                extra={"flow_name": flow_name, "run_id": str(run_id)},
+            )
+
         except Exception:
+            logger.exception(
+                "flow_run_failed",
+                extra={"flow_name": flow_name, "run_id": str(run_id)},
+            )
             state.status = RunStatus.failed
             state.ended_at = Timestamp.now()
             state.heartbeat_at = Timestamp.now()
@@ -250,6 +267,14 @@ class FlowController:
                 detail=f"Failed to enqueue job: {e}",
             )
 
+        logger.info(
+            "flow_submitted",
+            extra={
+                "flow_name": flow_name,
+                "job_id": str(job.job_id),
+                "run_id": str(job.run_id),
+            },
+        )
         return FlowSubmissionResponse(
             job_id=job.job_id,
             submitted_at=job.submitted_at,
