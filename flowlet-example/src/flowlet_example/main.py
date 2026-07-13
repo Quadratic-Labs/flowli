@@ -23,7 +23,6 @@ def _worker_loop(stop_event: threading.Event) -> None:
                 queue=flows.flowlet.queue,
                 registry=flows.flowlet.registry,
                 state_repo=flows.flowlet.state_repo,
-                pubsub=flows.flowlet.pubsub,
                 worker_id="embedded-worker",
             )
             if result == 2:  # no job available

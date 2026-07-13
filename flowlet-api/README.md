@@ -12,6 +12,17 @@ A lightweight, thread-safe flow orchestration framework for Python with built-in
 - 🌐 **REST API**: FastAPI-based API for managing and monitoring flows
 - 📱 **Web UI**: Simple web interface for visualizing flows and runs
 
+## Deployment
+
+Flowlet deploys as three roles of one container image — API (scale-to-zero),
+worker (KEDA queue-scaled job), and sweeper (cron job).  See
+[docs/deploy-azure.md](docs/deploy-azure.md) for the full Azure Container Apps
+guide, configuration reference, and cost notes.  Architecture background:
+[docs/migration-v2.md](docs/migration-v2.md).
+
+> ⚠️ Parts of this README predate the v2 architecture (leases + OTel spans +
+> pull-based reads) and are being updated; the docs linked above are current.
+
 ## Installation
 
 ```bash

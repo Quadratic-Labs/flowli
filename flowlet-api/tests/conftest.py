@@ -4,12 +4,12 @@ Pytest configuration and shared fixtures for flowlet tests.
 Provides:
 - Async SQLite engine for snapshot database tests
 - Registry and FlowController fixtures for controller tests
-- run_state / run_log factory fixtures (return a builder callable)
+- run_state / span_record factory fixtures (return a builder callable)
 - Mock querier and queue stubs
 """
 import pytest
 import pytest_asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -21,9 +21,10 @@ from sqlalchemy.ext.asyncio import (
 
 from flowlet.api.controller import FlowController
 from flowlet.api.database import Base
-from flowlet.models import FlowJob, RunLog, RunState, RunStatus, RunType
+from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
 from flowlet.registry import Registry
-from flowlet.types import Timestamp, uuid7_desc
+from uuid import uuid7
+from flowlet.types import Timestamp
 
 
 # ============================================================================
@@ -43,24 +44,25 @@ def _make_run_state(
     status: RunStatus = RunStatus.running,
     worker_id: str = "worker-1",
     started_at: Timestamp | None = None,
-    heartbeat_at: Timestamp | None = None,
     ended_at: Timestamp | None = None,
     deadline_at: Timestamp | None = None,
     attempt: int = 1,
     max_retries: int = 3,
+    kwargs: dict | None = None,
 ) -> RunState:
     now = _make_ts()
     return RunState(
-        run_id=run_id or uuid7_desc(),
+        run_id=run_id or uuid7(),
         flow_name=flow_name,
         status=status,
         worker_id=worker_id,
         started_at=started_at or now,
-        heartbeat_at=heartbeat_at or now,
         ended_at=ended_at,
-        deadline_at=deadline_at,
+        # Default to a live lease so a bare running state reads as "busy".
+        deadline_at=deadline_at or _make_ts(datetime.now(UTC) + timedelta(seconds=300)),
         attempt=attempt,
         max_retries=max_retries,
+        kwargs=kwargs or {},
     )
 
 
@@ -68,45 +70,49 @@ def _make_flow_job(
     *,
     flow_name: str = "test_flow",
     kwargs: dict | None = None,
-    retry_count: int = 0,
     max_retries: int = 3,
-    visibility_timeout: int = 300,
     timeout_seconds: int | None = None,
 ) -> FlowJob:
     return FlowJob(
         flow_name=flow_name,
         kwargs=kwargs or {},
-        retry_count=retry_count,
         max_retries=max_retries,
-        visibility_timeout=visibility_timeout,
         timeout_seconds=timeout_seconds,
     )
 
 
-def _make_run_log(
+def _make_span_record(
     *,
-    flow_name: str = "test_flow",
     run_id: UUID | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+    name: str = "test_flow",
+    flow_name: str = "test_flow",
+    attempt: int = 1,
     span_type: RunType = RunType.flow,
-    span_name: str = "test_flow",
-    span_id: UUID | None = None,
-    parent_span_id: UUID | None = None,
-    ts: Timestamp | None = None,
-    message: str = "log entry",
-    level: str = "INFO",
-    extra: dict | None = None,
-) -> RunLog:
-    return RunLog(
-        flow_name=flow_name,
-        run_id=run_id or uuid7_desc(),
-        span_type=span_type,
-        span_name=span_name,
-        span_id=span_id or uuid7_desc(),
+    status: RunStatus = RunStatus.completed,
+    status_message: str | None = None,
+    start_ts: Timestamp | None = None,
+    end_ts: Timestamp | None = None,
+    events: list[SpanEvent] | None = None,
+    attributes: dict | None = None,
+) -> SpanRecord:
+    import secrets
+
+    return SpanRecord(
+        run_id=run_id or uuid7(),
+        span_id=span_id or secrets.token_hex(8),
         parent_span_id=parent_span_id,
-        ts=ts or _make_ts(),
-        message=message,
-        level=level,
-        extra=extra or {},
+        name=name,
+        flow_name=flow_name,
+        attempt=attempt,
+        span_type=span_type,
+        status=status,
+        status_message=status_message,
+        start_ts=start_ts or _make_ts(),
+        end_ts=end_ts or _make_ts(),
+        events=events or [],
+        attributes=attributes or {},
     )
 
 
@@ -134,9 +140,9 @@ def make_flow_job():
 
 
 @pytest.fixture
-def make_run_log():
-    """Return the _make_run_log builder callable."""
-    return _make_run_log
+def make_span_record():
+    """Return the _make_span_record builder callable."""
+    return _make_span_record
 
 
 # ============================================================================

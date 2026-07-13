@@ -104,7 +104,7 @@ def risky_operation(fail_probability: float = 0.3):
 # region Flows
 # ============================================================================
 
-@flowlet.flow("simple_etl")
+@flowlet.flow("simple_etl", timeout=120, max_retries=3)
 def simple_etl_flow(source: str = "api"):
     """
     A simple ETL (Extract, Transform, Load) flow that:
@@ -197,7 +197,7 @@ def parallel_tasks_flow(count: int = 3):
     }
 
 
-@flowlet.flow("error_handling_demo")
+@flowlet.flow("error_handling_demo", timeout=60, max_retries=2)
 def error_handling_demo_flow(fail_chance: float = 0.5):
     """
     Demonstrates error handling by running a risky operation

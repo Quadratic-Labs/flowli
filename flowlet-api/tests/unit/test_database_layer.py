@@ -5,19 +5,12 @@ Covers:
 - ensure_snapshot_schema creates the runs table (no RunLink)
 - upsert_run_state inserts a new row
 - upsert_run_state updates an existing row (idempotent)
-- insert_new_states skips already-present run_ids
-- get_snapshot_period returns (None, None) for empty DB and min/max for non-empty
 """
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from flowlet.api.database import (
-    Run,
-    get_snapshot_period,
-    insert_new_states,
-    upsert_run_state,
-)
+from flowlet.api.database import Run, upsert_run_state
 from flowlet.models import RunStatus
 
 
@@ -69,41 +62,3 @@ class TestUpsertRunState:
         assert row.status == RunStatus.completed.value
 
 
-@pytest.mark.unit
-class TestInsertNewStates:
-    """insert_new_states skips run_ids already in the DB."""
-
-    async def test_inserts_all_new(self, async_session: AsyncSession, make_run_state):
-        states = [make_run_state(flow_name="flow_a") for _ in range(3)]
-        inserted = await insert_new_states(async_session, states)
-        assert inserted == 3
-
-    async def test_skips_duplicates(self, async_session: AsyncSession, make_run_state):
-        state = make_run_state()
-        await insert_new_states(async_session, [state])
-        inserted_again = await insert_new_states(async_session, [state])
-        assert inserted_again == 0
-
-    async def test_empty_list_returns_zero(self, async_session: AsyncSession):
-        assert await insert_new_states(async_session, []) == 0
-
-
-@pytest.mark.unit
-class TestGetSnapshotPeriod:
-    """get_snapshot_period returns the UUIDs bounding the snapshot."""
-
-    async def test_empty_db_returns_none_period(self, async_session: AsyncSession):
-        period = await get_snapshot_period(async_session)
-        assert period.start is None
-        assert period.end is None
-
-    async def test_non_empty_db_returns_bounds(self, async_session: AsyncSession, make_run_state):
-        states = [make_run_state() for _ in range(3)]
-        await insert_new_states(async_session, states)
-
-        period = await get_snapshot_period(async_session)
-        assert period.start is not None
-        assert period.end is not None
-        run_ids = {s.run_id for s in states}
-        assert period.start in run_ids
-        assert period.end in run_ids

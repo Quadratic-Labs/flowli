@@ -9,7 +9,7 @@ import factory
 
 from flowlet.api.database import Run
 from flowlet.models import RunStatus
-from flowlet.types import uuid7_desc
+from uuid import uuid7
 
 
 class RunOrmFactory(factory.Factory):
@@ -22,12 +22,11 @@ class RunOrmFactory(factory.Factory):
     class Meta:
         model = Run
 
-    run_id        = factory.LazyFunction(uuid7_desc)
+    run_id        = factory.LazyFunction(uuid7)
     flow_name     = factory.Sequence(lambda n: f"flow_{n}")
     status        = RunStatus.running.value
     worker_id     = "worker-1"
     started_at    = factory.LazyFunction(lambda: datetime.now(UTC))
-    heartbeat_at  = factory.LazyFunction(lambda: datetime.now(UTC))
     ended_at      = None
     attempt       = 1
     max_retries   = 3

@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from flowlet.models import RunLog, RunType
-from flowlet.repository.log import LogRepository
+from flowlet.models import RunType, SpanRecord
+from flowlet.repository.log import LogRepository, run_folder
 from flowlet.repository.state import StateRepository
 from flowlet.serdes import to_json
-from flowlet.types import uuid7_desc
+from uuid import uuid7
 
 
 # ============================================================================
@@ -47,7 +47,7 @@ class TestStateRepository:
         assert restored.status == state.status
 
     def test_read_missing_returns_none(self, state_repo):
-        assert state_repo.read("no_such_flow", uuid7_desc()) is None
+        assert state_repo.read("no_such_flow", uuid7()) is None
 
     def test_write_returns_false_on_stale_etag(self, state_repo, make_run_state):
         """A write with a stale ETag must be rejected."""
@@ -125,12 +125,12 @@ class TestStateRepository:
 # ============================================================================
 
 
-def _write_log_file(base: Path, flow_name: str, span_id, logs: list[RunLog]) -> None:
-    """Write a .jsonl log file in the expected runs/<name>/<uuid>.jsonl layout."""
-    span_dir = base / "runs" / flow_name
-    span_dir.mkdir(parents=True, exist_ok=True)
-    (span_dir / f"{span_id}.jsonl").write_text(
-        "\n".join(to_json(log) for log in logs), encoding="utf-8"
+def _write_span_file(base: Path, flow_name: str, run_id, spans: list[SpanRecord], attempt: int = 1) -> None:
+    """Write a spans-<attempt>.jsonl file in the runs/<flow>/<date>/<run_id>/ layout."""
+    folder = run_folder(base, flow_name, run_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"spans-{attempt}.jsonl").write_text(
+        "\n".join(to_json(span) for span in spans), encoding="utf-8"
     )
 
 
@@ -141,64 +141,58 @@ def log_repo(tmp_path: Path) -> LogRepository:
 
 @pytest.mark.unit
 class TestLogRepository:
-    def test_get_logs_missing_file_returns_empty(self, log_repo):
-        assert log_repo.get_logs("ghost_flow", uuid7_desc()) == []
+    def test_get_spans_missing_folder_returns_empty(self, log_repo):
+        assert log_repo.get_spans("ghost_flow", uuid7()) == []
 
-    def test_get_logs_returns_written_entries(self, log_repo, tmp_path, make_run_log):
-        run_id  = uuid7_desc()
-        span_id = uuid7_desc()
-        entries = [
-            make_run_log(run_id=run_id, span_id=span_id, level="INFO"),
-            make_run_log(run_id=run_id, span_id=span_id, level="SUCCESS"),
+    def test_get_spans_returns_written_records(self, log_repo, tmp_path, make_span_record):
+        run_id = uuid7()
+        spans = [
+            make_span_record(run_id=run_id, span_id="a" * 16),
+            make_span_record(run_id=run_id, span_id="b" * 16, parent_span_id="a" * 16),
         ]
-        _write_log_file(tmp_path, "my_flow", span_id, entries)
+        _write_span_file(tmp_path, "my_flow", run_id, spans)
 
-        assert len(log_repo.get_logs("my_flow", span_id)) == 2
+        assert len(log_repo.get_spans("my_flow", run_id)) == 2
 
-    def test_list_run_ids_for_flow(self, log_repo, tmp_path, make_run_log):
-        span_id = uuid7_desc()
-        _write_log_file(tmp_path, "my_flow", span_id, [make_run_log(span_id=span_id)])
+    def test_get_spans_merges_attempts(self, log_repo, tmp_path, make_span_record):
+        run_id = uuid7()
+        _write_span_file(
+            tmp_path, "my_flow", run_id,
+            [make_span_record(run_id=run_id, attempt=1)], attempt=1,
+        )
+        _write_span_file(
+            tmp_path, "my_flow", run_id,
+            [make_span_record(run_id=run_id, attempt=2)], attempt=2,
+        )
+
+        spans = log_repo.get_spans("my_flow", run_id)
+        assert sorted(s.attempt for s in spans) == [1, 2]
+
+    def test_list_run_ids_for_flow(self, log_repo, tmp_path, make_span_record):
+        run_id = uuid7()
+        _write_span_file(tmp_path, "my_flow", run_id, [make_span_record(run_id=run_id)])
 
         results = log_repo.list_run_ids(flow_name="my_flow")
-        assert results == [("my_flow", span_id)]
+        assert results == [("my_flow", run_id)]
 
     def test_list_run_ids_empty_when_no_runs_dir(self, log_repo):
         assert log_repo.list_run_ids() == []
 
-    def test_get_logs_recursive_follows_child_references(
-        self, log_repo, tmp_path, make_run_log
-    ):
-        run_id       = uuid7_desc()
-        flow_span_id = uuid7_desc()
-        task_span_id = uuid7_desc()
+    def test_list_run_ids_sorted_chronologically(self, log_repo, tmp_path, make_span_record):
+        first, second = uuid7(), uuid7()
+        _write_span_file(tmp_path, "my_flow", second, [make_span_record(run_id=second)])
+        _write_span_file(tmp_path, "my_flow", first, [make_span_record(run_id=first)])
 
-        parent_log = make_run_log(
-            flow_name="my_flow", run_id=run_id, span_id=flow_span_id,
-            span_type=RunType.flow, level="INFO",
-            extra={"child_span_id": str(task_span_id), "child_span_name": "my_task"},
+        results = log_repo.list_run_ids(flow_name="my_flow")
+        assert [r for _, r in results] == sorted([first, second], key=str)
+
+    def test_malformed_lines_are_skipped(self, log_repo, tmp_path, make_span_record):
+        run_id = uuid7()
+        span = make_span_record(run_id=run_id)
+        folder = run_folder(tmp_path, "my_flow", run_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "spans-1.jsonl").write_text(
+            to_json(span) + "\n{not json}\n", encoding="utf-8"
         )
-        child_log = make_run_log(
-            flow_name="my_flow", run_id=run_id, span_id=task_span_id,
-            span_type=RunType.task, level="SUCCESS",
-        )
-        _write_log_file(tmp_path, "my_flow", flow_span_id, [parent_log])
-        _write_log_file(tmp_path, "my_task", task_span_id, [child_log])
 
-        all_logs  = log_repo.get_logs_recursive("my_flow", flow_span_id)
-        span_ids  = {log.span_id for log in all_logs}
-        assert len(all_logs) == 2
-        assert flow_span_id in span_ids
-        assert task_span_id in span_ids
-
-    def test_get_logs_recursive_guards_against_cycles(
-        self, log_repo, tmp_path, make_run_log
-    ):
-        span_id   = uuid7_desc()
-        log_entry = make_run_log(
-            span_id=span_id, level="INFO",
-            extra={"child_span_id": str(span_id), "child_span_name": "my_flow"},
-        )
-        _write_log_file(tmp_path, "my_flow", span_id, [log_entry])
-
-        logs = log_repo.get_logs_recursive("my_flow", span_id)
-        assert len(logs) == 1
+        assert len(log_repo.get_spans("my_flow", run_id)) == 1

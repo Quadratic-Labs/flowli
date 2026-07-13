@@ -1,14 +1,19 @@
 """
 Job queue implementations for asynchronous flow execution.
 
-This module provides queue backends for submitting and processing flow jobs.
-Supports multiple queue implementations following a common protocol.
+The queue is a pure wake-up mechanism: it distributes FlowJob messages to
+workers, nothing more.  Ownership, retry accounting, and failure handling
+all live in the state store (RunState + CAS writes); workers ack a message
+as soon as the run's state is resolved, and duplicate deliveries are dropped
+by the worker state machine.
 
 Available implementations:
 - AzureQueueStorage: Azure Queue Storage backend for production
 - InMemoryQueue: In-memory queue for development and testing
 """
 from typing import Protocol
+from uuid import UUID
+
 from .config import AzureQueueStorageConfig, InMemoryQueueConfig, QueueConfig
 
 __all__ = [
@@ -23,8 +28,9 @@ class JobQueueProtocol(Protocol):
     """
     Protocol for job queue implementations.
 
-    Defines interface for enqueueing flow execution jobs and
-    dequeuing them for processing by workers.
+    Defines the minimal wake-up interface: enqueue a job (optionally
+    delayed), dequeue one for processing, and ack it once the run's state
+    has been resolved.
 
     Implementations must be thread-safe as they may be accessed
     concurrently from multiple API requests or worker threads.
@@ -39,121 +45,63 @@ class JobQueueProtocol(Protocol):
         >>>
         >>> # Later, in worker:
         >>> job = queue.dequeue()
-        >>> # ... execute job ...
+        >>> # resolve state, claim via CAS ...
         >>> queue.ack(job.job_id)
     """
 
-    def enqueue(self, job: 'FlowJob') -> UUID:
+    def enqueue(self, job: 'FlowJob', delay: int = 0) -> UUID:
         """
         Add a job to the queue.
 
-        Serializes and stores the job for later processing by workers.
-        Returns immediately after enqueueing.
-
         Args:
             job: Flow job to enqueue with flow name, arguments, and metadata.
+            delay: Seconds before the message becomes visible to workers.
+                Used for retry backoff; 0 means immediately visible.
 
         Returns:
             UUID: The job_id of the enqueued job (same as job.job_id).
 
         Raises:
             RuntimeError: If queue is full or unavailable.
-
-        Example:
-            >>> job = FlowJob(flow_name="process_data", kwargs={"file": "data.csv"})
-            >>> job_id = queue.enqueue(job)
         """
         ...
 
     def dequeue(self, timeout: int | None = None) -> 'FlowJob | None':
         """
-        Get next job from queue.
+        Get the next visible job from the queue.
 
-        Retrieves and marks a job as in-flight with visibility timeout.
-        Job will be invisible to other workers until timeout expires or
-        it's acknowledged/rejected.
+        The message becomes invisible to other workers for a short claim
+        window; the worker is expected to resolve the run's state and ack
+        well within it.  An unacked message (crashed worker) simply becomes
+        visible again — the state machine makes redelivery harmless.
 
         Args:
-            timeout: Visibility timeout in seconds. If None, uses queue's
-                    default timeout. Job becomes visible again after timeout
-                    unless acknowledged.
+            timeout: Claim window in seconds. If None, uses the queue's
+                default.
 
         Returns:
-            FlowJob if available, None if queue is empty.
-
-        Note:
-            Job must be acknowledged with ack() on success or nack() on failure
-            to prevent reprocessing.
-
-        Example:
-            >>> job = queue.dequeue(timeout=300)  # 5 minute visibility
-            >>> if job:
-            ...     execute_flow(job)
-            ...     queue.ack(job.job_id)
+            FlowJob if available, None if the queue is empty.
         """
         ...
 
     def ack(self, job_id: UUID) -> None:
         """
-        Acknowledge successful job completion.
+        Acknowledge a message, permanently removing it from the queue.
 
-        Permanently removes job from queue. Call after successful execution.
+        Called as soon as the run's state has been resolved (claimed,
+        or recognised as closed/busy) — not after execution.
 
         Args:
             job_id: Unique identifier of the job to acknowledge.
-
-        Example:
-            >>> job = queue.dequeue()
-            >>> try:
-            ...     execute_flow(job)
-            ...     queue.ack(job.job_id)
-            ... except Exception:
-            ...     queue.nack(job.job_id, requeue=True)
-        """
-        ...
-
-    def nack(self, job_id: UUID, requeue: bool = True) -> None:
-        """
-        Reject job, optionally requeueing for retry.
-
-        Called when job processing fails. If requeue=True and retry count
-        is under max_retries, job is returned to queue with incremented
-        retry_count. Otherwise, job is discarded (or sent to dead letter queue).
-
-        Args:
-            job_id: Unique identifier of the job to reject.
-            requeue: If True, return job to queue for retry (if under max_retries).
-                    If False, discard job permanently.
-
-        Example:
-            >>> job = queue.dequeue()
-            >>> try:
-            ...     execute_flow(job)
-            ...     queue.ack(job.job_id)
-            ... except TemporaryError:
-            ...     queue.nack(job.job_id, requeue=True)  # Retry
-            ... except PermanentError:
-            ...     queue.nack(job.job_id, requeue=False)  # Discard
         """
         ...
 
     def get_queue_size(self) -> int:
         """
-        Get approximate number of jobs in queue.
-
-        Returns the number of jobs waiting to be processed (not including
-        in-flight jobs that are currently being processed).
+        Get the approximate number of visible jobs in the queue.
 
         Returns:
             int: Approximate queue depth. May be slightly inaccurate in
                 distributed queue implementations.
-
-        Note:
-            This is an approximate count and may not be exact in distributed
-            systems due to eventual consistency.
-
-        Example:
-            >>> size = queue.get_queue_size()
-            >>> print(f"{size} jobs waiting")
         """
         ...

@@ -25,13 +25,10 @@ if TYPE_CHECKING:
 #   FlowletConfig holds a single storage backend (filesystem or Azure, never SQLite
 #   directly — SQLite is used internally by SnapshotRepository) and the optional
 #   queue backend.  Three read-only properties expose the concrete paths that the
-#   repository layer consumes: storage_path, snapshot_storage_path,
-#   snapshot_cache_path.
+#   repository layer consumes: storage_path.
 # rules:
 #   - storage MUST be a single StorageRoot backend or None; never a list.
 #   - SQLite MUST NOT appear in StorageRoot; it is an internal implementation detail.
-#   - snapshot_cache_path MUST be None for local filesystem (no download needed).
-#   - snapshot_cache_path MUST return a local Path for Azure (required for SQLite).
 # dependencies:
 #   - storage.config
 #   - queue.config
@@ -107,35 +104,6 @@ class FlowletConfig(BaseSettings):
         if isinstance(self.storage, FilesystemStorageConfig):
             return self.storage.base_path
         return self.storage.azure_path  # AzureBlobStorageConfig
-
-    @property
-    def snapshot_storage_path(self) -> "StoragePath | None":
-        """Storage root for SQLite snapshot files (under ``<root>/snapshots/``).
-
-        Mirrors ``storage_path``; exposed as a dedicated property to allow
-        future separation (e.g. a dedicated Azure container for snapshots).
-
-        Returns:
-            Same value as ``storage_path``.
-        """
-        return self.storage_path
-
-    @property
-    def snapshot_cache_path(self) -> Path | None:
-        """Local filesystem directory for cached snapshot SQLite downloads.
-
-        Azure storage requires downloading remote SQLite files before opening
-        them with SQLAlchemy. This property provides a local cache directory
-        for that purpose.
-
-        Returns:
-            None for local filesystem storage (direct file access, no cache
-            needed). A local Path under ``~/.flowlet/snapshot-cache`` for
-            Azure storage.
-        """
-        if self.storage is None or isinstance(self.storage, FilesystemStorageConfig):
-            return None
-        return Path.home() / ".flowlet" / "snapshot-cache"
 
 # ---
 # endregion

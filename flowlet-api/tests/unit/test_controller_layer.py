@@ -22,7 +22,7 @@ from flowlet.api.models import (
 )
 from flowlet.models import RunStatus, RunType
 from flowlet.registry import Registry
-from flowlet.types import uuid7_desc
+from uuid import uuid7
 
 
 @pytest.mark.unit
@@ -179,7 +179,7 @@ class TestQueryLogs:
     def test_no_querier_raises_503(self, controller: FlowController):
         with pytest.raises(HTTPException) as exc:
             controller.query_logs(
-                LogQueryRequest(flow_name="my_flow", run_id=uuid7_desc(), with_logs=True)
+                LogQueryRequest(flow_name="my_flow", run_id=uuid7(), with_logs=True)
             )
         assert exc.value.status_code == 503
 
@@ -189,7 +189,7 @@ class TestQueryLogs:
         mock_querier.get_run.side_effect = ValueError("run not found")
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
-                LogQueryRequest(flow_name="my_flow", run_id=uuid7_desc(), with_logs=True)
+                LogQueryRequest(flow_name="my_flow", run_id=uuid7(), with_logs=True)
             )
         assert exc.value.status_code == 404
 
@@ -199,14 +199,15 @@ class TestQueryLogs:
         mock_querier.get_run.side_effect = RuntimeError("storage offline")
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
-                LogQueryRequest(flow_name="my_flow", run_id=uuid7_desc(), with_logs=True)
+                LogQueryRequest(flow_name="my_flow", run_id=uuid7(), with_logs=True)
             )
         assert exc.value.status_code == 400
 
     def test_success_returns_run_dto(
         self, controller_with_querier: FlowController, mock_querier: AsyncMock
     ):
-        span_id = uuid7_desc()
+        span_id = "00f067aa0ba902b7"
+        run_id  = uuid7()
         now     = datetime.now(UTC)
         mock_querier.get_run.return_value = {
             "span_id":   span_id,
@@ -220,7 +221,7 @@ class TestQueryLogs:
         }
 
         result = controller_with_querier.query_logs(
-            LogQueryRequest(flow_name="test_flow", run_id=span_id, with_logs=True)
+            LogQueryRequest(flow_name="test_flow", run_id=run_id, with_logs=True)
         )
 
         assert result.span_id == span_id

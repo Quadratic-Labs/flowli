@@ -4,10 +4,11 @@ Implements per-run state files under ``state/<flow_name>/<run_id>.json`` with
 exclusive-lock semantics for local storage and ETag-based conditional writes
 for Azure blob storage.
 """
+import fcntl
 import json
 import logging
 import os
-from datetime import datetime, timezone, timedelta
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -26,11 +27,17 @@ logger = logging.getLogger(__name__)
 # intent: read and write /state/<flow_name>/<run_id>.json atomically
 # description: >
 #   StateRepository owns per-run state files.  Writes are guarded by an
-#   exclusive lock file (local) or ETag conditional PUT (Azure) so that only
-#   one worker can modify a state at a time.
+#   exclusive flock on a persistent sibling .lock file (local) or ETag
+#   conditional PUT (Azure) so that only one worker can modify a state at a
+#   time.  flock is released by the kernel when the holder dies, so there is
+#   no stale-lock state and no reclamation logic to race on.  State files are
+#   replaced atomically (temp file + os.replace) so lock-free readers never
+#   observe a partial write.
 # rules:
 #   - write MUST return False when ownership is lost due to a concurrent write.
-#   - Lock files MUST contain PID + expiry; stale locks are reclaimed automatically.
+#   - The .lock file is persistent and content-less; it MUST NOT be unlinked
+#     while any writer may hold or wait on its flock.
+#   - State-file replacement MUST be atomic (temp + os.replace).
 #   - MUST NOT raise on missing state files; return None instead.
 # dependencies:
 #   - storage.types.statepath
@@ -42,31 +49,28 @@ class ConditionalWriteError(Exception):
     """Raised when a conditional (ETag) PUT is rejected by Azure (HTTP 412)."""
 
 
-def _is_pid_alive(pid: int) -> bool:
-    """Check whether a process is still running (POSIX only)."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-
-
 @define(slots=True, kw_only=True)
 class StateRepository:
     """Repository for atomic per-run state-file I/O.
 
     State files live at ``root/state/<flow_name>/<run_id>.json``.  Concurrent
-    writes are serialised via a sibling ``.lock`` file (local filesystem) or
-    ETag conditional PUTs (Azure blob storage).
+    writes are serialised via an exclusive ``flock`` on a sibling ``.lock``
+    file (local filesystem) or ETag conditional PUTs (Azure blob storage).
+
+    The kernel releases a flock automatically when its holder exits or
+    crashes, so stale locks cannot occur and no reclamation is needed.
+    The ``.lock`` file itself is a persistent, content-less rendezvous point
+    and is only removed together with the state file in :meth:`delete`.
 
     Attributes:
         root: Storage root under which ``state/`` is written.
-        lock_ttl: Seconds after which an unrenewed lock is considered stale.
-            Default 60 s — slightly longer than the heartbeat interval.
+        lock_timeout: Seconds to wait for the write lock before reporting the
+            write as lost.  Writes are millisecond-fast, so contention beyond
+            this indicates a wedged writer.
     """
 
     root: StoragePath
-    lock_ttl: int = 60
+    lock_timeout: float = 5.0
 
     # ------------------------------------------------------------------
     # Serialisation helpers
@@ -137,8 +141,40 @@ class StateRepository:
         sp = self._state_path(flow_name, run_id)
         try:
             sp.path.unlink(missing_ok=True)
+            if isinstance(sp.path, Path):
+                self._lock_path(sp).unlink(missing_ok=True)
         except OSError:
             logger.exception("state_delete_error", extra={"path": str(sp.path)})
+
+    def archive(self, flow_name: str, run_id: UUID) -> None:
+        """Move a closed run's state file into its run folder.
+
+        The JSON content is copied byte-for-byte to
+        ``root/runs/<flow_name>/<date>/<run_id>/state.json`` — colocated
+        with the run's span files so the run folder is the complete,
+        self-contained durable record — and the active file plus its lock
+        are removed.  Keeps the active ``state/`` listing O(active runs) so
+        sweep cost never grows with run history.
+
+        Args:
+            flow_name: Name of the flow.
+            run_id: UUID identifying the run.
+        """
+        from .log import run_folder
+
+        sp = self._state_path(flow_name, run_id)
+        try:
+            raw = sp.path.read_bytes()
+        except (FileNotFoundError, OSError):
+            return
+        target = run_folder(self.root, flow_name, run_id) / "state.json"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        except OSError:
+            logger.exception("state_archive_write_error", extra={"path": str(target)})
+            return
+        self.delete(flow_name, run_id)
 
     def list_states(self, flow_name: str | None = None) -> list[RunState]:
         """List all known states, optionally filtered by flow name.
@@ -205,11 +241,15 @@ class StateRepository:
             return None
 
     def _write_local(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
-        """Write state atomically using a lock file and version counter.
+        """Write state atomically under an exclusive flock, with a version ETag.
 
         The ``_v`` counter inside the JSON acts as the ETag.  All version
-        checks happen inside the exclusive lock so no concurrent writer can
-        slip between the check and the write.
+        checks happen while holding an exclusive ``flock`` on a persistent
+        sibling ``.lock`` file, so no concurrent writer can slip between the
+        check and the write.  The kernel drops the flock if this process dies,
+        so a crashed writer never blocks others.  The state file itself is
+        replaced with ``os.replace`` so lock-free readers always see a
+        complete document.
 
         Args:
             sp: Resolved local StatePath.
@@ -218,118 +258,68 @@ class StateRepository:
                 the file does not yet exist.
 
         Returns:
-            ``(True, new_etag)`` on success; ``(False, None)`` on conflict.
+            ``(True, new_etag)`` on success; ``(False, None)`` on conflict or
+            lock timeout.
         """
         assert isinstance(sp.path, Path)
         lock_path = self._lock_path(sp)
         sp.path.parent.mkdir(parents=True, exist_ok=True)
 
-        acquired = self._acquire_lock(lock_path)
-        if not acquired:
-            return False, None
-
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
         try:
-            # Version check inside the lock — the only window where two
-            # workers could race is the (sub-ms) acquire→write interval,
-            # which is serialised by the lock file itself.
-            if sp.path.exists():
-                if etag is None:
-                    return False, None  # expected new file, but one exists
-                try:
-                    current_data = json.loads(sp.path.read_text(encoding="utf-8"))
-                    current_version = current_data.get("_v", 0)
-                except Exception:
-                    return False, None
-                if str(current_version) != etag:
-                    return False, None  # stale ETag — another worker wrote
-                new_version = current_version + 1
-            else:
-                if etag is not None:
-                    return False, None  # expected existing file, but it's gone
-                new_version = 1
+            if not self._flock_acquire(fd):
+                logger.warning("state_write_lock_timeout", extra={"path": str(sp.path)})
+                return False, None
+            try:
+                if sp.path.exists():
+                    if etag is None:
+                        return False, None  # expected new file, but one exists
+                    try:
+                        current_data = json.loads(sp.path.read_text(encoding="utf-8"))
+                        current_version = current_data.get("_v", 0)
+                    except Exception:
+                        return False, None
+                    if str(current_version) != etag:
+                        return False, None  # stale ETag — another worker wrote
+                    new_version = current_version + 1
+                else:
+                    if etag is not None:
+                        return False, None  # expected existing file, but it's gone
+                    new_version = 1
 
-            state_data = json.loads(to_json(state))
-            state_data["_v"] = new_version
-            sp.path.write_text(json.dumps(state_data))
-            return True, str(new_version)
+                state_data = json.loads(to_json(state))
+                state_data["_v"] = new_version
+                tmp_path = sp.path.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(state_data), encoding="utf-8")
+                os.replace(tmp_path, sp.path)
+                return True, str(new_version)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    def _acquire_lock(self, lock_path: Path) -> bool:
-        """Try to create the lock file exclusively.
-
-        Reclaims stale locks (dead PID or expired TTL) before returning False.
-
-        Args:
-            lock_path: Path to the ``.lock`` file.
-
-        Returns:
-            True if the lock was acquired; False if another live owner holds it.
-        """
-        expires_at = (
-            datetime.now(timezone.utc) + timedelta(seconds=self.lock_ttl)
-        ).isoformat()
-        payload = json.dumps({"pid": os.getpid(), "expires_at": expires_at})
-
-        try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, payload.encode())
             os.close(fd)
-            return True
-        except FileExistsError:
-            pass
 
-        # Lock already exists — check staleness.
-        if self._reclaim_stale_lock(lock_path):
-            # Try once more after reclamation.
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, payload.encode())
-                os.close(fd)
-                return True
-            except FileExistsError:
-                pass
+    def _flock_acquire(self, fd: int, poll_interval: float = 0.02) -> bool:
+        """Acquire an exclusive flock on *fd*, polling up to ``lock_timeout``.
 
-        return False
-
-    def _reclaim_stale_lock(self, lock_path: Path) -> bool:
-        """Remove a lock file if its holder is dead or its TTL has elapsed.
+        Non-blocking attempts with a short sleep bound the total wait, so a
+        wedged writer holding the lock cannot stall callers indefinitely.
 
         Args:
-            lock_path: Path to the ``.lock`` file to inspect.
+            fd: Open file descriptor of the ``.lock`` file.
+            poll_interval: Seconds between acquisition attempts.
 
         Returns:
-            True if the lock was reclaimed (deleted); False if still live.
+            True when the lock was acquired; False on timeout.
         """
-        try:
-            raw = lock_path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-            pid: int = data["pid"]
-            expires_at = datetime.fromisoformat(data["expires_at"])
-        except Exception:
-            # Malformed or already deleted — attempt removal.
+        deadline = time.monotonic() + self.lock_timeout
+        while True:
             try:
-                lock_path.unlink(missing_ok=True)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
             except OSError:
-                pass
-            return True
-
-        now = datetime.now(timezone.utc)
-        if _is_pid_alive(pid) and now < expires_at:
-            return False
-
-        try:
-            lock_path.unlink(missing_ok=True)
-            logger.info(
-                "stale_lock_reclaimed",
-                extra={"lock": str(lock_path), "pid": pid},
-            )
-            return True
-        except OSError:
-            return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(poll_interval)
 
     # ------------------------------------------------------------------
     # Azure blob storage — ETag strategy

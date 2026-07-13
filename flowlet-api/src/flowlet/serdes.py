@@ -3,8 +3,7 @@ import json
 from typing import Any, Callable, get_args, get_origin
 from uuid import UUID
 
-from .context import RunContext
-from .models import FlowJob, RunStatus, RunState, RunType, RunLog, RunSummary
+from .models import FlowJob, RunStatus, RunState, RunType, RunSummary, SpanEvent, SpanRecord
 from .types import JsonAtom, Timestamp
 
 
@@ -92,31 +91,31 @@ def _(data: dict) -> dict:
     return {key: destructure(value) for key, value in data.items()}
 
 
-@destructure.register(RunContext)
-def _(data: RunContext) -> dict:
+@destructure.register(SpanEvent)
+def _(data: SpanEvent) -> dict:
     return {
-        "flow_name": data.flow_name,
-        "run_id": data.run_id,
-        "span_name": data.span_name,
-        "span_type": data.span_type,
-        "span_id": data.span_id,
-        "parent_span_id": data.parent_span_id,
+        "ts": data.ts,
+        "message": data.message,
+        "attributes": dict(data.attributes),
     }
 
 
-@destructure.register(RunLog)
-def _(data: RunLog) -> dict:
+@destructure.register(SpanRecord)
+def _(data: SpanRecord) -> dict:
     return {
-        "flow_name": data.flow_name,
         "run_id": data.run_id,
-        "span_name": data.span_name,
-        "span_type": data.span_type,
         "span_id": data.span_id,
         "parent_span_id": data.parent_span_id,
-        "ts": data.ts,
-        "message": data.message,
-        "level": data.level,
-        "extra": {k: str(v) for k, v in data.extra.items() if v is not None},
+        "name": data.name,
+        "flow_name": data.flow_name,
+        "attempt": data.attempt,
+        "span_type": data.span_type,
+        "status": data.status,
+        "status_message": data.status_message,
+        "start_ts": data.start_ts,
+        "end_ts": data.end_ts,
+        "events": destructure(data.events),
+        "attributes": data.attributes,
     }
 
 
@@ -141,11 +140,11 @@ def _(data: RunState) -> dict:
         "status": data.status,
         "worker_id": data.worker_id,
         "started_at": data.started_at,
-        "heartbeat_at": data.heartbeat_at,
         "ended_at": data.ended_at,
         "deadline_at": data.deadline_at,
         "attempt": data.attempt,
         "max_retries": data.max_retries,
+        "kwargs": data.kwargs,
     }
 
 
@@ -157,9 +156,7 @@ def _(data: FlowJob) -> dict:
         "flow_name": data.flow_name,
         "kwargs": data.kwargs,
         "submitted_at": data.submitted_at,
-        "retry_count": data.retry_count,
         "max_retries": data.max_retries,
-        "visibility_timeout": data.visibility_timeout,
         "timeout_seconds": data.timeout_seconds,
     }
 
@@ -174,31 +171,31 @@ def _(elem_deser: Callable) -> Callable[[list], list]:
     return lambda data: [elem_deser(item) for item in data]
 
 
-@structure.register(RunContext)
-def _(data: dict) -> RunContext:
-    return RunContext(
-        flow_name=data["flow_name"],
-        run_id=data["run_id"],
-        span_name=data["span_name"],
-        span_type=data["span_type"],
-        span_id=data["span_id"],
-        parent_span_id=data["parent_span_id"],
+@structure.register(SpanEvent)
+def _(data: dict) -> SpanEvent:
+    return SpanEvent(
+        ts=data["ts"],
+        message=data["message"],
+        attributes=data.get("attributes") or {},
     )
 
 
-@structure.register(RunLog)
-def _(data: dict) -> RunLog:
-    return RunLog(
-        flow_name=data["flow_name"],
+@structure.register(SpanRecord)
+def _(data: dict) -> SpanRecord:
+    return SpanRecord(
         run_id=data["run_id"],
-        span_type=data["span_type"],
-        span_name=data["span_name"],
         span_id=data["span_id"],
-        parent_span_id=data["parent_span_id"],
-        ts=data["ts"],
-        message=data["message"],
-        level=data["level"],
-        extra=data["extra"],
+        parent_span_id=data.get("parent_span_id"),
+        name=data["name"],
+        flow_name=data["flow_name"],
+        attempt=data.get("attempt", 1),
+        span_type=data["span_type"],
+        status=data["status"],
+        status_message=data.get("status_message"),
+        start_ts=data["start_ts"],
+        end_ts=data.get("end_ts"),
+        events=data.get("events") or [],
+        attributes=data.get("attributes") or {},
     )
 
 
@@ -210,11 +207,11 @@ def _(data: dict) -> RunState:
         status=data["status"],
         worker_id=data["worker_id"],
         started_at=data["started_at"],
-        heartbeat_at=data["heartbeat_at"],
         ended_at=data.get("ended_at"),
         deadline_at=data.get("deadline_at"),
         attempt=data.get("attempt", 1),
         max_retries=data.get("max_retries", 3),
+        kwargs=data.get("kwargs") or {},
     )
 
 # ---
@@ -267,33 +264,30 @@ def from_json(data: str) -> Any:
     return json.loads(data)
 
 
-@from_json.register(RunContext)
-def _(data: str) -> RunContext:
+@from_json.register(SpanRecord)
+def _(data: str) -> SpanRecord:
     raw = json.loads(data)
-    return RunContext(
-        flow_name=raw["flow_name"],
+    return SpanRecord(
         run_id=UUID(raw["run_id"]),
-        span_name=raw["span_name"],
-        span_type=RunType(raw["span_type"]),
-        span_id=UUID(raw["span_id"]),
-        parent_span_id=UUID(raw["parent_span_id"]) if raw["parent_span_id"] is not None else None,
-    )
-
-
-@from_json.register(RunLog)
-def _(data: str) -> RunLog:
-    raw = json.loads(data)
-    return RunLog(
+        span_id=raw["span_id"],
+        parent_span_id=raw.get("parent_span_id"),
+        name=raw["name"],
         flow_name=raw["flow_name"],
-        run_id=UUID(raw["run_id"]),
+        attempt=raw.get("attempt", 1),
         span_type=RunType(raw["span_type"]),
-        span_name=raw["span_name"],
-        span_id=UUID(raw["span_id"]),
-        parent_span_id=UUID(raw["parent_span_id"]) if raw["parent_span_id"] is not None else None,
-        ts=Timestamp.from_iso(raw["ts"]),
-        message=raw["message"],
-        level=raw["level"],
-        extra=raw["extra"],
+        status=RunStatus(raw["status"]),
+        status_message=raw.get("status_message"),
+        start_ts=Timestamp.from_iso(raw["start_ts"]),
+        end_ts=Timestamp.from_iso(raw["end_ts"]) if raw.get("end_ts") else None,
+        events=[
+            SpanEvent(
+                ts=Timestamp.from_iso(e["ts"]),
+                message=e["message"],
+                attributes=e.get("attributes") or {},
+            )
+            for e in raw.get("events") or []
+        ],
+        attributes=raw.get("attributes") or {},
     )
 
 
@@ -306,11 +300,11 @@ def _(data: str) -> RunState:
         status=RunStatus(raw["status"]),
         worker_id=raw["worker_id"],
         started_at=Timestamp.from_iso(raw["started_at"]),
-        heartbeat_at=Timestamp.from_iso(raw["heartbeat_at"]),
         ended_at=Timestamp.from_iso(raw["ended_at"]) if raw.get("ended_at") else None,
         deadline_at=Timestamp.from_iso(raw["deadline_at"]) if raw.get("deadline_at") else None,
         attempt=raw.get("attempt", 1),
         max_retries=raw.get("max_retries", 3),
+        kwargs=raw.get("kwargs") or {},
     )
 
 
@@ -323,9 +317,7 @@ def _(data: str) -> FlowJob:
         flow_name=raw["flow_name"],
         kwargs=raw["kwargs"],
         submitted_at=Timestamp.from_iso(raw["submitted_at"]),
-        retry_count=raw["retry_count"],
-        max_retries=raw["max_retries"],
-        visibility_timeout=raw["visibility_timeout"],
+        max_retries=raw.get("max_retries", 3),
         timeout_seconds=raw.get("timeout_seconds"),
     )
 

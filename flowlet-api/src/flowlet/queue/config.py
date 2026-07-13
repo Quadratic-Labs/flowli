@@ -37,7 +37,7 @@ class AzureQueueStorageConfig(BaseSettings):
         >>> queue_client = config.queue_client
     """
     model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_QUEUE_AZURE',
+        env_prefix='FLOWLET_QUEUE_AZURE_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
         arbitrary_types_allowed=True
@@ -115,7 +115,7 @@ class InMemoryQueueConfig(BaseSettings):
         >>> # Queue will reject enqueue operations when full
     """
     model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_QUEUE_MEMORY',
+        env_prefix='FLOWLET_QUEUE_MEMORY_',
         env_nested_delimiter='_',
         env_nested_max_split=1
     )

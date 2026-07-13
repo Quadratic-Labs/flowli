@@ -22,8 +22,8 @@ from .. import analysis
 from ..registry import Registry
 from ..repository.log import LogRepository
 from ..serdes import destructure
+from .cache import CacheRepository
 from .database import Run as RunRow
-from .repository import SnapshotRepository
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +42,20 @@ logger = logging.getLogger(__name__)
 #   3. get_run            — full run detail: logs loaded recursively from
 #      storage (subflows / subtasks included), summarised into a RunSummary
 #      tree, returned as a dict compatible with RunDTO.model_validate.
-#   SQLite queries use SnapshotRepository.engine (async SQLAlchemy).
+#   SQLite queries use CacheRepository's engine; every async query method
+#   awaits cache.refresh() first (TTL-throttled scan of state files).
 #   Log loading is synchronous (mirrors the StoragePath I/O contract).
 # rules:
 #   - MUST NOT write to the database; this is a read-only component.
 #   - list_recent_states MUST consult the registry when flow_names is None.
-#   - get_run MUST use LogRepository.get_logs_recursive to include subflow/task logs.
+#   - get_run MUST read spans via LogRepository.get_spans (one folder per run).
 #   - Timestamps MUST be serialised as plain datetime (UTC) in dicts returned by get_run.
 # dependencies:
 #   - analysis
 #   - models.run
 #   - registry.registry
 #   - log_repository
-#   - snapshot.repository
+#   - cache.repository
 #   - database.models
 # aliases:
 #   - run-query
@@ -68,21 +69,20 @@ logger = logging.getLogger(__name__)
 class RunQuery:
     """Read-only query object for run history.
 
-    Combines SQLite snapshot data (RunState rows) with log-file data (RunLog)
-    to serve all read operations required by the Flowlet API.
+    Combines the run cache (RunState rows, pull-refreshed from state files)
+    with span-file data to serve all read operations required by the API.
 
     Attributes:
-        snapshot_repo: Provides the async SQLAlchemy engine pointing at the
-            current hot-snapshot SQLite database.
+        cache: CacheRepository providing the local SQLite engine, refreshed
+            on demand from storage.
         registry: Enumerates registered flow names when no explicit filter is
             given to ``list_recent_states``.
-        log_repo: Loads log files from storage, following child-span references
-            recursively.
+        log_repo: Loads span files from run folders.
     """
     SQL_RECENT_STATES = (
         select(RunRow)
         .where(RunRow.flow_name == bindparam("flow_name"))
-        .order_by(RunRow.run_id.desc())
+        .order_by(RunRow.run_id.desc())  # UUIDv7: descending = newest first
         .limit(bindparam("last_n"))
     )
     SQL_STATES = (
@@ -94,34 +94,32 @@ class RunQuery:
         self,
         *,
         registry: Registry,
-        snapshot_repo: SnapshotRepository,
+        cache_repo: CacheRepository,
         log_repo: LogRepository,
         **_,
     ):
         """Initialise the query object.
 
         Args:
-            snapshot_repo: SnapshotRepository holding the active hot-snapshot
-                SQLAlchemy engine.
+            cache_repo: CacheRepository owning the local SQLite engine.
             registry: Flow registry for resolving registered flow names.
-            log_repo: LogRepository for reading log files from storage.
+            log_repo: LogRepository for reading span files from storage.
             **_: Unused keyword arguments accepted for dependency-injection
                 compatibility.
         """
-        self.snapshot_repo = snapshot_repo
+        self.cache = cache_repo
         self.registry = registry
         self.log_repo = log_repo
 
     def _session_factory(self) -> async_sessionmaker[AsyncSession]:
-        current = self.snapshot_repo.find(at=None, cached=False)
-        engine = current.get_engine() if current is not None else self.snapshot_repo.engine
-        return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        return self.cache.session_factory()
 
     @classmethod
     def _sql_id_range(cls, stmt: Select) -> Select:
+        # Mirrors PeriodUUID.covers(): strictly inside (start_id, end_id).
         return (
             stmt
-            .where(RunRow.run_id >= bindparam("start_id"))
+            .where(RunRow.run_id > bindparam("start_id"))
             .where(RunRow.run_id < bindparam("end_id"))
         )
 
@@ -129,7 +127,7 @@ class RunQuery:
     def _sql_limit_offset(cls, stmt: Select) -> Select:
         return (
             stmt
-            .order_by(RunRow.run_id.desc())
+            .order_by(RunRow.run_id.desc())  # UUIDv7: descending = newest first
             .limit(bindparam("limit"))
             .offset(bindparam("offset"))
         )
@@ -160,6 +158,7 @@ class RunQuery:
         if not names:
             return []
 
+        await self.cache.refresh()
         stmt = self.SQL_RECENT_STATES
         rows: list[RunRow] = []
         async with self._session_factory()() as session:
@@ -208,6 +207,7 @@ class RunQuery:
             params["offset"] = offset_limit[0]
             params["limit"] = offset_limit[1]
 
+        await self.cache.refresh()
         rows: list[RunRow] = []
         async with self._session_factory()() as session:
             for name in names:
@@ -234,6 +234,7 @@ class RunQuery:
         Raises:
             ValueError: When no run with the given ``run_id`` exists.
         """
+        await self.cache.refresh()
         async with self._session_factory()() as session:
             result = await session.execute(
                 select(RunRow).where(RunRow.run_id == run_id)
@@ -248,7 +249,7 @@ class RunQuery:
 
         Reads log entries recursively from storage starting at the root span
         identified by (*flow_name*, *run_id*), following every
-        ``child_span_id`` / ``child_span_name`` reference so that logs from
+        the run folder — every span of the run lives there, so subflow and
         all nested subflows and subtasks are included.
 
         Derives a :class:`~flowlet.models.RunSummary` tree from those logs via
@@ -271,7 +272,7 @@ class RunQuery:
             ValueError: When the loaded logs contain no identifiable root span
                 (propagated from :func:`~flowlet.analysis.summarise`).
         """
-        logs = self.log_repo.get_logs_recursive(flow_name, run_id)
+        logs = self.log_repo.get_spans(flow_name, run_id)
         logger.debug(
             "get_run",
             extra={"flow_name": flow_name, "run_id": str(run_id), "logs": len(logs)},

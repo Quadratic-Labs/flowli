@@ -190,34 +190,54 @@ class LogQueryRequest(Base):
 #   - models.run
 # ---
 
-class RunLogDTO(Base):
-    """API DTO for a single log event recorded during a run.
+class SpanEventDTO(Base):
+    """API DTO for a log event recorded inside a span.
 
-    Mirrors :class:`~flowlet.models.RunLog`. All fields are optional to
-    accommodate partial projections returned by log queries.
+    Mirrors :class:`~flowlet.models.SpanEvent`.
 
     Attributes:
-        flow_name: Name of the flow that produced this log.
-        run_id: Identifier of the enclosing run.
-        span_type: Whether the emitting span is a flow or a task.
-        span_name: Name of the emitting span.
-        span_id: Identifier of the emitting span.
-        parent_span_id: Identifier of the parent span, or ``None`` for the root.
         ts: Wall-clock timestamp of the event.
-        message: Log message body.
-        level: Logging level (e.g. ``"INFO"``, ``"ERROR"``).
-        extra: Arbitrary key-value metadata attached to the log record.
+        message: Event/log message body.
+        attributes: Structured event attributes (e.g. ``log.level``).
     """
-    flow_name: str | None = None
-    run_id: UUID | None = None
-    span_type: RunType | None = None
-    span_name: str | None = None
-    span_id: UUID | None = None
-    parent_span_id: UUID | None = None
     ts: TimestampDTO | None = None
     message: str | None = None
-    level: str | None = None
-    extra: dict[str, str] = Field(default_factory=dict)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class SpanRecordDTO(Base):
+    """API DTO for one finished span of a run.
+
+    Mirrors :class:`~flowlet.models.SpanRecord`.
+
+    Attributes:
+        run_id: Identifier of the enclosing run (equals the trace id).
+        span_id: OTel span id, 16-char hex string.
+        parent_span_id: Parent span id, or ``None`` for the root span.
+        name: Span (flow/task) name.
+        flow_name: Root flow name.
+        attempt: Execution attempt this span belongs to.
+        span_type: Whether the span is a flow or a task.
+        status: Terminal status of the span.
+        status_message: Error description when failed.
+        start_ts: Span start time.
+        end_ts: Span end time.
+        events: Log events recorded inside the span.
+        attributes: Remaining span attributes.
+    """
+    run_id: UUID | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    name: str | None = None
+    flow_name: str | None = None
+    attempt: int = 1
+    span_type: RunType | None = None
+    status: RunStatus | None = None
+    status_message: str | None = None
+    start_ts: TimestampDTO | None = None
+    end_ts: TimestampDTO | None = None
+    events: list[SpanEventDTO] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunSummaryDTO(Base):
@@ -237,7 +257,7 @@ class RunSummaryDTO(Base):
         duration: Computed human-readable elapsed time, or ``None`` if
             start or end is missing.
     """
-    span_id: UUID
+    span_id: str
     span_name: str
     span_type: RunType
     status: RunStatus
@@ -262,13 +282,12 @@ class RunSummaryDTO(Base):
 class RunDTO(RunSummaryDTO):
     """API DTO for a complete run including its log entries.
 
-    Extends :class:`RunSummaryDTO` with the full ordered list of log events
-    recorded during the run.
+    Extends :class:`RunSummaryDTO` with the full list of recorded spans.
 
     Attributes:
-        logs: All log entries for this run in chronological order.
+        logs: All span records for this run (all attempts), in file order.
     """
-    logs: list[RunLogDTO]
+    logs: list[SpanRecordDTO]
 
 
 class RunStateDTO(Base):
@@ -283,7 +302,6 @@ class RunStateDTO(Base):
         status: Current execution status.
         worker_id: Identifier of the owning worker process.
         started_at: Timestamp when the run was first started.
-        heartbeat_at: Timestamp of the last heartbeat from the worker.
         ended_at: Timestamp when the run finished, or ``None`` if still active.
         attempt: Current attempt number (1-based).
         max_retries: Maximum number of retry attempts allowed.
@@ -293,7 +311,6 @@ class RunStateDTO(Base):
     status: RunStatus
     worker_id: str
     started_at: TimestampDTO
-    heartbeat_at: TimestampDTO
     ended_at: TimestampDTO | None
     attempt: int
     max_retries: int

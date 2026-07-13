@@ -11,18 +11,13 @@ from typing import TYPE_CHECKING, Callable, TypedDict
 logger = logging.getLogger(__name__)
 
 from .config import FlowletConfig
-from .context import ContextManager
 from .registry import Registry
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
+    from .api.cache import CacheRepository
     from .api.controller import FlowController
     from .api.query import RunQuery
-    from .api.repository import SnapshotRepository
-    from .api.subscriber import SnapshotSubscriber
-    from .api.ws import ConnectionManager
-    from .models import RunState
-    from .pubsub import PubSubProtocol
     from .queue import JobQueueProtocol
     from .repository.log import LogRepository
     from .repository.state import StateRepository
@@ -73,25 +68,20 @@ class FlowletDeps(TypedDict, total=False):
     Attributes:
         configs: Validated application configuration.
         registry: Flow and task registry (constructed first; no deps).
-        context_manager: Span context holder (stateless singleton pattern).
-        log_repo: Log-file reader; present only when storage is configured.
-        snapshot_repo: SQLite snapshot repository; present only when storage
-            is configured.
+        log_repo: Span-file reader; present only when storage is configured.
+        cache_repo: Pull-refreshed SQLite run cache; present only when
+            storage is configured.
         querier: Read-side query object; None when no storage is configured.
         queue: Async job queue; None when not configured.
         controller: FastAPI controller wiring all endpoint handlers.
     """
     configs: FlowletConfig
     registry: Registry
-    context_manager: ContextManager
     log_repo: LogRepository
     state_repo: StateRepository
-    snapshot_repo: SnapshotRepository
+    cache_repo: CacheRepository
     querier: RunQuery | None
     queue: JobQueueProtocol | None
-    pubsub: "PubSubProtocol[RunState] | None"
-    subscriber: "SnapshotSubscriber | None"
-    connection_manager: "ConnectionManager | None"
     controller: FlowController
     router: APIRouter
 
@@ -132,9 +122,6 @@ class Flowlet:
         self.router: APIRouter = deps["router"]  # type: ignore[assignment]
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
-        self.pubsub = deps.get("pubsub")
-        self._subscriber = deps.get("subscriber")
-        self._connection_manager = deps.get("connection_manager")
 
     @classmethod
     def configure(cls, configs: FlowletConfig | Mapping | None = None) -> "Flowlet":
@@ -174,48 +161,30 @@ class Flowlet:
         deps: dict = {}
         deps["configs"] = configs
         deps["registry"] = Registry(**deps)
-        deps["context_manager"] = ContextManager(**deps)
 
-        # Context logging must be configured before any repository is built so
-        # that every log record emitted through 'flowlet.log' carries span context.
-        from .logger import configure_context_logging
-        configure_context_logging(deps["context_manager"])
+        # Route 'flowlet.log' records into span events so user logging inside
+        # flows lands in the run record.
+        from .tracing import configure_run_logging, configure_tracing
+        configure_run_logging()
 
         deps["querier"] = None
         if configs.storage is not None:
-            from .logger import configure_run_file_logging
             from .repository.log import LogRepository
-            from .api.repository import SnapshotRepository
+            from .api.cache import CacheRepository
             from .api.query import RunQuery
 
             storage_path = configs.storage_path
             assert storage_path is not None  # guaranteed: configs.storage is not None
-            configure_run_file_logging(storage_path)
+            configure_tracing(storage_path)
             logger.info("flowlet_storage_configured", extra={"path": str(storage_path)})
 
-            # LogRepository and SnapshotRepository are added to deps so that
+            # LogRepository and CacheRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
             from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(base_path=storage_path)
             deps["state_repo"] = StateRepository(root=storage_path)
-            deps["snapshot_repo"] = SnapshotRepository.from_configs(configs=configs)
+            deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
-
-            from .serdes import to_json, from_json
-            from .models import RunState as _RunState
-            from .pubsub.memory import InMemoryPubSub
-            from .api.subscriber import SnapshotSubscriber
-            from .api.ws import ConnectionManager
-            deps["pubsub"] = InMemoryPubSub[_RunState](
-                serializer=to_json,
-                deserializer=from_json(_RunState),
-            )
-            deps["connection_manager"] = ConnectionManager()
-            deps["subscriber"] = SnapshotSubscriber(**deps)
-        else:
-            deps["pubsub"] = None
-            deps["connection_manager"] = None
-            deps["subscriber"] = None
 
         deps["queue"] = None
         if configs.queue is not None:
@@ -238,9 +207,7 @@ class Flowlet:
             registry=deps["registry"],
             querier=deps["querier"],
             queue=deps["queue"],
-            connection_manager=deps.get("connection_manager"),
-            pubsub=deps.get("pubsub"),
-            snapshot_repo=deps.get("snapshot_repo"),
+            state_repo=deps.get("state_repo"),
         )
 
         from .api.router import build_router
@@ -250,59 +217,34 @@ class Flowlet:
         return cls(**deps)
 
     def start(self) -> None:
-        """Start background subscribers.
+        """No-op retained for API compatibility.
 
-        Must be called after all flows and tasks have been registered.
-        Idempotent: safe to call multiple times.
-
-        Example:
-            >>> # In a FastAPI lifespan:
-            >>> @asynccontextmanager
-            ... async def lifespan(app):
-            ...     flowlet.start()
-            ...     yield
-            ...     flowlet.stop()
+        The pull-based read side has no background services to start: the
+        run cache refreshes lazily inside query calls.
         """
-        if self._subscriber is not None:
-            self._subscriber.start()
         logger.info("flowlet_started")
 
     def stop(self) -> None:
-        """Stop background subscribers and the WebSocket broadcast loop.
-
-        Idempotent: safe to call multiple times or before start().
-        """
-        if self._subscriber is not None:
-            self._subscriber.stop()
-        if self._connection_manager is not None:
-            self._connection_manager.stop()
+        """No-op retained for API compatibility."""
         logger.info("flowlet_stopped")
 
     @property
     def lifespan(self):
-        """FastAPI lifespan context manager that starts and stops all background services.
+        """FastAPI lifespan context manager.
 
-        Starts the pubsub subscriber threads and the WebSocket broadcast loop on
-        startup; stops them cleanly on shutdown.  Pass this to ``FastAPI(lifespan=...)``.
-
-        Example:
-            >>> app = FastAPI(lifespan=flowlet.lifespan)
+        Nothing needs starting or stopping — the API is fully stateless
+        (scale-to-zero safe) — but the hook is kept so applications can pass
+        ``FastAPI(lifespan=flowlet.lifespan)`` uniformly.
         """
         from contextlib import asynccontextmanager
-        import asyncio
 
         @asynccontextmanager
         async def _lifespan(app):
-            task = None
-            if self._connection_manager is not None:
-                task = asyncio.create_task(self._connection_manager.run())
             self.start()
             try:
                 yield
             finally:
                 self.stop()
-                if task is not None:
-                    await task  # exits after stop() sends the None sentinel
 
         return _lifespan
 
@@ -322,7 +264,13 @@ class Flowlet:
         """
         return self.registry.list_tasks()
 
-    def flow(self, name: str | None = None) -> Callable:
+    def flow(
+        self,
+        name: str | None = None,
+        *,
+        timeout: int | None = None,
+        max_retries: int = 3,
+    ) -> Callable:
         """Decorator that registers a function as a flow.
 
         The decorated function is wrapped with instrumentation so every call
@@ -330,17 +278,24 @@ class Flowlet:
 
         Args:
             name: Override name for the flow; defaults to the function name.
+            timeout: Lease duration in seconds per execution attempt.  A
+                worker claiming this flow sets ``deadline_at = now + timeout``;
+                a run past its deadline is reclaimable by the sweeper or
+                another worker.  None uses the worker default.
+            max_retries: Maximum number of execution attempts.
 
         Returns:
             Decorator callable.
 
         Example:
-            >>> @flowlet.flow()
+            >>> @flowlet.flow(timeout=600, max_retries=5)
             ... def my_workflow(x: int) -> int:
             ...     return my_task(x)
         """
         def _decorator(fn: Callable) -> Callable:
-            return self.registry.register_flow(fn, name or fn.__name__)
+            return self.registry.register_flow(
+                fn, name or fn.__name__, timeout=timeout, max_retries=max_retries
+            )
         return _decorator
 
     def task(self, name: str | None = None) -> Callable:

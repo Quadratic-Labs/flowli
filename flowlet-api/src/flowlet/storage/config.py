@@ -27,7 +27,7 @@ class AzureBlobStorageConfig(BaseSettings):
         ... )
     """
     model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_STORAGE_AZURE_BLOB',
+        env_prefix='FLOWLET_STORAGE_AZURE_BLOB_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
         arbitrary_types_allowed=True
@@ -77,7 +77,7 @@ class FilesystemStorageConfig(BaseSettings):
         >>> config = FilesystemStorageConfig(base_path="./storage")
     """
     model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_STORAGE_FILESYSTEM',
+        env_prefix='FLOWLET_STORAGE_FILESYSTEM_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
         arbitrary_types_allowed=True
@@ -101,7 +101,7 @@ class SQLiteStorageConfig(BaseSettings):
         >>> config = SQLiteStorageConfig(database_path="./flowlet.db")
     """
     model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_STORAGE_SQLITE',
+        env_prefix='FLOWLET_STORAGE_SQLITE_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
         arbitrary_types_allowed=True

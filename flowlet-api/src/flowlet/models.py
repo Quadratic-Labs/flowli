@@ -18,13 +18,13 @@ from .types import JsonData, Timestamp
 # region @models.run
 # ---
 # role: datatype
-# intent: define logs data models for the domain layer.
+# intent: define run/span data models for the domain layer.
 # description:
-#   - Runs are like runtime execution context and likewise is hierarchically
-#   structured.
-#   - Runs are like spans in opentelemetry, they happen over a time-range.
-#   - RunSummary represents the current status of a Run.
-#   - RunLog represents a single event during a Run's span.
+#   - Runs are hierarchically structured executions recorded as OTel spans;
+#   run_id is the trace_id, span ids are OTel 64-bit ids as 16-char hex.
+#   - SpanRecord is one finished span read back from the run folder's
+#   spans-<attempt>.jsonl files; SpanEvent is a log event inside a span.
+#   - RunSummary represents the derived status tree of a Run.
 # rules:
 #   - Models SHOULD be attrs define
 #   - For inheritance, models SHOULD use kw_only=True
@@ -76,23 +76,53 @@ class RunStatus(StrEnum):
 
 
 @define(slots=True, kw_only=True)
-class RunLog:
+class SpanEvent:
     """
-    A run's log event.
+    A log event recorded inside a span.
 
-    Runs span a time range within which events can be recorded.
-    RunLog models such events fields, attaching it to its span.
+    Attributes:
+        ts: When the event was recorded.
+        message: The event/log message.
+        attributes: Structured event attributes (e.g. log.level).
     """
-    flow_name: str
-    run_id: UUID
-    span_type: RunType
-    span_name: str
-    span_id: UUID
-    parent_span_id: UUID | None
     ts: Timestamp
     message: str
-    level: str
-    extra: Mapping[str, str]
+    attributes: Mapping[str, Any] = Factory(dict)
+
+
+@define(slots=True, kw_only=True)
+class SpanRecord:
+    """
+    One finished span read back from a run's spans-<attempt>.jsonl file.
+
+    Attributes:
+        run_id: The run's UUID — equal to the OTel trace_id.
+        span_id: OTel span id, 16-char hex string.
+        parent_span_id: Parent span id, or None for the root span.
+        name: Span (flow/task) name.
+        flow_name: Root flow name (identical for all spans of a run).
+        attempt: Execution attempt this span belongs to (1-based).
+        span_type: flow or task.
+        status: Terminal status of the span (completed or failed).
+        status_message: Error description when failed.
+        start_ts: Span start time.
+        end_ts: Span end time.
+        events: Log events recorded inside the span.
+        attributes: Remaining span attributes.
+    """
+    run_id: UUID
+    span_id: str
+    parent_span_id: str | None = field(default=None)
+    name: str
+    flow_name: str
+    attempt: int = 1
+    span_type: RunType
+    status: RunStatus
+    status_message: str | None = field(default=None)
+    start_ts: Timestamp
+    end_ts: Timestamp | None = field(default=None)
+    events: list[SpanEvent] = Factory(list)
+    attributes: dict[str, Any] = Factory(dict)
 
 
 @define(slots=True, kw_only=True)
@@ -100,12 +130,12 @@ class RunSummary:
     """
     A run's status.
 
-    Aggregates a run's logs into a single stat summary.
+    Aggregates a run's spans into a single stat summary.
     Recursively embeds children's spans as well.
     The root span summary gives the entire run summary.
 
     Attributes:
-        span_id: span's identifier.
+        span_id: span's identifier (16-char hex OTel span id).
         span_name: span's name.
         span_type: span's type.
         status: span's most recent status.
@@ -113,7 +143,7 @@ class RunSummary:
         end_ts: span's ending time.
         children: span's children span's summaries.
     """
-    span_id: UUID
+    span_id: str
     span_name: str
     span_type: RunType
     status: RunStatus
@@ -154,7 +184,10 @@ class RunState:
     Worker-owned state for a single flow execution.
 
     Written atomically to the state store on every transition.
-    Acts as the source of truth for liveness detection and retry logic.
+    Acts as the source of truth for ownership and retry logic: a worker owns
+    a run by CAS-writing ``status=running`` with a lease ``deadline_at``;
+    anything running past its deadline is reclaimable (by another worker or
+    the sweeper).  There is no heartbeat — the lease is the liveness signal.
 
     Attributes:
         run_id: Unique identifier for the run.
@@ -162,21 +195,25 @@ class RunState:
         status: Current execution status.
         worker_id: Identifier of the owning worker process.
         started_at: Timestamp when the run was first started.
-        heartbeat_at: Timestamp of the last heartbeat from the worker.
         ended_at: Timestamp when the run finished (completed or failed).
-        attempt: Current attempt number (1-based).
-        max_retries: Maximum number of retry attempts allowed.
+        deadline_at: Lease expiry — reset on every claim to now + timeout.
+        attempt: Current attempt number (1-based); incremented on each claim
+            of an existing state.
+        max_retries: Maximum number of execution attempts allowed.
+        kwargs: Flow keyword arguments, copied from the job at first claim so
+            the sweeper can re-enqueue a crashed run without the original
+            queue message.
     """
     run_id: UUID
     flow_name: str
     status: RunStatus
     worker_id: str
     started_at: Timestamp
-    heartbeat_at: Timestamp
     ended_at: Timestamp | None = field(default=None)
     deadline_at: Timestamp | None = field(default=None)
     attempt: int = 1
     max_retries: int = 3
+    kwargs: dict[str, Any] = Factory(dict)
 
 # ---
 # endregion
@@ -202,20 +239,22 @@ class RunState:
 @define(slots=True, kw_only=True)
 class FlowJob:
     """
-    A flow execution job for queue processing.
+    A flow execution wake-up message for queue processing.
 
-    Represents a queued flow execution with all necessary metadata
-    for scheduling, tracking, and retry logic.
+    The queue is purely a work-distribution signal: retry accounting and
+    ownership live in ``RunState``, never in the message.  A worker acks the
+    message as soon as the run's state is resolved; duplicate deliveries are
+    harmless because the state machine drops them (busy/closed).
 
     Attributes:
-        job_id: Unique job identifier in the queue.
+        job_id: Unique job identifier in the queue (one per message).
         run_id: Pre-generated run ID for tracking execution.
         flow_name: Name of the flow to execute.
         kwargs: Validated keyword arguments to pass to the flow.
         submitted_at: Timestamp when job was submitted to queue.
-        retry_count: Number of times this job has been retried.
-        max_retries: Maximum number of retry attempts allowed.
-        visibility_timeout: Seconds before job becomes visible again if not acknowledged.
+        max_retries: Maximum number of execution attempts allowed.
+        timeout_seconds: Per-attempt lease duration; None uses the worker's
+            default.
 
     Example:
         >>> job = FlowJob(
@@ -224,14 +263,15 @@ class FlowJob:
         ... )
         >>> queue.enqueue(job)
     """
+    # Standard UUIDv7 — the single ID convention across spans, log paths,
+    # PeriodUUID range checks, and snapshot run_id ordering. run_id doubles
+    # as the OTel trace_id (both are 128-bit).
     job_id: UUID = Factory(uuid7)
     run_id: UUID = Factory(uuid7)
     flow_name: str
     kwargs: dict[str, Any] = Factory(dict)
     submitted_at: Timestamp = Factory(Timestamp.now)
-    retry_count: int = 0
     max_retries: int = 3
-    visibility_timeout: int = 300  # 5 minutes default
     timeout_seconds: int | None = field(default=None)
 
 # ---

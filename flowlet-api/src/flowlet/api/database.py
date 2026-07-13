@@ -12,13 +12,12 @@ from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import DateTime, String, Uuid, func, select, create_engine
+from sqlalchemy import DateTime, String, Uuid, create_engine
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from ..models import RunState
-from ..types import PeriodUUID
 
 logger = logging.getLogger(__name__)
 
@@ -129,12 +128,12 @@ class Run(Base):
     Hierarchy is NOT stored here — query logs instead.
 
     Attributes:
-        run_id: Unique identifier (UUIDv7, used for time-ordering).
+        run_id: Unique identifier (UUIDv7 — chronologically ordered, the
+            largest run_id is the most recent run).
         flow_name: Name of the flow being executed.
         status: Current execution status string.
         worker_id: Identifier of the owning worker.
         started_at: Wall-clock time when the run started.
-        heartbeat_at: Last heartbeat from the worker.
         ended_at: Wall-clock time when the run finished (NULL if ongoing).
         attempt: Current attempt number (1-based).
         max_retries: Maximum allowed retries.
@@ -146,7 +145,6 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String, index=True)
     worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt: Mapped[int] = mapped_column(default=1)
     max_retries: Mapped[int] = mapped_column(default=3)
@@ -187,23 +185,6 @@ async def ensure_snapshot_schema(engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def get_snapshot_period(session: AsyncSession) -> PeriodUUID:
-    """Return the period (min/max run_id) covered by this snapshot.
-
-    Both fields are ``None`` when the snapshot is empty.  Derived on demand
-    from MIN/MAX over the indexed primary key — no metadata table needed.
-
-    Args:
-        session: Active async SQLAlchemy session for the snapshot DB.
-    """
-    result = await session.execute(select(func.min(Run.run_id), func.max(Run.run_id)))
-    start, end = result.one()
-    return PeriodUUID(
-        start=UUID(str(start)) if start else None,
-        end=UUID(str(end)) if end else None,
-    )
-
-
 async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
     """Upsert a single RunState into the flat runs table.
 
@@ -215,7 +196,6 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
         state: RunState to persist.
     """
     started_at = state.started_at.value
-    heartbeat_at = state.heartbeat_at.value
     ended_at = state.ended_at.value if state.ended_at is not None else None
 
     await session.execute(
@@ -225,7 +205,6 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
             status=state.status.value,
             worker_id=state.worker_id,
             started_at=started_at,
-            heartbeat_at=heartbeat_at,
             ended_at=ended_at,
             attempt=state.attempt,
             max_retries=state.max_retries,
@@ -235,50 +214,12 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
                 flow_name=state.flow_name,
                 status=state.status.value,
                 worker_id=state.worker_id,
-                heartbeat_at=heartbeat_at,
                 ended_at=ended_at,
                 attempt=state.attempt,
             ),
         )
     )
 
-
-async def insert_new_states(
-    session: AsyncSession,
-    states: list[RunState],
-) -> int:
-    """Insert states whose run_id is not yet in the snapshot.
-
-    Already-present run_ids are skipped so this function is safe to call
-    repeatedly with overlapping state lists.
-
-    Args:
-        session: Active async SQLAlchemy session for the snapshot DB.
-        states: Candidate states to insert.
-
-    Returns:
-        Number of states newly inserted.
-    """
-    if not states:
-        return 0
-
-    candidate_ids = [s.run_id for s in states]
-    result = await session.execute(
-        select(Run.run_id).where(Run.run_id.in_(candidate_ids))
-    )
-    existing = set(result.scalars().all())
-    new_states = [s for s in states if s.run_id not in existing]
-
-    for state in new_states:
-        try:
-            await upsert_run_state(session, state)
-        except Exception:
-            logger.exception(
-                "insert_new_state_failed", extra={"run_id": str(state.run_id)}
-            )
-
-    await session.commit()
-    return len(new_states)
 
 # ---
 # endregion

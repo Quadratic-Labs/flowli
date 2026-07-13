@@ -222,8 +222,6 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     if not _RUN_BY_ID.requires_querier or controller.querier is not None:
         _wire(router, _RUN_BY_ID, controller.get_run_by_run_id)
 
-    if controller.connection_manager is not None:
-        router.add_api_websocket_route("/ws/runs", controller.ws_runs)
 
     return router
 

@@ -1,10 +1,92 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, getStatusColor, humanizeDuration, type RunSummaryDTO, type SpanRecordDTO } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RunFlamegraph } from '@/components/RunFlamegraph';
+
+interface LogLine { ts: string | null; level: string; message: string }
+
+/** Flatten span records (one per flow/task execution) into a chronological
+ *  log timeline: a start line per span, its recorded events, and an end line
+ *  carrying the span's outcome. */
+function spansToLogLines(spans: SpanRecordDTO[]): LogLine[] {
+  const lines: LogLine[] = [];
+  for (const span of spans) {
+    const name = `${span.span_type ?? 'span'} '${span.name ?? '?'}'`;
+    lines.push({ ts: span.start_ts, level: 'INFO', message: `Starting ${name}` });
+    for (const evt of span.events ?? []) {
+      lines.push({
+        ts: evt.ts,
+        level: String(evt.attributes?.['log.level'] ?? 'INFO'),
+        message: evt.message ?? '',
+      });
+    }
+    lines.push(
+      span.status === 'failed'
+        ? { ts: span.end_ts, level: 'ERROR', message: `Failed ${name}${span.status_message ? `: ${span.status_message}` : ''}` }
+        : { ts: span.end_ts, level: 'SUCCESS', message: `Completed ${name}` },
+    );
+  }
+  return lines.sort((a, b) => (a.ts ?? '').localeCompare(b.ts ?? ''));
+}
+
+interface AttemptView {
+  attempt: number;
+  tree: RunSummaryDTO | null;
+  logs: LogLine[];
+}
+
+/** Rebuild one attempt's summary tree from its span records — the client-side
+ *  mirror of the server's analysis.summarise (which only returns the latest
+ *  attempt), so every attempt can drive the flamegraph and children table. */
+function buildAttemptTree(spans: SpanRecordDTO[]): RunSummaryDTO | null {
+  const nodes = new Map<string, RunSummaryDTO>();
+  for (const s of spans) {
+    if (!s.span_id) continue;
+    const start = s.start_ts ?? '';
+    const end = s.end_ts ?? '';
+    nodes.set(s.span_id, {
+      span_id: s.span_id,
+      span_name: s.name ?? '?',
+      status: s.status ?? 'completed',
+      start_ts: start,
+      end_ts: end,
+      duration: start && end
+        ? humanizeDuration(new Date(end).getTime() - new Date(start).getTime())
+        : null,
+      children: [],
+    });
+  }
+  let root: RunSummaryDTO | null = null;
+  for (const s of spans) {
+    if (!s.span_id) continue;
+    const node = nodes.get(s.span_id)!;
+    if (s.parent_span_id && nodes.has(s.parent_span_id)) {
+      nodes.get(s.parent_span_id)!.children.push(node);
+    } else {
+      root = node;
+    }
+  }
+  return root;
+}
+
+/** Group span records into per-attempt views, oldest attempt first. */
+function groupAttempts(spans: SpanRecordDTO[]): AttemptView[] {
+  const byAttempt = new Map<number, SpanRecordDTO[]>();
+  for (const s of spans) {
+    const a = s.attempt ?? 1;
+    (byAttempt.get(a) ?? byAttempt.set(a, []).get(a)!).push(s);
+  }
+  return [...byAttempt.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([attempt, attemptSpans]) => ({
+      attempt,
+      tree: buildAttemptTree(attemptSpans),
+      logs: spansToLogLines(attemptSpans),
+    }));
+}
 
 function LogLevel({ level }: { level: string }) {
   const l = level.toLowerCase();
@@ -42,33 +124,76 @@ export default function RunDetail() {
     enabled: !!parentId,
   });
 
-  const logs = run?.logs ?? [];
-  const children = run?.children ?? [];
+  const attempts = useMemo(() => groupAttempts(run?.logs ?? []), [run]);
+  const [selectedAttempt, setSelectedAttempt] = useState<number | null>(null);
+  // Latest attempt by default; an out-of-range selection (e.g. after
+  // navigating to another run) falls back to the latest as well.
+  const effectiveAttempt =
+    attempts.find(a => a.attempt === selectedAttempt)?.attempt
+    ?? attempts.at(-1)?.attempt
+    ?? 1;
+  const current = attempts.find(a => a.attempt === effectiveAttempt) ?? null;
+
+  // The server summary (latest attempt) is the fallback when no span records
+  // are available; otherwise the selected attempt's rebuilt tree drives the page.
+  const view = current?.tree ?? run ?? null;
+  const logs = current?.logs ?? [];
+  const children = view?.children ?? [];
 
   return (
     <div className="p-6">
       {isLoading && <div className="flex justify-center p-10"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
       {error && <div className="text-red-600 bg-red-50 p-4 rounded">{String(error)}</div>}
 
-      {run && !isLoading && (
+      {run && view && !isLoading && (
         <>
           <div className="bg-white rounded shadow p-6 mb-4">
-            <h2 className="text-lg font-medium mb-4">Run Details</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium">Run Details</h2>
+              {attempts.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-500">Attempt:</span>
+                  {attempts.map(a => (
+                    <button
+                      key={a.attempt}
+                      onClick={() => setSelectedAttempt(a.attempt)}
+                      title={`Attempt ${a.attempt} — ${a.tree?.status ?? 'unknown'}`}
+                      className={`px-3 py-1 rounded-full text-sm border flex items-center gap-1.5 transition-colors ${
+                        a.attempt === effectiveAttempt
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 hover:bg-gray-50 border-gray-300'
+                      }`}
+                    >
+                      #{a.attempt}
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: getStatusColor(a.tree?.status ?? '') }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
-                <p><strong>Name:</strong> {run.span_name}</p>
-                <p><strong>Run ID:</strong> {run.span_id}</p>
-                <p><strong>Status:</strong> <StatusBadge status={run.status} /></p>
+                <p><strong>Name:</strong> {view.span_name}</p>
+                <p><strong>Run ID:</strong> <span className="font-mono text-xs">{runId}</span></p>
+                <p><strong>Root span:</strong> <span className="font-mono text-xs">{view.span_id}</span></p>
+                <p><strong>Status:</strong> <StatusBadge status={view.status} />
+                  {attempts.length > 1 && (
+                    <span className="text-gray-500 ml-2">attempt {effectiveAttempt} of {attempts.at(-1)?.attempt}</span>
+                  )}
+                </p>
               </div>
               <div>
                 {parent && <p><strong>Parent:</strong> {parent.span_name} ({parent.span_id})</p>}
-                {run.duration && <p><strong>Duration:</strong> {run.duration}</p>}
+                {view.duration && <p><strong>Duration:</strong> {view.duration}</p>}
               </div>
             </div>
           </div>
 
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
-            <RunFlamegraph runData={run} />
+            <RunFlamegraph runData={view} />
           </Section>
 
           <Section title="Logs" icon={<span>📄</span>}>

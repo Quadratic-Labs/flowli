@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 import factory
 
 from flowlet.models import RunLog, RunState, RunStatus, RunSummary, RunType
-from flowlet.types import Timestamp, uuid7_desc
+from uuid import uuid7
+from flowlet.types import Timestamp
 
 
 class TimestampFactory(factory.Factory):
@@ -27,10 +28,10 @@ class RunLogFactory(factory.Factory):
         model = RunLog
 
     flow_name       = factory.Sequence(lambda n: f"flow_{n}")
-    run_id          = factory.LazyFunction(uuid7_desc)
+    run_id          = factory.LazyFunction(uuid7)
     span_type       = RunType.flow
     span_name       = factory.SelfAttribute("flow_name")
-    span_id         = factory.LazyFunction(uuid7_desc)
+    span_id         = factory.LazyFunction(uuid7)
     parent_span_id  = None
     ts              = factory.SubFactory(TimestampFactory)
     message         = "log entry"
@@ -44,12 +45,11 @@ class RunStateFactory(factory.Factory):
     class Meta:
         model = RunState
 
-    run_id        = factory.LazyFunction(uuid7_desc)
+    run_id        = factory.LazyFunction(uuid7)
     flow_name     = factory.Sequence(lambda n: f"flow_{n}")
     status        = RunStatus.running
     worker_id     = "worker-1"
     started_at    = factory.SubFactory(TimestampFactory)
-    heartbeat_at  = factory.SubFactory(TimestampFactory)
     ended_at      = None
     deadline_at   = None
     attempt       = 1
@@ -62,7 +62,7 @@ class RunSummaryFactory(factory.Factory):
     class Meta:
         model = RunSummary
 
-    span_id    = factory.LazyFunction(uuid7_desc)
+    span_id    = factory.LazyFunction(uuid7)
     span_name  = factory.Sequence(lambda n: f"flow_{n}")
     span_type  = RunType.flow
     status     = RunStatus.completed

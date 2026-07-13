@@ -14,7 +14,7 @@ from typing import Any, Callable, get_type_hints
 from attrs import define
 from pydantic import BaseModel, Field, create_model
 
-from .instrumentation import instrument
+from .tracing import instrument
 from .models import RunType
 
 logger = logging.getLogger(__name__)
@@ -232,6 +232,19 @@ def extract_flow_schema(fn: Callable, flow_name: str) -> FlowSchema | None:
 #   - list registered flows
 # ---
 
+@define(slots=True, kw_only=True)
+class FlowOptions:
+    """Per-flow execution options declared at registration time.
+
+    Attributes:
+        timeout_seconds: Lease duration per execution attempt; None means the
+            worker's default applies.
+        max_retries: Maximum number of execution attempts.
+    """
+    timeout_seconds: int | None = None
+    max_retries: int = 3
+
+
 @define
 class Registry:
     """Registry for flows and tasks with automatic execution instrumentation.
@@ -249,11 +262,14 @@ class Registry:
             extracted FlowSchema.
         task_schemas (dict[str, FlowSchema]): Mapping of task name to its
             extracted FlowSchema.
+        flow_options (dict[str, FlowOptions]): Mapping of flow name to its
+            execution options (lease timeout, max retries).
     """
     flows: dict[str, Callable]
     tasks: dict[str, Callable]
     flow_schemas: dict[str, FlowSchema]
     task_schemas: dict[str, FlowSchema]
+    flow_options: dict[str, FlowOptions]
 
     def __init__(self, **_):
         """Initialize the registry.
@@ -266,6 +282,7 @@ class Registry:
         self.tasks: dict[str, Callable] = {}
         self.flow_schemas: dict[str, FlowSchema] = {}
         self.task_schemas: dict[str, FlowSchema] = {}
+        self.flow_options: dict[str, FlowOptions] = {}
 
     def __contains__(self, name: str) -> bool:
         """Return True if name is a registered flow."""
@@ -345,10 +362,25 @@ class Registry:
         """
         return self.task_schemas.get(name)
 
+    def get_flow_options(self, name: str) -> FlowOptions:
+        """Return execution options for a registered flow.
+
+        Args:
+            name (str): Registered flow name.
+
+        Returns:
+            FlowOptions: The declared options, or defaults when the flow was
+            registered without any.
+        """
+        return self.flow_options.get(name, FlowOptions())
+
     def register_flow(
         self,
         fn: Callable,
         name: str | None = None,
+        *,
+        timeout: int | None = None,
+        max_retries: int = 3,
     ) -> Callable:
         """Register a flow and extract its schema from type hints.
 
@@ -356,6 +388,9 @@ class Registry:
             fn (Callable): The flow function to register.
             name (str | None): Custom name for the flow; defaults to
                 fn.__name__.
+            timeout: Lease duration in seconds per execution attempt; None
+                uses the worker default.
+            max_retries: Maximum number of execution attempts.
 
         Returns:
             Callable: The instrumented flow callable.
@@ -392,6 +427,9 @@ class Registry:
         if schema is not None:
             setattr(wrapper, "__flow_schema__", schema)
         self.flows[flow_name] = wrapper
+        self.flow_options[flow_name] = FlowOptions(
+            timeout_seconds=timeout, max_retries=max_retries
+        )
         return wrapper
 
     def register_task(
