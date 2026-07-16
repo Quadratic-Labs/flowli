@@ -6,6 +6,8 @@ from pydantic import Field, Discriminator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
+    from chroniql.storage.azure import AzureBlobStorage as ChroniqlBlobStorage
+
     from .azure import AzureBlobPath
     from sqlalchemy.engine import Engine
     from sqlalchemy.orm import Session
@@ -63,6 +65,27 @@ class AzureBlobStorageConfig(BaseSettings):
             connection_string=self.connection_string,
             container=self.container_name,
             path=self.base_path
+        )
+
+    @cached_property
+    def object_store(self) -> 'ChroniqlBlobStorage':
+        """
+        Build a ChroniQL object store rooted at the same container/prefix.
+
+        The store provides the etag-guarded conditional writes
+        (compare-and-swap) that StateRepository needs for run-state
+        ownership transfer on remote storage.
+
+        Returns:
+            A chroniql AzureBlobStorage sharing this configuration's
+            container and base path.
+        """
+        from chroniql.storage.azure import AzureBlobStorage
+
+        return AzureBlobStorage(
+            container=self.container_name,
+            prefix=self.base_path,
+            connection_string=self.connection_string,
         )
 
 
@@ -198,6 +221,6 @@ StorageConfig = Annotated[
 ]
 """Discriminated union of supported user-facing storage backends.
 
-SQLite is intentionally excluded; it is used internally by SnapshotRepository
-as the hot-snapshot engine and is not a user-facing storage option.
+SQLite is intentionally excluded; it is used internally by the CacheRepository
+as the ephemeral query engine and is not a user-facing storage option.
 """

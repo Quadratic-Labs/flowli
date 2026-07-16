@@ -14,7 +14,10 @@ sweep lists the active state directory and:
    drops wake-ups for busy/closed runs.
 3. **Closed runs past the grace window** — archived out of ``state/`` so the
    active directory stays O(active runs) and sweep cost never grows with
-   history.
+   history.  When a run-history log is configured, each run is durably
+   recorded there *before* its state file is archived; a crash in between
+   re-records the run on the next sweep, which the idempotent history
+   projection absorbs.
 
 Sweeps are idempotent and overlap-safe: ownership is transferred by CAS
 writes, never by the act of sweeping, so concurrent sweepers (or a sweeper
@@ -24,6 +27,7 @@ Failure-detection latency is ``lease deadline + sweep interval`` — tune the
 per-flow ``@flow(timeout=...)`` for faster takeover, not the sweep cadence.
 """
 import logging
+from typing import TYPE_CHECKING
 
 from attrs import define
 
@@ -31,6 +35,9 @@ from .models import FlowJob, RunState, RunStatus
 from .queue import JobQueueProtocol
 from .repository import StateRepository
 from .types import Timestamp
+
+if TYPE_CHECKING:
+    from .history import RunHistory
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +54,21 @@ DEFAULT_ARCHIVE_GRACE = 3600   # seconds a closed run stays in state/
 #   re-enqueues runs whose lease expired (or whose retry message was lost),
 #   fails runs that exhausted their attempts, and archives closed state
 #   files after a grace window.  It is a pure scan-and-CAS pass — safe to
-#   run concurrently with workers and with other sweepers.
+#   run concurrently with workers and with other sweepers.  When a
+#   RunHistory is provided, archive candidates are group-committed to the
+#   history event log before any state file is removed; if recording fails,
+#   archiving is skipped for the pass and retried on the next sweep.
 # rules:
 #   - MUST transfer ownership only via CAS state writes, never by deletion.
 #   - MUST be idempotent: sweeping twice in a row changes nothing new.
 #   - MUST NOT raise on individual runs; log and continue the scan.
 #   - Archived state MUST keep its JSON content byte-for-byte.
+#   - History recording MUST happen before archiving, never after.
 # dependencies:
 #   - worker.state
 #   - state_repository
 #   - models.job
+#   - history
 # aliases:
 #   - sweeper
 #   - crash-recovery
@@ -91,6 +103,7 @@ def sweep(
     *,
     pending_grace: int = DEFAULT_PENDING_GRACE,
     archive_grace: int = DEFAULT_ARCHIVE_GRACE,
+    history: "RunHistory | None" = None,
 ) -> SweepStats:
     """Run one sweep pass over the active state directory.
 
@@ -101,12 +114,15 @@ def sweep(
             stuck (lost retry message) and re-enqueued.
         archive_grace: Seconds a closed run stays in the active directory
             before being archived.
+        history: Optional run-history log; when given, archive candidates
+            are durably recorded there before their state files are removed.
 
     Returns:
         SweepStats describing the pass.
     """
     stats = SweepStats()
     now = Timestamp.now().value
+    to_archive: list[RunState] = []
 
     for listed in state_repo.list_states():
         stats.scanned += 1
@@ -119,7 +135,8 @@ def sweep(
             state, etag = read
 
             if state.status.is_closed():
-                _maybe_archive(state_repo, state, now, archive_grace, stats)
+                if _past_archive_grace(state, now, archive_grace):
+                    to_archive.append(state)
             elif state.status == RunStatus.running:
                 _maybe_recover(state_repo, queue, state, etag, now, stats)
             elif state.status == RunStatus.pending:
@@ -130,6 +147,8 @@ def sweep(
                 "sweep_run_error",
                 extra={"flow_name": listed.flow_name, "run_id": str(listed.run_id)},
             )
+
+    _archive_all(state_repo, history, to_archive, stats)
 
     logger.info(
         "sweep_done",
@@ -212,20 +231,43 @@ def _maybe_requeue_pending(
     )
 
 
-def _maybe_archive(
-    state_repo: StateRepository,
-    state: RunState,
-    now,
-    archive_grace: int,
-    stats: SweepStats,
-) -> None:
-    """Archive a closed run out of the active directory after the grace window."""
+def _past_archive_grace(state: RunState, now, archive_grace: int) -> bool:
+    """Whether a closed run has outlived the grace window in state/."""
     if state.ended_at is not None:
         age = (now - state.ended_at.value).total_seconds()
         if age < archive_grace:
-            return
-    state_repo.archive(state.flow_name, state.run_id)
-    stats.archived += 1
+            return False
+    return True
+
+
+def _archive_all(
+    state_repo: StateRepository,
+    history: "RunHistory | None",
+    to_archive: list[RunState],
+    stats: SweepStats,
+) -> None:
+    """Record archive candidates to the history log, then archive them.
+
+    Recording happens strictly before any state file is removed: if the
+    history write fails, all candidates stay in ``state/`` and the whole
+    step is retried on the next sweep.  Re-recording is harmless — the
+    history projection upserts by run_id.
+    """
+    if not to_archive:
+        return
+    if history is not None:
+        try:
+            history.record_many(to_archive)
+        except Exception:
+            stats.errors += 1
+            logger.exception(
+                "sweep_history_record_error",
+                extra={"count": len(to_archive)},
+            )
+            return  # keep state files; retry recording on the next sweep
+    for state in to_archive:
+        state_repo.archive(state.flow_name, state.run_id)
+        stats.archived += 1
 
 
 def _enqueue_wakeup(queue: JobQueueProtocol, state: RunState) -> None:

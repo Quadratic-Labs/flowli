@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .api.cache import CacheRepository
     from .api.controller import FlowController
     from .api.query import RunQuery
+    from .history import RunHistory
     from .queue import JobQueueProtocol
     from .repository.log import LogRepository
     from .repository.state import StateRepository
@@ -72,6 +73,8 @@ class FlowletDeps(TypedDict, total=False):
         cache_repo: Pull-refreshed SQLite run cache; present only when
             storage is configured.
         querier: Read-side query object; None when no storage is configured.
+        history: Run-history event-log writer; None unless configs.history
+            is enabled with storage configured.
         queue: Async job queue; None when not configured.
         controller: FastAPI controller wiring all endpoint handlers.
     """
@@ -81,6 +84,7 @@ class FlowletDeps(TypedDict, total=False):
     state_repo: StateRepository
     cache_repo: CacheRepository
     querier: RunQuery | None
+    history: "RunHistory | None"
     queue: JobQueueProtocol | None
     controller: FlowController
     router: APIRouter
@@ -122,6 +126,7 @@ class Flowlet:
         self.router: APIRouter = deps["router"]  # type: ignore[assignment]
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
+        self.history = deps.get("history")
 
     @classmethod
     def configure(cls, configs: FlowletConfig | Mapping | None = None) -> "Flowlet":
@@ -182,9 +187,19 @@ class Flowlet:
             # RunQuery(**deps) can pick them up via its own named parameters.
             from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(base_path=storage_path)
-            deps["state_repo"] = StateRepository(root=storage_path)
+            deps["state_repo"] = StateRepository(
+                root=storage_path, object_store=configs.object_store
+            )
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
+
+        deps["history"] = None
+        history_store = configs.history_store
+        if history_store is not None:
+            from .history import RunHistory
+
+            deps["history"] = RunHistory(store=history_store)
+            logger.info("flowlet_history_configured")
 
         deps["queue"] = None
         if configs.queue is not None:

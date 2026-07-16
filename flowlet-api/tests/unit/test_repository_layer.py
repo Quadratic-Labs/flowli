@@ -121,6 +121,109 @@ class TestStateRepository:
 
 
 # ============================================================================
+# StateRepository — remote branch (etag CAS via the chroniql object store)
+# ============================================================================
+
+
+@pytest.fixture
+def remote_repo(tmp_path: Path) -> StateRepository:
+    """Repository whose remote branch runs against a real chroniql store.
+
+    The chroniql filesystem backend implements the same conditional-write
+    contract as the cloud backends, so these tests exercise genuine CAS
+    semantics without mocks.
+    """
+    from chroniql.storage.filesystem import FilesystemStorage
+
+    return StateRepository(
+        root=tmp_path, object_store=FilesystemStorage(tmp_path / "bucket")
+    )
+
+
+@pytest.mark.unit
+class TestStateRepositoryRemote:
+    def test_write_and_read_round_trip(self, remote_repo, make_run_state):
+        state = make_run_state(flow_name="my_flow")
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+
+        ok, etag = remote_repo._write_remote(sp, state, etag=None)
+        assert ok is True
+        assert etag is not None
+
+        result = remote_repo._read_remote(sp)
+        assert result is not None
+        restored, read_etag = result
+        assert restored.run_id == state.run_id
+        assert restored.status == state.status
+        assert read_etag == etag
+
+    def test_read_missing_returns_none(self, remote_repo, make_run_state):
+        state = make_run_state()
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+        assert remote_repo._read_remote(sp) is None
+
+    def test_create_fails_when_object_exists(self, remote_repo, make_run_state):
+        """etag=None asserts the object does not exist — put-if-absent."""
+        state = make_run_state()
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+
+        assert remote_repo._write_remote(sp, state, etag=None)[0] is True
+        assert remote_repo._write_remote(sp, state, etag=None) == (False, None)
+
+    def test_stale_etag_is_rejected(self, remote_repo, make_run_state):
+        from attrs import evolve
+        from flowlet.models import RunStatus
+
+        state = make_run_state(status=RunStatus.running)
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+
+        ok, etag_v1 = remote_repo._write_remote(sp, state, etag=None)
+        assert ok
+
+        ok2, etag_v2 = remote_repo._write_remote(
+            sp, evolve(state, status=RunStatus.completed), etag=etag_v1
+        )
+        assert ok2
+        assert etag_v2 != etag_v1
+
+        # Reusing the stale etag must lose ownership.
+        assert remote_repo._write_remote(sp, state, etag=etag_v1) == (False, None)
+
+        restored, _ = remote_repo._read_remote(sp)
+        assert restored.status == RunStatus.completed
+
+    def test_write_with_etag_after_delete_is_rejected(
+        self, remote_repo, make_run_state
+    ):
+        state = make_run_state()
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+        ok, etag = remote_repo._write_remote(sp, state, etag=None)
+        assert ok
+
+        remote_repo.object_store.delete_object_sync(
+            remote_repo._state_key(state.flow_name, state.run_id)
+        )
+        assert remote_repo._write_remote(sp, state, etag=etag) == (False, None)
+
+    def test_missing_object_store_raises(self, tmp_path, make_run_state):
+        repo = StateRepository(root=tmp_path)  # no object_store
+        state = make_run_state()
+        sp = repo._state_path(state.flow_name, state.run_id)
+
+        with pytest.raises(RuntimeError, match="chroniql object store"):
+            repo._write_remote(sp, state, etag=None)
+
+    def test_state_key_layout(self, remote_repo, make_run_state):
+        """Remote keys mirror the state/<flow>/<run_id>.json path layout."""
+        state = make_run_state(flow_name="my_flow")
+        sp = remote_repo._state_path(state.flow_name, state.run_id)
+        remote_repo._write_remote(sp, state, etag=None)
+
+        keys = remote_repo.object_store.list_objects_sync("state/")
+        assert keys == [f"state/my_flow/{state.run_id}.json"]
+
+
+# ============================================================================
 # LogRepository helpers
 # ============================================================================
 

@@ -1,8 +1,8 @@
 """Atomic state-file repository for worker-owned run state.
 
 Implements per-run state files under ``state/<flow_name>/<run_id>.json`` with
-exclusive-lock semantics for local storage and ETag-based conditional writes
-for Azure blob storage.
+exclusive-lock semantics for local storage and etag-based conditional writes
+(compare-and-swap) via a ChroniQL object store for remote blob storage.
 """
 import fcntl
 import json
@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import UUID
 
 from attrs import define
+from chroniql.storage import BlobStorage
 
 from ..models import RunState
 from ..serdes import to_json, from_json
@@ -27,27 +28,26 @@ logger = logging.getLogger(__name__)
 # intent: read and write /state/<flow_name>/<run_id>.json atomically
 # description: >
 #   StateRepository owns per-run state files.  Writes are guarded by an
-#   exclusive flock on a persistent sibling .lock file (local) or ETag
-#   conditional PUT (Azure) so that only one worker can modify a state at a
-#   time.  flock is released by the kernel when the holder dies, so there is
-#   no stale-lock state and no reclamation logic to race on.  State files are
-#   replaced atomically (temp file + os.replace) so lock-free readers never
-#   observe a partial write.
+#   exclusive flock on a persistent sibling .lock file (local) or an
+#   etag-guarded compare-and-swap through a ChroniQL object store (remote
+#   blob storage: Azure/S3/GCS) so that only one worker can modify a state
+#   at a time.  flock is released by the kernel when the holder dies, so
+#   there is no stale-lock state and no reclamation logic to race on.  State
+#   files are replaced atomically (temp file + os.replace) so lock-free
+#   readers never observe a partial write.
 # rules:
 #   - write MUST return False when ownership is lost due to a concurrent write.
 #   - The .lock file is persistent and content-less; it MUST NOT be unlinked
 #     while any writer may hold or wait on its flock.
 #   - State-file replacement MUST be atomic (temp + os.replace).
 #   - MUST NOT raise on missing state files; return None instead.
+#   - Remote conditional writes MUST go through the chroniql object store;
+#     plain path writes cannot express the CAS precondition.
 # dependencies:
 #   - storage.types.statepath
 #   - models.run
 #   - serdes.json
 # ---
-
-class ConditionalWriteError(Exception):
-    """Raised when a conditional (ETag) PUT is rejected by Azure (HTTP 412)."""
-
 
 @define(slots=True, kw_only=True)
 class StateRepository:
@@ -55,7 +55,8 @@ class StateRepository:
 
     State files live at ``root/state/<flow_name>/<run_id>.json``.  Concurrent
     writes are serialised via an exclusive ``flock`` on a sibling ``.lock``
-    file (local filesystem) or ETag conditional PUTs (Azure blob storage).
+    file (local filesystem) or etag conditional PUTs issued through a
+    ChroniQL :class:`~chroniql.storage.BlobStorage` (remote blob storage).
 
     The kernel releases a flock automatically when its holder exits or
     crashes, so stale locks cannot occur and no reclamation is needed.
@@ -64,12 +65,16 @@ class StateRepository:
 
     Attributes:
         root: Storage root under which ``state/`` is written.
+        object_store: ChroniQL object store rooted at the same location as
+            ``root``; required when ``root`` is a remote (non-``Path``)
+            backend, unused for local storage.
         lock_timeout: Seconds to wait for the write lock before reporting the
             write as lost.  Writes are millisecond-fast, so contention beyond
             this indicates a wedged writer.
     """
 
     root: StoragePath
+    object_store: BlobStorage | None = None
     lock_timeout: float = 5.0
 
     # ------------------------------------------------------------------
@@ -78,6 +83,10 @@ class StateRepository:
 
     def _state_path(self, flow_name: str, run_id: UUID) -> StatePath:
         return StatePath.build(self.root, flow_name, run_id)
+
+    def _state_key(self, flow_name: str, run_id: UUID) -> str:
+        """Object-store key of a state file, relative to the storage root."""
+        return f"state/{flow_name}/{run_id}.json"
 
     def _lock_path(self, sp: StatePath) -> Path:
         """Return the sibling .lock file path (local filesystem only)."""
@@ -105,7 +114,7 @@ class StateRepository:
         sp = self._state_path(flow_name, run_id)
         if isinstance(sp.path, Path):
             return self._read_local(sp)
-        return self._read_azure(sp)
+        return self._read_remote(sp)
 
     def write(self, state: RunState, etag: str | None) -> tuple[bool, str | None]:
         """Write a RunState conditionally, using an ETag for ownership tracking.
@@ -129,7 +138,7 @@ class StateRepository:
         sp = self._state_path(state.flow_name, state.run_id)
         if isinstance(sp.path, Path):
             return self._write_local(sp, state, etag)
-        return self._write_azure(sp, state, etag)
+        return self._write_remote(sp, state, etag)
 
     def delete(self, flow_name: str, run_id: UUID) -> None:
         """Remove the state file for a completed run.
@@ -322,70 +331,66 @@ class StateRepository:
                 time.sleep(poll_interval)
 
     # ------------------------------------------------------------------
-    # Azure blob storage — ETag strategy
+    # Remote blob storage — etag CAS via the ChroniQL object store
     # ------------------------------------------------------------------
 
-    def _read_azure(self, sp: StatePath) -> tuple[RunState, str] | None:
-        """Read state and ETag from Azure blob storage.
+    def _require_object_store(self) -> BlobStorage:
+        """Return the configured object store or fail with a clear message."""
+        if self.object_store is None:
+            raise RuntimeError(
+                "StateRepository needs a chroniql object store for remote "
+                "storage backends; pass object_store= when configuring."
+            )
+        return self.object_store
+
+    def _read_remote(self, sp: StatePath) -> tuple[RunState, str] | None:
+        """Read state and etag through the ChroniQL object store.
 
         Args:
             sp: Resolved StatePath (remote).
 
         Returns:
-            A ``(RunState, etag)`` pair, or None if the blob does not exist.
+            A ``(RunState, etag)`` pair, or None if the object does not exist.
         """
-        try:
-            from .storage.azure import AzureBlobPath  # type: ignore[import]
-        except ImportError:
-            raise RuntimeError(
-                "azure-storage-blob is required for Azure state reads"
-            )
-
-        path: AzureBlobPath = sp.path  # type: ignore[assignment]
-        try:
-            raw, azure_etag = path.read_text_with_etag(encoding="utf-8")
-        except FileNotFoundError:
+        store = self._require_object_store()
+        obj = store.get_object_sync(self._state_key(sp.flow_name, sp.run_id))
+        if obj is None:
             return None
         try:
-            return from_json(RunState)(raw), azure_etag
+            return from_json(RunState)(obj.data.decode("utf-8")), obj.etag
         except Exception:
             logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
             return None
 
-    def _write_azure(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
-        """Write state using ETag conditional PUT (Azure blob storage).
+    def _write_remote(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
+        """Write state via an etag-guarded compare-and-swap.
 
-        Uses the caller's ETag — which was captured at the last successful
-        read or write — so that concurrent writes by another worker cause a
-        412 and return ``(False, None)``.
+        Uses the caller's etag — captured at the last successful read or
+        write — as the ``if_match`` precondition, so a concurrent write by
+        another worker fails the swap and returns ``(False, None)``.  A
+        ``None`` etag asserts the object does not yet exist (put-if-absent).
 
         Args:
             sp: Resolved StatePath (remote).
             state: State to persist.
-            etag: ETag from the caller's last read/write. ``None`` asserts
-                the blob does not yet exist (``If-None-Match: *``).
+            etag: Etag from the caller's last read/write, or ``None`` for
+                first creation.
 
         Returns:
-            ``(True, new_etag)`` on success; ``(False, None)`` on 412.
+            ``(True, new_etag)`` on success; ``(False, None)`` when the
+            precondition failed (ownership lost).
         """
-        try:
-            from .storage.azure import AzureBlobPath  # type: ignore[import]
-        except ImportError:
-            raise RuntimeError(
-                "azure-storage-blob is required for Azure state writes"
-            )
-
+        store = self._require_object_store()
+        key = self._state_key(state.flow_name, state.run_id)
         payload = to_json(state).encode()
-        path: AzureBlobPath = sp.path  # type: ignore[assignment]
 
-        try:
-            if etag is not None:
-                new_etag = path.write_bytes_if_match(payload, etag=etag)
-            else:
-                new_etag = path.write_bytes_if_none_match(payload)
-            return True, new_etag
-        except ConditionalWriteError:
+        if etag is not None:
+            new_etag = store.put_object_sync(key, payload, if_match=etag)
+        else:
+            new_etag = store.put_object_sync(key, payload, if_absent=True)
+        if new_etag is None:
             return False, None
+        return True, new_etag
 
 # ---
 # endregion

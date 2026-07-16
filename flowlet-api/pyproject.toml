@@ -38,6 +38,7 @@ dependencies = [
     "python-multipart>=0.0.6",
     "opentelemetry-sdk>=1.43.0",
     "jsonry @ git+ssh://git@github.com/Quadratic-Labs/jsonry.git",
+    "chroniql @ git+ssh://git@github.com/Quadratic-Labs/chroniql.git",
 ]
 
 [project.optional-dependencies]
