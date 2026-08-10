@@ -96,11 +96,29 @@ class FlowArguments(Base):
 
     Attributes:
         kwargs: Dictionary of keyword arguments for flow execution.
+        dispatch_key: Optional idempotency key.  Submissions of the same
+            flow with the same key all resolve to the same run: the first
+            one creates it, later ones are deduplicated (see the
+            ``deduplicated`` response field).  Use a webhook delivery id,
+            an event id, or ``"<flow>:<schedule tick>"`` for cron overlap
+            protection.
 
     Example:
         >>> flow_input = FlowArguments(kwargs={"user_id": 123, "mode": "test"})
+        >>> idempotent = FlowArguments(
+        ...     kwargs={"campaign": 7}, dispatch_key="webhook-delivery-42"
+        ... )
     """
     kwargs: dict[str, Any] = Field(default_factory=dict)
+    dispatch_key: str | None = Field(
+        None,
+        min_length=1,
+        max_length=512,
+        description=(
+            "Idempotency key: repeated submissions with the same key "
+            "collapse onto one run"
+        ),
+    )
 
 
 class FlowSubmissionResponse(Base):
@@ -111,18 +129,41 @@ class FlowSubmissionResponse(Base):
 
     Attributes:
         job_id: Unique job identifier in the queue.
+        run_id: Identifier of the run this submission maps to — the
+            pre-existing run when ``deduplicated`` is True.
         status: Initial status, always ``RunStatus.pending``.
         submitted_at: Timestamp when job was submitted.
+        deduplicated: True when a dispatch_key resolved to a run created by
+            an earlier submission; no new run was created.
 
     Example:
         >>> response = FlowSubmissionResponse(
         ...     job_id=UUID("..."),
+        ...     run_id=UUID("..."),
         ...     submitted_at=datetime.now()
         ... )
     """
     job_id: UUID
+    run_id: UUID
     status: RunStatus = Field(default=RunStatus.pending)
     submitted_at: TimestampDTO
+    deduplicated: bool = False
+
+
+class CancelRunResponse(Base):
+    """API model for a run-cancellation request's outcome.
+
+    Attributes:
+        run_id: The targeted run.
+        status: Run status after the request — ``canceled`` when the run
+            was closed directly (it was not executing), ``running`` when a
+            cooperative cancel was flagged for the owning worker, or the
+            pre-existing terminal status when the run was already closed.
+        cancel_requested: Whether the cooperative-cancellation flag is set.
+    """
+    run_id: UUID
+    status: RunStatus
+    cancel_requested: bool
 
 
 class RunQueryRequest(Base):

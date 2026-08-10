@@ -1,255 +1,145 @@
 # Flowlet Example
 
-A complete example application demonstrating how to use the **Flowlet** workflow orchestration framework.
+A working demo app for the **Flowlet** v2 architecture: lease-based worker,
+OTel-instrumented run traces, filesystem storage, pull-based query API — and
+the `flowlet-web` React dashboard on top of it.
 
-## Overview
+There's also a `Taskfile.yml` at the repo root wrapping the commands below
+(`task install`, `task api`, `task web`, `task submit FLOW=...`, etc.) if you
+have [go-task](https://taskfile.dev) installed (`mise use -g go-task`).
 
-This example shows how to:
-- Create a FlowManager instance
-- Register flows and tasks using decorators
-- Mount the Flowlet router in a FastAPI application
-- Run flows through the API
-- Track flow execution and task status
+This app is a single Flowlet instance (`flowlet_example.flows:flowlet`)
+configured with:
 
-## Project Structure
+- **storage**: `filesystem`, rooted at `./storage` (relative to wherever the
+  process is started — see "Running" below for why that matters)
+- **queue**: `memory` (in-process `InMemoryQueue`, dev/demo only — see the
+  caveat under "Multi-process topology")
+
+## Project structure
 
 ```
 flowlet-example/
-├── src/
-│   └── flowlet_example/
-│       ├── __init__.py
-│       ├── flows.py      # Flow and task definitions
-│       └── main.py       # FastAPI application setup
-├── pyproject.toml
-└── README.md
+├── src/flowlet_example/
+│   ├── flows.py   # the Flowlet instance + example flows/tasks
+│   └── main.py    # FastAPI app: mounts the Flowlet router + an embedded worker thread
+├── scripts/worker.py  # standalone worker loop (alternative to the embedded thread)
+└── pyproject.toml
 ```
 
-## Installation
+## 1. Install
 
-### Prerequisites
-
-- Python 3.11 or higher
-- The `flowlet` package installed
-
-### Install from source
-
-From the `flowlet-example` directory:
+From the repo root, into the shared `.venv` (mise-managed Python 3.14):
 
 ```bash
-pip install -e .
+cd flowlet
+python3.14 -m venv .venv        # skip if .venv already exists
+.venv/bin/pip install -e flowlet-api        # needs SSH access to GitHub (private jsonry/chroniql deps)
+.venv/bin/pip install -e flowlet-example --no-deps
 ```
 
-Or install in development mode with dev dependencies:
+`--no-deps` on the second install avoids re-resolving `flowlet`'s own
+dependencies; `flowlet-example` only adds `uvicorn`, already pulled in by
+`flowlet-api`.
+
+## 2. Run the quickstart (API + embedded worker, one process)
+
+`main.py`'s lifespan starts a background thread that drains the in-memory
+queue, so a single process gives you execution + querying together. Run it
+**from inside `flowlet-example/`** so the `./storage` relative path lands at
+`flowlet-example/storage/` rather than wherever your shell happens to be:
 
 ```bash
-pip install -e ".[dev]"
+cd flowlet-example
+../.venv/bin/uvicorn flowlet_example.main:app --reload --port 8001
 ```
 
-## Running the Application
+Port **8001** matters if you also want the dashboard (below) — its dev-server
+proxy is hardcoded to `http://localhost:8001`.
 
-### Option 1: Using Python module
-
-```bash
-python -m flowlet_example.main
-```
-
-### Option 2: Using uvicorn directly
+Open `http://localhost:8001/docs` for interactive Swagger UI, or drive it with curl:
 
 ```bash
-uvicorn flowlet_example.main:app --reload --host 0.0.0.0 --port 8000
-```
+# List registered flows
+curl -s http://localhost:8001/flows | python3 -m json.tool
 
-The application will start on `http://localhost:8000`
+# Parameter schema for one flow
+curl -s http://localhost:8001/flows/hello_world/schema | python3 -m json.tool
 
-## Example Flows
-
-This example includes several demonstration flows:
-
-### 1. Hello World Flow (`hello_world`)
-A simple flow to demonstrate basic functionality.
-
-**Parameters:**
-- `name` (str, default="World"): Name to greet
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8000/flows/hello_world/run" \
+# Execute synchronously (blocks until the flow returns).
+# Response body is empty (run_flow -> None by design) -- check /runs/query
+# or /runs/{run_id} below to see the recorded state/result.
+curl -s -X POST http://localhost:8001/execute/hello_world \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"name": "Flowlet"}}'
-```
 
-### 2. Simple ETL Flow (`simple_etl`)
-Demonstrates a basic Extract-Transform-Load pipeline:
-1. Fetches data from a source
-2. Transforms the data
-3. Validates it
-4. Saves to database
-
-**Parameters:**
-- `source` (str, default="api"): Data source identifier
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8000/flows/simple_etl/run" \
-  -H "Content-Type: application/json" \
-  -d '{"kwargs": {"source": "database"}}'
-```
-
-### 3. Data Pipeline Flow (`data_pipeline`)
-A more complex pipeline with statistics and notifications:
-1. Fetches and transforms data
-2. Calculates statistics
-3. Saves results
-4. Sends notifications (optional)
-
-**Parameters:**
-- `source` (str, default="database"): Data source
-- `notify` (bool, default=true): Whether to send notifications
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8000/flows/data_pipeline/run" \
-  -H "Content-Type: application/json" \
-  -d '{"kwargs": {"source": "api", "notify": true}}'
-```
-
-### 4. Parallel Tasks Flow (`parallel_tasks`)
-Demonstrates running multiple independent tasks.
-
-**Parameters:**
-- `count` (int, default=3): Number of parallel tasks to run
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8000/flows/parallel_tasks/run" \
-  -H "Content-Type: application/json" \
-  -d '{"kwargs": {"count": 5}}'
-```
-
-### 5. Error Handling Demo (`error_handling_demo`)
-Shows how Flowlet handles task failures.
-
-**Parameters:**
-- `fail_chance` (float, default=0.5): Probability of failure (0.0 to 1.0)
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8000/flows/error_handling_demo/run" \
-  -H "Content-Type: application/json" \
-  -d '{"kwargs": {"fail_chance": 0.3}}'
-```
-
-## API Endpoints
-
-The application provides the following endpoints:
-
-### Application Endpoints
-- `GET /` - Root endpoint with application info and available flows
-- `GET /health` - Health check endpoint
-- `GET /docs` - Interactive API documentation (Swagger UI)
-
-### Flowlet Endpoints
-- `GET /flows` - List all registered flows with their status
-- `POST /flows/{flow_name}/run` - Execute a specific flow
-- `GET /runs` - List all flow runs (with pagination)
-- `GET /runs/{run_id}` - Get details of a specific flow run
-- `GET /runs/{run_id}/tasks` - Get all tasks for a specific flow run
-
-## Example Usage
-
-### List all flows
-```bash
-curl http://localhost:8000/flows
-```
-
-### Run a flow
-```bash
-curl -X POST "http://localhost:8000/flows/simple_etl/run" \
+# Submit asynchronously (returns immediately with a run_id to track)
+curl -s -X POST http://localhost:8001/submit/simple_etl \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"source": "api"}}'
+
+# List recent run states
+curl -s -X POST http://localhost:8001/runs/query \
+  -H "Content-Type: application/json" -d '{"last_n": 10}' | python3 -m json.tool
+
+# Fetch one run (with logs) and its lifecycle event timeline
+curl -s http://localhost:8001/runs/<run_id> | python3 -m json.tool
+curl -s http://localhost:8001/runs/<run_id>/events | python3 -m json.tool
+
+# Cooperatively cancel a running run
+curl -s -X POST http://localhost:8001/runs/<run_id>/cancel
 ```
 
-### List all runs
+Flows worth trying:
+
+| Flow | What it shows |
+|---|---|
+| `hello_world` | Fast, near-instant — good for `/execute`. |
+| `simple_etl`, `data_pipeline` | `fetch_data` sleeps 15s — submit via `/submit` and watch the run sit in `running` on the dashboard/`/runs/query`. |
+| `error_handling_demo` | `risky_operation` fails ~50% of the time; `max_retries=2` — watch the run retry then land on `completed` or `failed`. |
+| `parallel_tasks` | Several sequential task calls in one flow. |
+
+## 3. Run the dashboard
+
 ```bash
-curl http://localhost:8000/runs
+cd flowlet-web
+npm install   # already done if node_modules/ exists
+npm run dev
 ```
 
-### Get run details
+Vite serves on `http://localhost:5173` and proxies `/api/*` to
+`http://localhost:8001/*` (see `vite.config.ts`) — so the API from step 2 must
+already be running on port 8001, and `main.py` must keep mounting the router
+at prefix `""` (it does, by default) so the paths line up.
+
+## Multi-process topology (production-shaped, with a caveat)
+
+The CLI (`flowlet work` / `flowlet sweep` / `flowlet api`) runs each role as
+its own OS process against the same configured Flowlet instance:
+
 ```bash
-curl http://localhost:8000/runs/{run_id}
+.venv/bin/flowlet api   --app flowlet_example.flows:flowlet --port 8001 --prefix ""
+.venv/bin/flowlet work  --app flowlet_example.flows:flowlet
+.venv/bin/flowlet sweep --app flowlet_example.flows:flowlet
 ```
 
-### Get tasks for a run
+(`--prefix ""` is required here to match the dashboard's expectations —
+`main.py` already mounts at `""`, but the CLI's `api` command defaults to
+`/flowlet`.)
+
+**Caveat:** `queue={"type": "memory"}` is an in-process `InMemoryQueue`. Each
+of the commands above re-imports `flowlet_example.flows` and constructs its
+*own* queue instance — a job submitted through the `api` process is invisible
+to a `work` process started separately. This topology only demonstrates
+independent scaling/deployment shape, not actual cross-process job handoff or
+sweeper-driven crash recovery. For a real multi-process demo (e.g. to see the
+sweeper reclaim a run after `kill -9`-ing a worker), swap `queue` in
+`flows.py` for `{"type": "azure_queue", ...}` against an Azurite emulator, or
+run everything through the single embedded-worker process from step 2, which
+has no such split.
+
+## Tests
+
 ```bash
-curl http://localhost:8000/runs/{run_id}/tasks
+.venv/bin/pytest flowlet-api/tests
 ```
-
-## Code Example: Creating Your Own Flow
-
-Here's how to create a simple flow:
-
-```python
-from flowlet.database import DatabaseSettings, get_engine, get_db_session_factory, init_database
-from flowlet.manager import FlowManager
-
-# Initialize database and flow manager
-configs = DatabaseSettings(url="sqlite:///my_flows.db")
-engine = get_engine(configs)
-init_database(engine)
-db_session_factory = get_db_session_factory(engine)
-
-flowlet = FlowManager(db_session_factory)
-
-# Define tasks
-@flowlet.task()
-def my_task(x: int):
-    return x * 2
-
-# Define flow
-@flowlet.flow("my_flow")
-def my_flow(value: int):
-    result = my_task(value)
-    return {"result": result}
-```
-
-Then mount the Flowlet router in your FastAPI app:
-
-```python
-from fastapi import FastAPI
-from flowlet.app import router as flowlet_router
-
-app = FastAPI()
-app.include_router(flowlet_router, prefix="", tags=["Flowlet"])
-```
-
-## Database
-
-The example uses SQLite by default, with the database file created as `flowlet_example.db` in the current directory.
-
-To use a different database, modify the `DatabaseSettings` in [flows.py](src/flowlet_example/flows.py):
-
-```python
-configs = DatabaseSettings(url="postgresql://user:pass@localhost/dbname")
-```
-
-## Development
-
-### Running Tests
-```bash
-pytest
-```
-
-### Code Structure
-
-- [flows.py](src/flowlet_example/flows.py) - Contains all flow and task definitions
-- [main.py](src/flowlet_example/main.py) - FastAPI application setup and configuration
-
-## Learn More
-
-- Check the interactive API documentation at `http://localhost:8000/docs` after starting the server
-- Explore the flow definitions in [flows.py](src/flowlet_example/flows.py) to understand different patterns
-- View the Flowlet source code for advanced features
-
-## License
-
-MIT

@@ -18,8 +18,10 @@ if TYPE_CHECKING:
     from .api.cache import CacheRepository
     from .api.controller import FlowController
     from .api.query import RunQuery
+    from .events import RunEventLog
     from .history import RunHistory
     from .queue import JobQueueProtocol
+    from .repository.dispatch import DispatchKeyRepository
     from .repository.log import LogRepository
     from .repository.state import StateRepository
 
@@ -73,6 +75,10 @@ class FlowletDeps(TypedDict, total=False):
         cache_repo: Pull-refreshed SQLite run cache; present only when
             storage is configured.
         querier: Read-side query object; None when no storage is configured.
+        dispatch_repo: Dispatch-key → run_id mapping enabling idempotent
+            submissions; present only when storage is configured.
+        events: Run lifecycle event-log writer; present only when storage
+            is configured.
         history: Run-history event-log writer; None unless configs.history
             is enabled with storage configured.
         queue: Async job queue; None when not configured.
@@ -84,6 +90,8 @@ class FlowletDeps(TypedDict, total=False):
     state_repo: StateRepository
     cache_repo: CacheRepository
     querier: RunQuery | None
+    dispatch_repo: "DispatchKeyRepository | None"
+    events: "RunEventLog | None"
     history: "RunHistory | None"
     queue: JobQueueProtocol | None
     controller: FlowController
@@ -127,6 +135,8 @@ class Flowlet:
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
         self.history = deps.get("history")
+        self.dispatch_repo = deps.get("dispatch_repo")
+        self.events = deps.get("events")
 
     @classmethod
     def configure(cls, configs: FlowletConfig | Mapping | None = None) -> "Flowlet":
@@ -173,6 +183,8 @@ class Flowlet:
         configure_run_logging()
 
         deps["querier"] = None
+        deps["dispatch_repo"] = None
+        deps["events"] = None
         if configs.storage is not None:
             from .repository.log import LogRepository
             from .api.cache import CacheRepository
@@ -185,11 +197,17 @@ class Flowlet:
 
             # LogRepository and CacheRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
+            from .events import RunEventLog
+            from .repository.dispatch import DispatchKeyRepository
             from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(base_path=storage_path)
             deps["state_repo"] = StateRepository(
                 root=storage_path, object_store=configs.object_store
             )
+            deps["dispatch_repo"] = DispatchKeyRepository(
+                root=storage_path, object_store=configs.object_store
+            )
+            deps["events"] = RunEventLog(base_path=storage_path)
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
 
@@ -223,6 +241,8 @@ class Flowlet:
             querier=deps["querier"],
             queue=deps["queue"],
             state_repo=deps.get("state_repo"),
+            dispatch_repo=deps.get("dispatch_repo"),
+            events=deps.get("events"),
         )
 
         from .api.router import build_router

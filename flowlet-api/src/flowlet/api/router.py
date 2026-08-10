@@ -11,7 +11,7 @@ from attrs import Factory, define
 from fastapi import APIRouter
 
 from .controller import FlowController
-from .models import FlowSubmissionResponse, RunDTO, RunStateDTO
+from .models import CancelRunResponse, FlowSubmissionResponse, RunDTO, RunStateDTO
 
 
 # region @router.contracts
@@ -48,6 +48,10 @@ class RouteSpec:
             no job queue is configured on the controller.
         requires_querier: When ``True`` the route is omitted from the router if
             no storage / querier is configured on the controller.
+        requires_state: When ``True`` the route is omitted from the router if
+            no state repository is configured on the controller.
+        requires_events: When ``True`` the route is omitted from the router if
+            no run event log is configured on the controller.
     """
     path: str
     method: str
@@ -58,6 +62,8 @@ class RouteSpec:
     responses: dict[int, dict[str, str]] = Factory(dict)
     requires_queue: bool = False
     requires_querier: bool = False
+    requires_state: bool = False
+    requires_events: bool = False
 
 
 _EXECUTE_FLOW = RouteSpec(
@@ -96,6 +102,26 @@ _SUBMIT_FLOW = RouteSpec(
     requires_queue=True,
 )
 
+_CANCEL_RUN = RouteSpec(
+    path="/runs/{run_id}/cancel",
+    method="POST",
+    summary="Request cancellation of an active run",
+    description=(
+        "Close a pending run as canceled, or flag a running run for "
+        "cooperative cancellation — the owning worker observes the flag at "
+        "its next heartbeat.  Already-closed runs are reported unchanged."
+    ),
+    tags=["Execution"],
+    response_model=CancelRunResponse,
+    responses={
+        200: {"description": "Cancellation applied or already effective"},
+        404: {"description": "Run not found among active runs"},
+        409: {"description": "Concurrent writes prevented cancellation"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
 _RUNS_QUERY = RouteSpec(
     path="/runs/query",
     method="POST",
@@ -129,6 +155,24 @@ _RUN_BY_ID = RouteSpec(
         404: {"description": "Run not found"},
     },
     requires_querier=True,
+)
+
+_RUN_EVENTS = RouteSpec(
+    path="/runs/{run_id}/events",
+    method="GET",
+    summary="Fetch a run's lifecycle event timeline",
+    description=(
+        "Return the audit trail of state transitions (submitted, claimed, "
+        "completed, retries, cancellation, sweeper recoveries) recorded in "
+        "the run's append-only events file."
+    ),
+    tags=["Query"],
+    response_model=list[dict],
+    responses={
+        404: {"description": "Run not found"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_events=True,
 )
 
 _LIST_FLOWS = RouteSpec(
@@ -215,12 +259,16 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     _wire(router, _EXECUTE_FLOW, controller.run_flow)
     if not _SUBMIT_FLOW.requires_queue or controller.queue is not None:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
+    if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
+        _wire(router, _CANCEL_RUN, controller.cancel_run)
     if not _RUNS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _RUNS_QUERY, controller.query_runs)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _LOGS_QUERY, controller.query_logs)
     if not _RUN_BY_ID.requires_querier or controller.querier is not None:
         _wire(router, _RUN_BY_ID, controller.get_run_by_run_id)
+    if not _RUN_EVENTS.requires_events or controller.events is not None:
+        _wire(router, _RUN_EVENTS, controller.get_run_events)
 
 
     return router

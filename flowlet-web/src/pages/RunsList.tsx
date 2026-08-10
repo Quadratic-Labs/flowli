@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, isCancellable } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
+import { CancelRunButton } from '@/components/CancelRunButton';
 
 export default function RunsList() {
   const { data: runs = [], isLoading, error, refetch } = useQuery({
@@ -36,8 +37,11 @@ export default function RunsList() {
                   <td className="py-3 px-4 text-gray-500">{new Date(r.started_at).toLocaleString()}</td>
                   <td className="py-3 px-4 text-gray-500">{r.ended_at ? new Date(r.ended_at).toLocaleString() : 'Running...'}</td>
                   <td className="py-3 px-4">
-                    <Link to={`/runs/${r.run_id}`}
-                      className="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm">View Details</Link>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/runs/${r.run_id}`}
+                        className="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm">View Details</Link>
+                      {isCancellable(r.status) && <CancelRunButton runId={r.run_id} small />}
+                    </div>
                   </td>
                 </tr>
               ))}</tbody>

@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { api, getStatusColor, humanizeDuration, type RunSummaryDTO, type SpanRecordDTO } from '@/lib/api';
+import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type RunEvent, type RunSummaryDTO, type SpanRecordDTO } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RunFlamegraph } from '@/components/RunFlamegraph';
+import { CancelRunButton } from '@/components/CancelRunButton';
 
 interface LogLine { ts: string | null; level: string; message: string }
 
@@ -88,6 +89,57 @@ function groupAttempts(spans: SpanRecordDTO[]): AttemptView[] {
     }));
 }
 
+const TERMINAL_EVENTS = ['completed', 'failed', 'canceled'];
+
+/** Map the latest lifecycle event to a displayable status for runs whose
+ *  span record does not exist yet (spans export only on completion). */
+function eventToStatus(event: string | undefined): string {
+  if (!event) return 'queued';
+  if (event === 'submitted') return 'queued';
+  if (event === 'claimed') return 'running';
+  if (event === 'retry_scheduled' || event === 'requeued') return 'pending';
+  if (event === 'cancel_requested') return 'canceling';
+  return event; // completed / failed / canceled map to themselves
+}
+
+function eventBadgeClass(event: string): string {
+  if (event === 'completed') return 'text-green-700 bg-green-100';
+  if (event === 'failed') return 'text-red-700 bg-red-100';
+  if (event === 'canceled' || event === 'cancel_requested') return 'text-slate-700 bg-slate-200';
+  if (event === 'retry_scheduled' || event === 'requeued') return 'text-amber-700 bg-amber-100';
+  if (event === 'claimed') return 'text-blue-700 bg-blue-100';
+  return 'text-gray-700 bg-gray-100';
+}
+
+function EventTimeline({ events }: { events: RunEvent[] }) {
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-gray-100 text-left">
+        <tr>{['Time', 'Event', 'Actor', 'Attempt', 'Transition', 'Cause'].map(h =>
+          <th key={h} className="py-2 px-3">{h}</th>)}</tr>
+      </thead>
+      <tbody>{events.map((e, i) => (
+        <tr key={i} className="border-t">
+          <td className="py-2 px-3 text-gray-500 font-mono text-xs whitespace-nowrap">
+            {new Date(e.ts).toISOString().replace('T', ' ').slice(0, 23)}
+          </td>
+          <td className="py-2 px-3">
+            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${eventBadgeClass(e.event)}`}>
+              {e.event}
+            </span>
+          </td>
+          <td className="py-2 px-3 text-gray-500 font-mono text-xs">{e.actor}</td>
+          <td className="py-2 px-3 text-gray-500">{e.attempt ?? '—'}</td>
+          <td className="py-2 px-3 text-gray-500 text-xs">
+            {e.from || e.to ? `${e.from ?? '·'} → ${e.to ?? '·'}` : '—'}
+          </td>
+          <td className="py-2 px-3 text-gray-500 text-xs">{e.cause ?? '—'}</td>
+        </tr>
+      ))}</tbody>
+    </table>
+  );
+}
+
 function LogLevel({ level }: { level: string }) {
   const l = level.toLowerCase();
   const cls = l === 'info' ? 'text-sky-400 bg-sky-900/30'
@@ -115,14 +167,47 @@ export default function RunDetail() {
   const { id: runId = '' } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const parentId = searchParams.get('parentId');
+  const flowHint = searchParams.get('flow');
+  const queryClient = useQueryClient();
 
+  // A 404 is not an error here: spans export only when a span completes and
+  // the read cache only learns about a run after a worker claims it, so a
+  // freshly submitted run legitimately has nothing to show yet.  Poll until
+  // the record appears instead of failing.
   const { data: run, isLoading, error } = useQuery({
-    queryKey: ['run', runId], queryFn: () => api.getRunById(runId),
+    queryKey: ['run', runId],
+    queryFn: () => api.getRunById(runId),
+    retry: false,
+    refetchInterval: (q) => (q.state.data ? false : 2500),
   });
   const { data: parent } = useQuery({
     queryKey: ['run', parentId], queryFn: () => api.getRunById(parentId!),
     enabled: !!parentId,
   });
+  // Lifecycle events are optional: older runs (pre event log) have none and
+  // deployments without storage don't expose the endpoint at all.  While the
+  // run is in flight they are the only live signal, so keep polling until
+  // the timeline reaches a terminal event.
+  const { data: events = [] } = useQuery({
+    queryKey: ['run-events', runId],
+    queryFn: () => api.getRunEvents(runId),
+    retry: false,
+    refetchInterval: (q) => {
+      const evs = q.state.data;
+      if (!evs || evs.length === 0) return 3000;
+      const last = evs[evs.length - 1].event;
+      return TERMINAL_EVENTS.includes(last) ? false : 3000;
+    },
+  });
+
+  // Each lifecycle advance may have produced new spans or a final state —
+  // refresh the run record whenever the timeline grows.
+  const eventCount = events.length;
+  useEffect(() => {
+    if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['run', runId] });
+  }, [eventCount, runId, queryClient]);
+
+  const runNotFoundYet = !run && error instanceof ApiError && error.status === 404;
 
   const attempts = useMemo(() => groupAttempts(run?.logs ?? []), [run]);
   const [selectedAttempt, setSelectedAttempt] = useState<number | null>(null);
@@ -140,16 +225,59 @@ export default function RunDetail() {
   const logs = current?.logs ?? [];
   const children = view?.children ?? [];
 
+  // The span-derived status only reflects finished spans; the event log knows
+  // whether the run is actually still in flight (e.g. a retry is scheduled).
+  const lastEvent = events.at(-1)?.event;
+  const runActive = lastEvent
+    ? !TERMINAL_EVENTS.includes(lastEvent)
+    : isCancellable(view?.status ?? '');
+
   return (
     <div className="p-6">
       {isLoading && <div className="flex justify-center p-10"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
-      {error && <div className="text-red-600 bg-red-50 p-4 rounded">{String(error)}</div>}
+      {error && !runNotFoundYet && <div className="text-red-600 bg-red-50 p-4 rounded">{String(error)}</div>}
+
+      {runNotFoundYet && (
+        <>
+          <div className="bg-white rounded shadow p-6 mb-4">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-medium">Run Details</h2>
+                {events.length > 0 && runActive && <CancelRunButton runId={runId} small />}
+              </div>
+              <span className="flex items-center gap-2 text-sm text-gray-500">
+                <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                live — refreshing automatically
+              </span>
+            </div>
+            <div className="text-sm space-y-1">
+              {flowHint && <p><strong>Flow:</strong> {flowHint}</p>}
+              <p><strong>Run ID:</strong> <span className="font-mono text-xs">{runId}</span></p>
+              <p><strong>Status:</strong> <StatusBadge status={eventToStatus(lastEvent)} /></p>
+            </div>
+            <p className="text-gray-500 text-sm mt-4">
+              {events.length === 0
+                ? 'Waiting for a worker to pick this run up — details appear as soon as execution is recorded.'
+                : 'Execution in progress — the full record (flamegraph, logs) appears when the attempt finishes.'}
+            </p>
+          </div>
+
+          {events.length > 0 && (
+            <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen>
+              <EventTimeline events={events} />
+            </Section>
+          )}
+        </>
+      )}
 
       {run && view && !isLoading && (
         <>
           <div className="bg-white rounded shadow p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-medium">Run Details</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-medium">Run Details</h2>
+                {runActive && <CancelRunButton runId={runId} small />}
+              </div>
               {attempts.length > 1 && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-500">Attempt:</span>
@@ -195,6 +323,12 @@ export default function RunDetail() {
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
             <RunFlamegraph runData={view} />
           </Section>
+
+          {events.length > 0 && (
+            <Section title="Lifecycle Events" icon={<span>🧭</span>}>
+              <EventTimeline events={events} />
+            </Section>
+          )}
 
           <Section title="Logs" icon={<span>📄</span>}>
             {logs.length === 0

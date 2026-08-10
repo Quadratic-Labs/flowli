@@ -1,0 +1,65 @@
+version: '3'
+
+vars:
+  API_PORT: 8001
+
+tasks:
+  install:
+    desc: Install flowlet + flowlet-example (editable) and the dashboard's npm deps
+    cmds:
+      - .venv/bin/pip install -e flowlet-api
+      - .venv/bin/pip install -e flowlet-example --no-deps
+      - npm install --prefix flowlet-web
+
+  api:
+    desc: Run the example API + embedded in-memory worker (single-process demo, port 8001)
+    dir: flowlet-example
+    cmds:
+      - ../.venv/bin/uvicorn flowlet_example.main:app --reload --port {{.API_PORT}}
+
+  web:
+    desc: Run the dashboard dev server (proxies /api to localhost:8001)
+    cmds:
+      - npm run dev --prefix flowlet-web
+
+  demo:
+    desc: Run the API+worker and the dashboard together (Ctrl-C stops both)
+    deps: [api, web]
+
+  flows:
+    desc: List registered flows
+    cmds:
+      - curl -s http://localhost:{{.API_PORT}}/flows | python3 -m json.tool
+
+  submit:
+    desc: 'Submit a flow for async execution. Usage: task submit FLOW=hello_world KWARGS=''{"name":"Flowlet"}'''
+    vars:
+      FLOW: '{{.FLOW | default "hello_world"}}'
+      KWARGS: '{{.KWARGS | default "{}"}}'
+    cmds:
+      - |
+        curl -s -X POST http://localhost:{{.API_PORT}}/submit/{{.FLOW}} \
+          -H "Content-Type: application/json" \
+          -d "{\"kwargs\": {{.KWARGS}}}" | python3 -m json.tool
+
+  runs:
+    desc: List the most recent run states
+    cmds:
+      - |
+        curl -s -X POST http://localhost:{{.API_PORT}}/runs/query \
+          -H "Content-Type: application/json" -d '{"last_n": 10}' | python3 -m json.tool
+
+  worker:
+    desc: Run a standalone worker process (see README's multi-process caveat re in-memory queue)
+    cmds:
+      - .venv/bin/flowlet work --app flowlet_example.flows:flowlet
+
+  sweep:
+    desc: Run one sweep pass (crash recovery / archival of closed runs)
+    cmds:
+      - .venv/bin/flowlet sweep --app flowlet_example.flows:flowlet
+
+  test:
+    desc: Run the flowlet-api test suite
+    cmds:
+      - .venv/bin/pytest flowlet-api/tests

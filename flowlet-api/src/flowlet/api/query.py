@@ -217,6 +217,22 @@ class RunQuery:
         logger.debug("list_states", extra={"flows": len(names), "rows": len(rows)})
         return rows
 
+    async def find_flow_name(self, run_id: UUID) -> str | None:
+        """Resolve the flow that owns *run_id*, or None when unknown.
+
+        Args:
+            run_id: UUID of the run to resolve.
+
+        Returns:
+            The owning flow's name, or None if the run is not in the cache.
+        """
+        await self.cache.refresh()
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                select(RunRow.flow_name).where(RunRow.run_id == run_id)
+            )
+            return result.scalar_one_or_none()
+
     async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> dict:
         """Load a run by run_id alone, looking up flow_name from the database.
 

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from attrs import define
 
+from .events import RunEventLog
 from .models import FlowJob, RunState, RunStatus
 from .queue import JobQueueProtocol
 from .repository import StateRepository
@@ -69,6 +70,7 @@ DEFAULT_ARCHIVE_GRACE = 3600   # seconds a closed run stays in state/
 #   - state_repository
 #   - models.job
 #   - history
+#   - events.log
 # aliases:
 #   - sweeper
 #   - crash-recovery
@@ -104,6 +106,7 @@ def sweep(
     pending_grace: int = DEFAULT_PENDING_GRACE,
     archive_grace: int = DEFAULT_ARCHIVE_GRACE,
     history: "RunHistory | None" = None,
+    events: RunEventLog | None = None,
 ) -> SweepStats:
     """Run one sweep pass over the active state directory.
 
@@ -116,6 +119,7 @@ def sweep(
             before being archived.
         history: Optional run-history log; when given, archive candidates
             are durably recorded there before their state files are removed.
+        events: Optional run event log receiving recovery events.
 
     Returns:
         SweepStats describing the pass.
@@ -138,9 +142,9 @@ def sweep(
                 if _past_archive_grace(state, now, archive_grace):
                     to_archive.append(state)
             elif state.status == RunStatus.running:
-                _maybe_recover(state_repo, queue, state, etag, now, stats)
+                _maybe_recover(state_repo, queue, state, etag, now, stats, events)
             elif state.status == RunStatus.pending:
-                _maybe_requeue_pending(queue, state, now, pending_grace, stats)
+                _maybe_requeue_pending(queue, state, now, pending_grace, stats, events)
         except Exception:
             stats.errors += 1
             logger.exception(
@@ -170,6 +174,7 @@ def _maybe_recover(
     etag: str,
     now,
     stats: SweepStats,
+    events: RunEventLog | None = None,
 ) -> None:
     """Recover a running run whose lease deadline has passed.
 
@@ -187,6 +192,7 @@ def _maybe_recover(
         ok, _ = state_repo.write(state, etag)
         if ok:
             stats.failed += 1
+            _emit(events, state, "failed", cause="lease_expired_max_retries")
             logger.warning(
                 "sweep_run_failed_permanently",
                 extra={"run_id": str(state.run_id), "attempt": state.attempt},
@@ -199,6 +205,7 @@ def _maybe_recover(
         return  # lost the race — current owner acted first
     _enqueue_wakeup(queue, state)
     stats.requeued += 1
+    _emit(events, state, "requeued", cause="lease_expired")
     logger.info(
         "sweep_run_requeued",
         extra={"run_id": str(state.run_id), "attempt": state.attempt},
@@ -211,6 +218,7 @@ def _maybe_requeue_pending(
     now,
     pending_grace: int,
     stats: SweepStats,
+    events: RunEventLog | None = None,
 ) -> None:
     """Re-enqueue a pending run whose retry message appears lost.
 
@@ -225,6 +233,7 @@ def _maybe_requeue_pending(
         return
     _enqueue_wakeup(queue, state)
     stats.requeued += 1
+    _emit(events, state, "requeued", cause="pending_grace_expired")
     logger.info(
         "sweep_pending_requeued",
         extra={"run_id": str(state.run_id), "attempt": state.attempt},
@@ -268,6 +277,23 @@ def _archive_all(
     for state in to_archive:
         state_repo.archive(state.flow_name, state.run_id)
         stats.archived += 1
+
+
+def _emit(
+    events: RunEventLog | None, state: RunState, event: str, cause: str
+) -> None:
+    """Append a sweeper lifecycle event when an event log is configured."""
+    if events is None:
+        return
+    events.append(
+        flow_name=state.flow_name,
+        run_id=state.run_id,
+        event=event,
+        actor="sweeper",
+        attempt=state.attempt,
+        to_status=str(state.status),
+        cause=cause,
+    )
 
 
 def _enqueue_wakeup(queue: JobQueueProtocol, state: RunState) -> None:

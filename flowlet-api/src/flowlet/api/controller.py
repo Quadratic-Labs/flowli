@@ -3,6 +3,8 @@ FastAPI controllers for Flowlet.
 
 Provides the FlowController class for handling flow execution and query endpoints.
 """
+import hashlib
+import json
 import logging
 from inspect import Parameter
 from typing import TYPE_CHECKING, Any
@@ -10,12 +12,13 @@ from uuid import UUID, uuid7
 
 logger = logging.getLogger(__name__)
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Response
 from pydantic import ValidationError
 
 from ..models import FlowJob
 from ..queue import JobQueueProtocol
 from .models import (
+    CancelRunResponse,
     FlowArguments,
     FlowSubmissionResponse,
     LogQueryRequest,
@@ -26,8 +29,32 @@ from .models import (
 from .query import RunQuery
 
 if TYPE_CHECKING:
+    from ..events import RunEventLog
     from ..registry import Registry
+    from ..repository.dispatch import DispatchKeyRepository
     from ..repository.state import StateRepository
+
+
+def _etag_json_response(request: Request, body: str) -> Response:
+    """Serve a JSON body with a content-hash ETag, honouring If-None-Match.
+
+    Polling clients send the ETag of their last seen version back via
+    ``If-None-Match``; when the content is unchanged they get an empty 304
+    and keep their cached copy, so an idle poll costs neither bandwidth nor
+    client-side re-parsing.
+
+    Args:
+        request: Incoming request (read for the If-None-Match header).
+        body: The serialized JSON payload.
+
+    Returns:
+        A 304 response when the client already holds this version, else a
+        200 JSON response stamped with the ETag.
+    """
+    etag = f'"{hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(content=body, media_type="application/json", headers={"ETag": etag})
 
 
 # region @controller
@@ -38,7 +65,9 @@ if TYPE_CHECKING:
 #   FlowController is the thin FastAPI handler layer.  It validates incoming
 #   requests, delegates to the domain layer (RunQuery, Registry, JobQueue),
 #   and maps domain exceptions to HTTP status codes.
-#   Execution endpoints: run_flow (synchronous) and submit_flow (async queue).
+#   Execution endpoints: run_flow (synchronous), submit_flow (async queue,
+#   idempotent via optional dispatch_key), and cancel_run (cooperative
+#   cancellation through the state store).
 #   Query endpoints: query_runs (recent RunState rows) and query_logs (full run
 #   with log detail).
 #   Introspection endpoints: get_flow_schema and list_flows_with_schemas read
@@ -86,6 +115,8 @@ class FlowController:
         querier: RunQuery | None = None,
         queue: JobQueueProtocol | None = None,
         state_repo: "StateRepository | None" = None,
+        dispatch_repo: "DispatchKeyRepository | None" = None,
+        events: "RunEventLog | None" = None,
         **_,
     ):
         """Initialise the flow controller.
@@ -96,13 +127,20 @@ class FlowController:
                 When None the query endpoints return 503.
             queue: Optional job queue for asynchronous flow submission.
             state_repo: Optional state repository so synchronous executions
-                leave the same durable record a worker would.
+                leave the same durable record a worker would; also required
+                by the cancel endpoint.
+            dispatch_repo: Optional dispatch-key repository enabling
+                idempotent submissions; when None, dispatch_key submissions
+                return 503.
+            events: Optional run event log receiving lifecycle events.
             **_: Additional unused dependencies (for flexible dependency injection).
         """
         self.registry = registry
         self.querier = querier
         self.queue = queue
         self.state_repo = state_repo
+        self.dispatch_repo = dispatch_repo
+        self.events = events
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -203,17 +241,25 @@ class FlowController:
         """Submit a flow for asynchronous execution via the job queue.
 
         Validates arguments and enqueues the job, returning immediately with
-        tracking information.
+        tracking information.  When the payload carries a ``dispatch_key``,
+        the submission is idempotent: the first submission with a given key
+        creates the run, and every later one resolves to the same run_id
+        (``deduplicated=True``).  The wake-up message is enqueued either way
+        — duplicates are dropped by the worker state machine, and re-sending
+        protects against a lost original message.
 
         Args:
             flow_name: Name of the flow to submit.
-            payload: Keyword arguments for the flow function.
+            payload: Keyword arguments for the flow function, plus the
+                optional dispatch_key.
 
         Returns:
-            FlowSubmissionResponse with the job_id and submission timestamp.
+            FlowSubmissionResponse with the job_id, run_id, submission
+            timestamp, and deduplication outcome.
 
         Raises:
-            HTTPException: 503 if no queue is configured.
+            HTTPException: 503 if no queue is configured, or a dispatch_key
+                was given without storage configured.
             HTTPException: 404 if the flow is not registered.
             HTTPException: 422 if the arguments fail schema validation.
             HTTPException: 500 if enqueueing fails.
@@ -238,6 +284,22 @@ class FlowController:
             max_retries=options.max_retries,
         )
 
+        deduplicated = False
+        if payload.dispatch_key is not None:
+            if self.dispatch_repo is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "dispatch_key requires a storage backend; configure "
+                        "storage or submit without a dispatch_key."
+                    ),
+                )
+            run_id, created = self.dispatch_repo.resolve_or_create(
+                flow_name, payload.dispatch_key, job.run_id
+            )
+            deduplicated = not created
+            job.run_id = run_id
+
         try:
             self.queue.enqueue(job)
         except Exception as e:
@@ -246,22 +308,161 @@ class FlowController:
                 detail=f"Failed to enqueue job: {e}",
             )
 
+        if self.events is not None:
+            details: dict[str, Any] = {"job_id": str(job.job_id)}
+            if payload.dispatch_key is not None:
+                details["dispatch_key"] = payload.dispatch_key
+                details["deduplicated"] = deduplicated
+            self.events.append(
+                flow_name=flow_name,
+                run_id=job.run_id,
+                event="submitted",
+                actor="api",
+                details=details,
+            )
+
         logger.info(
             "flow_submitted",
             extra={
                 "flow_name": flow_name,
                 "job_id": str(job.job_id),
                 "run_id": str(job.run_id),
+                "deduplicated": deduplicated,
             },
         )
         return FlowSubmissionResponse(
             job_id=job.job_id,
+            run_id=job.run_id,
             submitted_at=job.submitted_at,
+            deduplicated=deduplicated,
+        )
+
+    def cancel_run(self, run_id: UUID) -> CancelRunResponse:
+        """Request cancellation of an active run.
+
+        A ``pending``/``retry`` run is closed as ``canceled`` directly (no
+        worker owns it).  A ``running`` run gets its ``cancel_requested``
+        flag set; the owning worker observes it at its next heartbeat and
+        finalizes the run as ``canceled``.  Already-closed runs are left
+        untouched and reported as-is.
+
+        Args:
+            run_id: UUID of the run to cancel.
+
+        Returns:
+            CancelRunResponse describing the state after the request.
+
+        Raises:
+            HTTPException: 503 when no storage backend is configured.
+            HTTPException: 404 when the run is not among the active states.
+            HTTPException: 409 when concurrent writes prevented the update.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+
+        match = next(
+            (s for s in self.state_repo.list_states() if s.run_id == run_id), None
+        )
+        if match is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Run not found among active runs (it may already be archived)",
+            )
+
+        from ..models import RunStatus
+        from ..types import Timestamp
+
+        for _ in range(3):
+            read = self.state_repo.read(match.flow_name, run_id)
+            if read is None:
+                raise HTTPException(status_code=404, detail="Run state disappeared")
+            state, etag = read
+
+            if state.status.is_closed():
+                return CancelRunResponse(
+                    run_id=run_id,
+                    status=state.status,
+                    cancel_requested=state.cancel_requested,
+                )
+
+            if state.status == RunStatus.running:
+                event = "cancel_requested"
+                state.cancel_requested = True
+            else:  # pending / retry — nobody owns it, close it here
+                event = "canceled"
+                state.status = RunStatus.canceled
+                state.cancel_requested = True
+                state.ended_at = Timestamp.now()
+
+            ok, _ = self.state_repo.write(state, etag)
+            if ok:
+                if self.events is not None:
+                    self.events.append(
+                        flow_name=state.flow_name,
+                        run_id=run_id,
+                        event=event,
+                        actor="api",
+                        attempt=state.attempt,
+                        to_status=str(state.status),
+                    )
+                logger.info(
+                    "run_cancel_requested",
+                    extra={"run_id": str(run_id), "status": str(state.status)},
+                )
+                return CancelRunResponse(
+                    run_id=run_id,
+                    status=state.status,
+                    cancel_requested=state.cancel_requested,
+                )
+
+        raise HTTPException(
+            status_code=409,
+            detail="Concurrent state writes prevented cancellation; retry",
         )
 
     # ------------------------------------------------------------------
     # Query endpoints
     # ------------------------------------------------------------------
+
+    async def get_run_events(self, request: Request, run_id: UUID) -> Response:
+        """Return a run's lifecycle events (audit timeline) in append order.
+
+        The owning flow is resolved from the active state directory first
+        (covers live runs the read cache has not seen yet), then from the
+        querier's cache (covers archived runs).  Responses carry a
+        content-hash ETag; a matching ``If-None-Match`` yields a 304 so
+        polling clients only pay for actual changes.
+
+        Args:
+            request: Incoming request (If-None-Match handling).
+            run_id: UUID of the run.
+
+        Returns:
+            JSON list of event records (empty when the run has no events
+            file), or 304 when unchanged.
+
+        Raises:
+            HTTPException: 503 when no storage backend is configured.
+            HTTPException: 404 when the run cannot be resolved to a flow.
+        """
+        if self.events is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+
+        flow_name: str | None = None
+        if self.state_repo is not None:
+            match = next(
+                (s for s in self.state_repo.list_states() if s.run_id == run_id),
+                None,
+            )
+            if match is not None:
+                flow_name = match.flow_name
+        if flow_name is None and self.querier is not None:
+            flow_name = await self.querier.find_flow_name(run_id)
+        if flow_name is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        records = self.events.read(flow_name, run_id)
+        return _etag_json_response(request, json.dumps(records, default=str))
 
     async def query_runs(self, request: RunQueryRequest) -> list[RunStateDTO]:
         """Return the most recent run states per flow.
@@ -288,18 +489,24 @@ class FlowController:
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query failed: {e}")
 
-    async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> RunDTO:
+    async def get_run_by_run_id(
+        self, request: Request, run_id: UUID, with_logs: bool = True
+    ) -> Response:
         """Fetch a run by its ID alone, looking up flow_name from the database.
 
         Convenience wrapper around ``query_logs`` that first queries the
-        database to discover which flow owns the run.
+        database to discover which flow owns the run.  Responses carry a
+        content-hash ETag; a matching ``If-None-Match`` yields a 304 so
+        polling clients only pay for actual changes.
 
         Args:
+            request: Incoming request (If-None-Match handling).
             run_id: UUID of the run to fetch.
             with_logs: Include log entries in the response (default: True).
 
         Returns:
-            RunDTO containing the summary tree and (optionally) all log entries.
+            JSON RunDTO with the summary tree and (optionally) all log
+            entries, or 304 when unchanged.
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
@@ -310,11 +517,12 @@ class FlowController:
             raise HTTPException(status_code=503, detail="Storage not configured")
         try:
             result = await self.querier.get_run_by_run_id(run_id, with_logs)
-            return RunDTO.model_validate(result)
+            dto = RunDTO.model_validate(result)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+        return _etag_json_response(request, dto.model_dump_json())
 
     def query_logs(self, request: LogQueryRequest) -> RunDTO:
         """Fetch a single run with its full log detail.

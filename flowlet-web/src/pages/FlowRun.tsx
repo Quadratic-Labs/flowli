@@ -8,6 +8,7 @@ export default function FlowRun() {
   const { name = '' } = useParams<{ name: string }>();
   const nav = useNavigate();
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const [dispatchKey, setDispatchKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
@@ -36,9 +37,14 @@ export default function FlowRun() {
         const v = getValue(p);
         if (v !== null && v !== '') kwargs[p.name] = v;
       });
-      await api.submitFlow(name, kwargs);
-      setToast({ msg: `Flow "${name}" submitted`, ok: true });
-      setTimeout(() => nav('/runs'), 1500);
+      const resp = await api.submitFlow(name, kwargs, dispatchKey.trim() || undefined);
+      setToast({
+        msg: resp.deduplicated
+          ? `Dispatch key already submitted — resolved to existing run ${resp.run_id.slice(0, 8)}…`
+          : `Flow "${name}" submitted as run ${resp.run_id.slice(0, 8)}…`,
+        ok: true,
+      });
+      setTimeout(() => nav(`/runs/${resp.run_id}?flow=${encodeURIComponent(name)}`), 1500);
     } catch (err) {
       setToast({ msg: `Failed: ${err}`, ok: false });
     } finally {
@@ -94,6 +100,21 @@ export default function FlowRun() {
                 )}
               </div>
             ))}
+
+            <div className="border-t pt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Dispatch key
+                <span className="text-gray-400 ml-1 font-normal">(optional — idempotency)</span>
+              </label>
+              <input type="text" value={dispatchKey}
+                onChange={e => setDispatchKey(e.target.value)}
+                placeholder="e.g. webhook-delivery-42 or campaign-sync:2026-08-04"
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <p className="text-xs text-gray-400 mt-1">
+                Submissions with the same key collapse onto one run — safe against
+                double-clicks, webhook retries, and overlapping schedules.
+              </p>
+            </div>
 
             <div className="pt-2">
               <button type="submit" disabled={submitting}

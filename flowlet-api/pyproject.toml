@@ -114,6 +114,10 @@ include = [
 
 # Force inclusion of static and templates directories
 [tool.hatch.build]
+# File selection is an explicit whitelist, so VCS ignore rules must not be
+# consulted — an unanchored gitignore pattern (e.g. `storage/`) would
+# otherwise silently drop src/flowlet subpackages from the wheel.
+ignore-vcs = true
 include = [
     "src/flowlet/**/*.py",
     "src/flowlet/static/**/*",

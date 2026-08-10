@@ -149,6 +149,12 @@ flows.db
 flows.db-journal
 *.db
 *.db-journal
+# Runtime storage data dirs only — keep this anchored: an unanchored
+# `storage/` also matches src/flowlet/storage/ and hatchling applies
+# gitignore patterns to wheel file selection, silently dropping the
+# subpackage from builds.
+/storage/
+/flowlet-example/storage/
 
 # Logs
 *.log

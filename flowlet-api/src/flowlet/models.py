@@ -187,7 +187,9 @@ class RunState:
     Acts as the source of truth for ownership and retry logic: a worker owns
     a run by CAS-writing ``status=running`` with a lease ``deadline_at``;
     anything running past its deadline is reclaimable (by another worker or
-    the sweeper).  There is no heartbeat — the lease is the liveness signal.
+    the sweeper).  The lease is the liveness signal; flows may renew it
+    mid-run via ``flowlet.heartbeat()``, which also observes
+    ``cancel_requested``.
 
     Attributes:
         run_id: Unique identifier for the run.
@@ -196,13 +198,18 @@ class RunState:
         worker_id: Identifier of the owning worker process.
         started_at: Timestamp when the run was first started.
         ended_at: Timestamp when the run finished (completed or failed).
-        deadline_at: Lease expiry — reset on every claim to now + timeout.
+        deadline_at: Lease expiry — reset on every claim to now + timeout,
+            and renewed by heartbeats.
         attempt: Current attempt number (1-based); incremented on each claim
             of an existing state.
         max_retries: Maximum number of execution attempts allowed.
         kwargs: Flow keyword arguments, copied from the job at first claim so
             the sweeper can re-enqueue a crashed run without the original
             queue message.
+        cancel_requested: Cooperative-cancellation flag set through the API.
+            The owning worker observes it on its next heartbeat and finalizes
+            the run as ``canceled``; a claim of a flagged state cancels
+            without executing.
     """
     run_id: UUID
     flow_name: str
@@ -214,6 +221,7 @@ class RunState:
     attempt: int = 1
     max_retries: int = 3
     kwargs: dict[str, Any] = Factory(dict)
+    cancel_requested: bool = False
 
 # ---
 # endregion

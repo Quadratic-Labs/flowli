@@ -3,10 +3,12 @@ Worker for executing a single queued flow job under a lease-based state machine.
 
 Ownership is a lease: a worker claims a run by CAS-writing
 ``status=running`` with ``deadline_at = now + timeout``.  There are no
-heartbeats and no background threads — a run past its deadline is simply
-reclaimable, by another worker dequeuing a duplicate message or by the
-sweeper (see ``flowlet.sweeper``), which re-enqueues expired runs on a cron
-cadence.
+background threads — a run past its deadline is simply reclaimable, by
+another worker dequeuing a duplicate message or by the sweeper (see
+``flowlet.sweeper``), which re-enqueues expired runs on a cron cadence.
+Flows may renew the lease cooperatively via ``flowlet.heartbeat()`` (see
+``flowlet.lease``), which is also how a cancel request reaches a running
+flow.
 
 The queue is a pure wake-up signal.  Every dequeued message is acked as soon
 as the run's state is resolved; retry accounting lives exclusively in
@@ -38,6 +40,8 @@ from enum import StrEnum
 import logging
 
 from . import tracing
+from .events import RunEventLog
+from .lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
 from .models import FlowJob, RunState, RunStatus
 from .queue import JobQueueProtocol
 from .registry import Registry
@@ -142,11 +146,20 @@ def _is_lease_expired(state: RunState) -> bool:
 #   - MUST copy job.kwargs into the state at first claim (sweeper re-enqueue).
 #   - On retryable failure MUST CAS to pending and self-enqueue with backoff.
 #   - MUST NOT execute when job_state is closed, failed, or busy.
+#   - MUST NOT execute a claimed state whose cancel_requested flag is set;
+#     finalize it as canceled instead.
+#   - Terminal writes MUST use the lease's latest etag and, on conflict,
+#     retry once when the run is still owned (a concurrent cancel-flag
+#     write must not orphan a finished run).
+#   - MUST NOT write state after LeaseLost — the outcome belongs to the
+#     new owner.
 # dependencies:
 #   - worker.state
 #   - state_repository
 #   - models.run
 #   - registry.registry
+#   - lease
+#   - events.log
 # aliases:
 #   - execute-job
 # triggers:
@@ -200,12 +213,71 @@ def _retry_backoff(attempt: int) -> int:
     return min(2 ** attempt, 300)
 
 
+def _emit(
+    events: RunEventLog | None,
+    state: RunState,
+    event: str,
+    actor: str,
+    **kwargs,
+) -> None:
+    """Append a lifecycle event for *state* when an event log is configured."""
+    if events is None:
+        return
+    events.append(
+        flow_name=state.flow_name,
+        run_id=state.run_id,
+        event=event,
+        actor=actor,
+        attempt=state.attempt,
+        **kwargs,
+    )
+
+
+def _finalize(
+    state_repo: StateRepository,
+    state: RunState,
+    etag: str | None,
+) -> bool:
+    """Write a terminal (or pending-retry) state, surviving a cancel-flag race.
+
+    A conflict on the terminal write can only mean one of two things: the
+    cancel endpoint bumped the version (we still own the run — merge the
+    flag and retry once on the fresh etag), or the lease expired and the
+    run was reclaimed (the outcome is no longer ours to record).
+
+    Args:
+        state_repo: State repository for conditional writes.
+        state: The finalized state to persist.
+        etag: Version from the lease's last successful write.
+
+    Returns:
+        True when the write landed; False when ownership was lost.
+    """
+    ok, _ = state_repo.write(state, etag)
+    if ok:
+        return True
+    read = state_repo.read(state.flow_name, state.run_id)
+    if read is None:
+        return False
+    current, current_etag = read
+    if (
+        current.status != RunStatus.running
+        or current.worker_id != state.worker_id
+        or current.attempt != state.attempt
+    ):
+        return False  # reclaimed — new owner records the outcome
+    state.cancel_requested = state.cancel_requested or current.cancel_requested
+    ok, _ = state_repo.write(state, current_etag)
+    return ok
+
+
 def execute_job(
     queue: JobQueueProtocol,
     registry: Registry,
     state_repo: StateRepository,
     worker_id: str,
     default_timeout: int = DEFAULT_TIMEOUT,
+    events: RunEventLog | None = None,
 ) -> int:
     """Execute a single job from the queue under the lease state machine.
 
@@ -214,6 +286,11 @@ def execute_job(
     message, runs the flow, then CAS-finalizes the state.  See the module
     docstring for the full transition table.
 
+    While the flow runs, a :class:`~flowlet.lease.RunLease` is bound to the
+    context so ``flowlet.heartbeat()`` can renew the lease and observe
+    cancellation.  A cancel request finalizes the run as ``canceled``; a
+    lost lease discards the outcome without writing.
+
     Args:
         queue: Job queue to dequeue from.
         registry: Flow registry for retrieving flow functions.
@@ -221,9 +298,11 @@ def execute_job(
         worker_id: Unique identifier for this worker instance.
         default_timeout: Lease seconds used when the job carries no
             timeout_seconds.
+        events: Optional run event log receiving lifecycle events.
 
     Returns:
-        Exit code — 0 success, 1 failure, 2 no job or skipped.
+        Exit code — 0 success or deliberate cancel, 1 failure, 2 no job or
+        skipped.
     """
     job = queue.dequeue()
     if job is None:
@@ -275,14 +354,48 @@ def execute_job(
             attempt=existing.attempt,
             max_retries=existing.max_retries,
             kwargs=existing.kwargs,
+            cancel_requested=existing.cancel_requested,
         )
-        state_repo.write(state, read_etag)
+        ok, _ = state_repo.write(state, read_etag)
+        if ok:
+            _emit(
+                events, state, "failed", worker_id,
+                from_status=str(existing.status), to_status=str(RunStatus.failed),
+                cause="max_retries_exceeded",
+            )
         _ack_safely(queue, job)
         logger.warning(
             "job_max_retries_exceeded",
             extra={"run_id": str(job.run_id), "attempt": existing.attempt},
         )
         return 1
+
+    # A cancel that arrived while the run was off-lease (pending after a
+    # failure, or flagged just before its lease expired): honour it instead
+    # of executing another attempt.
+    if existing is not None and existing.cancel_requested:
+        state = RunState(
+            run_id=existing.run_id,
+            flow_name=existing.flow_name,
+            status=RunStatus.canceled,
+            worker_id=worker_id,
+            started_at=existing.started_at,
+            ended_at=Timestamp.now(),
+            attempt=existing.attempt,
+            max_retries=existing.max_retries,
+            kwargs=existing.kwargs,
+            cancel_requested=True,
+        )
+        ok, _ = state_repo.write(state, read_etag)
+        if ok:
+            _emit(
+                events, state, "canceled", worker_id,
+                from_status=str(existing.status), to_status=str(RunStatus.canceled),
+                cause="cancel_requested_before_claim",
+            )
+            logger.info("job_canceled_before_claim", extra={"run_id": str(job.run_id)})
+        _ack_safely(queue, job)
+        return 0
 
     # Execute states — claim with a fresh lease.
     timeout = job.timeout_seconds or default_timeout
@@ -312,6 +425,7 @@ def execute_job(
             attempt=existing.attempt + 1,
             max_retries=existing.max_retries,
             kwargs=existing.kwargs or job.kwargs,
+            cancel_requested=existing.cancel_requested,
         )
         logger.info(
             "job_claimed_existing",
@@ -329,29 +443,75 @@ def execute_job(
         _ack_safely(queue, job)
         logger.info("job_claim_lost", extra={"run_id": str(job.run_id)})
         return 2
+    assert claim_etag is not None
+    _emit(
+        events, state, "claimed", worker_id,
+        from_status=str(existing.status) if existing is not None else None,
+        to_status=str(RunStatus.running),
+        details={"case": str(job_state)},
+    )
 
     # Message is spent the moment the claim lands — crash recovery is the
     # sweeper's job from here on, not the queue's.
     _ack_safely(queue, job)
 
+    lease = RunLease(
+        state=state,
+        etag=claim_etag,
+        state_repo=state_repo,
+        timeout_seconds=timeout,
+    )
     flow_exc: Exception | None = None
+    cancelled = False
+    lease_lost = False
+    lease_token = bind_lease(lease)
     try:
         fn = registry.get_flow(job.flow_name)
         with tracing.run_root(state.run_id, state.flow_name, attempt=state.attempt):
             fn(**state.kwargs)
+    except RunCancelled:
+        cancelled = True
+        logger.info("job_cancelled", extra={"run_id": str(job.run_id)})
+    except LeaseLost:
+        lease_lost = True
+        logger.warning("job_lease_lost", extra={"run_id": str(job.run_id)})
     except Exception as exc:
         flow_exc = exc
         logger.exception("job_failed", extra={"run_id": str(job.run_id)})
     finally:
+        unbind_lease(lease_token)
         # Persist buffered spans before the terminal CAS write so the run
         # record is complete by the time the state reports it closed.
         tracing.force_flush()
 
+    if lease_lost:
+        # The run was reclaimed mid-flight; the new owner records the outcome.
+        return 2
+
+    if cancelled:
+        state.status = RunStatus.canceled
+        state.ended_at = Timestamp.now()
+        state.cancel_requested = True
+        if _finalize(state_repo, state, lease.etag):
+            _emit(
+                events, state, "canceled", worker_id,
+                from_status=str(RunStatus.running), to_status=str(RunStatus.canceled),
+            )
+            logger.info("job_canceled", extra={"run_id": str(job.run_id)})
+            return 0
+        logger.warning(
+            "job_cancel_ownership_lost", extra={"run_id": str(job.run_id)}
+        )
+        return 2
+
     if flow_exc is None:
         state.status = RunStatus.completed
         state.ended_at = Timestamp.now()
-        ok, _ = state_repo.write(state, claim_etag)
-        if ok:
+        if _finalize(state_repo, state, lease.etag):
+            _emit(
+                events, state, "completed", worker_id,
+                from_status=str(RunStatus.running), to_status=str(RunStatus.completed),
+            )
             logger.info("job_completed", extra={"run_id": str(job.run_id)})
             return 0
         # Lease expired mid-run and someone reclaimed: they own the outcome.
@@ -364,8 +524,12 @@ def execute_job(
     # Failure path — retry accounting lives here, never in the queue.
     if state.attempt < state.max_retries:
         state.status = RunStatus.pending
-        ok, _ = state_repo.write(state, claim_etag)
-        if ok:
+        if _finalize(state_repo, state, lease.etag):
+            _emit(
+                events, state, "retry_scheduled", worker_id,
+                from_status=str(RunStatus.running), to_status=str(RunStatus.pending),
+                cause=type(flow_exc).__name__,
+            )
             retry_job = FlowJob(
                 run_id=state.run_id,
                 flow_name=state.flow_name,
@@ -395,8 +559,12 @@ def execute_job(
     else:
         state.status = RunStatus.failed
         state.ended_at = Timestamp.now()
-        ok, _ = state_repo.write(state, claim_etag)
-        if ok:
+        if _finalize(state_repo, state, lease.etag):
+            _emit(
+                events, state, "failed", worker_id,
+                from_status=str(RunStatus.running), to_status=str(RunStatus.failed),
+                cause=type(flow_exc).__name__,
+            )
             logger.warning(
                 "job_failed_permanently",
                 extra={"run_id": str(job.run_id), "attempt": state.attempt},

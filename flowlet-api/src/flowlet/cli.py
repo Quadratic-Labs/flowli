@@ -93,11 +93,19 @@ def work(app_ref: str, worker_id: str | None, once: bool, poll_interval: float) 
 
     logger.info("worker_started", extra={"worker_id": worker_id})
     if once:
-        sys.exit(execute_job(flowlet.queue, flowlet.registry, flowlet.state_repo, worker_id))
+        sys.exit(
+            execute_job(
+                flowlet.queue, flowlet.registry, flowlet.state_repo, worker_id,
+                events=flowlet.events,
+            )
+        )
 
     try:
         while True:
-            rc = execute_job(flowlet.queue, flowlet.registry, flowlet.state_repo, worker_id)
+            rc = execute_job(
+                flowlet.queue, flowlet.registry, flowlet.state_repo, worker_id,
+                events=flowlet.events,
+            )
             if rc == 2:  # nothing to do — idle politely
                 time.sleep(poll_interval)
     except KeyboardInterrupt:
@@ -122,7 +130,8 @@ def sweep(app_ref: str, pending_grace: int | None, archive_grace: int | None) ->
     if archive_grace is not None:
         kwargs["archive_grace"] = archive_grace
     stats = sweeper.sweep(
-        flowlet.state_repo, flowlet.queue, history=flowlet.history, **kwargs
+        flowlet.state_repo, flowlet.queue, history=flowlet.history,
+        events=flowlet.events, **kwargs
     )
     click.echo(
         f"scanned={stats.scanned} requeued={stats.requeued} "

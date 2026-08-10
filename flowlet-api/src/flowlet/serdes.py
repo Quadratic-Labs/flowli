@@ -145,6 +145,7 @@ def _(data: RunState) -> dict:
         "attempt": data.attempt,
         "max_retries": data.max_retries,
         "kwargs": data.kwargs,
+        "cancel_requested": data.cancel_requested,
     }
 
 
@@ -212,6 +213,7 @@ def _(data: dict) -> RunState:
         attempt=data.get("attempt", 1),
         max_retries=data.get("max_retries", 3),
         kwargs=data.get("kwargs") or {},
+        cancel_requested=data.get("cancel_requested", False),
     )
 
 # ---
@@ -305,6 +307,7 @@ def _(data: str) -> RunState:
         attempt=raw.get("attempt", 1),
         max_retries=raw.get("max_retries", 3),
         kwargs=raw.get("kwargs") or {},
+        cancel_requested=raw.get("cancel_requested", False),
     )
 
 
