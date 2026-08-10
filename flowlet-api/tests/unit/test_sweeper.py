@@ -2,6 +2,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
@@ -29,7 +30,7 @@ class FakeQueue:
 
 @pytest.fixture
 def state_repo(tmp_path):
-    return StateRepository(root=tmp_path)
+    return StateRepository(store=FilesystemStorage(tmp_path))
 
 
 @pytest.fixture

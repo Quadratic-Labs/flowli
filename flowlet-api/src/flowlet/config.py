@@ -1,42 +1,35 @@
 """Configuration schema for the Flowlet framework.
 
 Provides FlowletConfig, the single source of application-level settings.
-Storage and queue backends are each configured once; computed path properties
-derive the concrete StoragePath values consumed by the repository layer.
+The storage backend resolves to one CairnDB blob store that every
+repository shares; the queue backend is configured separately.
 """
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Union
+from typing import TYPE_CHECKING
 
-from pydantic import Field, Discriminator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from flowlet.storage.config import (
-    AzureBlobStorageConfig,
-    FilesystemStorageConfig,
-    StorageConfig,
-)
 from flowlet.queue.config import QueueConfig
+from flowlet.storage.config import StorageConfig
 
 if TYPE_CHECKING:
-    from chroniql.storage import BlobStorage
-
-    from flowlet.storage.types import StoragePath
+    from cairndb.storage.base import BlobStorage
 
 
 # region @config
 # ---
 # role: core
-# intent: single source of application-level configuration with derived storage path properties
+# intent: single source of application-level configuration resolving to one blob store
 # description: >
-#   FlowletConfig holds a single storage backend (filesystem or Azure, never SQLite
-#   directly — SQLite is used internally by the CacheRepository), the optional
-#   queue backend, and the history toggle.  Read-only properties expose what the
-#   repository layer consumes: storage_path (concrete root path), object_store
-#   (chroniql store for remote CAS state writes), and history_store (chroniql
-#   store for the run-history event log under <root>/history/).
+#   FlowletConfig holds a single storage backend (filesystem or Azure), the
+#   optional queue backend, and the history toggle.  The store property
+#   exposes the one cairndb BlobStorage every component consumes: state CAS
+#   writes, dispatch claims, span/event streams, and the history commit log
+#   (a cairndb named log, logs/history/, on the same store).
 # rules:
-#   - storage MUST be a single StorageRoot backend or None; never a list.
-#   - SQLite MUST NOT appear in StorageRoot; it is an internal implementation detail.
+#   - storage MUST be a single backend or None; never a list.
+#   - SQLite MUST NOT appear in StorageConfig; it is internal to the
+#     CacheRepository.
 # dependencies:
 #   - storage.config
 #   - queue.config
@@ -56,11 +49,12 @@ class FlowletConfig(BaseSettings):
     dicts, or environment variables with the ``FLOWLET_`` prefix.
 
     Attributes:
-        storage: Single storage backend for logs and run state files, or None
-            for in-memory-only operation (no persistence; query endpoints are
-            unavailable).
+        storage: Single storage backend for the run record, run state, and
+            history, or None for in-memory-only operation (no persistence;
+            query endpoints are unavailable).
         queue: Optional queue backend for asynchronous flow submission. When
             absent only synchronous execution via ``POST /execute`` is available.
+        history: Record archived runs to the durable history log.
 
     Example:
         >>> # Filesystem storage with in-memory queue
@@ -86,7 +80,7 @@ class FlowletConfig(BaseSettings):
     storage: StorageConfig | None = Field(
         default=None,
         description=(
-            "Storage backend for logs and run state files. "
+            "Storage backend for run records and state. "
             "When None the framework runs without persistence and "
             "query endpoints are unavailable."
         ),
@@ -101,67 +95,24 @@ class FlowletConfig(BaseSettings):
     history: bool = Field(
         default=False,
         description=(
-            "Record archived runs to a durable ChroniQL event log under "
-            "<storage root>/history/ so long-horizon run queries do not "
-            "depend on rescanning state files. Requires storage."
+            "Record archived runs to a durable cairndb commit log "
+            "(logs/history/ on the storage backend) so long-horizon run "
+            "queries do not depend on rescanning state files. Requires "
+            "storage."
         ),
     )
 
     @property
-    def storage_path(self) -> "StoragePath | None":
-        """Concrete storage root path derived from the configured backend.
+    def store(self) -> "BlobStorage | None":
+        """The single CairnDB blob store all components share.
 
         Returns:
-            Path for filesystem storage; AzureBlobPath for Azure storage;
-            None when no storage backend is configured.
+            The configured backend's store, or None when no storage backend
+            is configured.
         """
         if self.storage is None:
             return None
-        if isinstance(self.storage, FilesystemStorageConfig):
-            return self.storage.base_path
-        return self.storage.azure_path  # AzureBlobStorageConfig
-
-    @property
-    def object_store(self) -> "BlobStorage | None":
-        """ChroniQL object store for backends that need remote CAS writes.
-
-        Returns:
-            A chroniql BlobStorage rooted at the storage location for remote
-            backends (Azure); None for local filesystem storage, whose state
-            writes use flock-based locking instead.
-        """
-        if isinstance(self.storage, AzureBlobStorageConfig):
-            return self.storage.object_store
-        return None
-
-    @property
-    def history_store(self) -> "BlobStorage | None":
-        """ChroniQL store holding the run-history event log.
-
-        Rooted at ``<storage root>/history/`` — separate from the ``runs/``
-        and ``state/`` planes — on the same backend as the main storage.
-
-        Returns:
-            A chroniql BlobStorage when ``history`` is enabled and storage is
-            configured; None otherwise.
-        """
-        if not self.history or self.storage is None:
-            return None
-        if isinstance(self.storage, FilesystemStorageConfig):
-            from chroniql.storage.filesystem import FilesystemStorage
-
-            return FilesystemStorage(self.storage.base_path / "history")
-        if isinstance(self.storage, AzureBlobStorageConfig):
-            from chroniql.storage.azure import AzureBlobStorage
-
-            base = self.storage.base_path.strip("/")
-            prefix = f"{base}/history" if base else "history"
-            return AzureBlobStorage(
-                container=self.storage.container_name,
-                prefix=prefix,
-                connection_string=self.storage.connection_string,
-            )
-        return None
+        return self.storage.store
 
 # ---
 # endregion

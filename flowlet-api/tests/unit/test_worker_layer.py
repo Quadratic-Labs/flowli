@@ -8,6 +8,7 @@ lease takeover.
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
@@ -62,7 +63,7 @@ class FakeRegistry:
 
 @pytest.fixture
 def state_repo(tmp_path):
-    return StateRepository(root=tmp_path)
+    return StateRepository(store=FilesystemStorage(tmp_path))
 
 
 def _ts_in(seconds: float) -> Timestamp:
@@ -336,23 +337,20 @@ class TestExecuteJobTakeover:
 
 
 class TestStateRepositoryFiles:
-    def test_write_leaves_no_tmp_file_and_keeps_lock(self, state_repo, make_run_state, tmp_path):
+    def test_write_lists_exactly_the_state_object(self, state_repo, make_run_state):
         state = make_run_state()
         state_repo.write(state, None)
 
-        state_dir = tmp_path / "state" / state.flow_name
-        names = {p.name for p in state_dir.iterdir()}
-        assert f"{state.run_id}.json" in names
-        assert f"{state.run_id}.lock" in names
-        assert not any(n.endswith(".tmp") for n in names)
+        # The store's lock/temp machinery never leaks into listings.
+        keys = state_repo.store.list_objects_sync("state/")
+        assert keys == [f"state/{state.flow_name}/{state.run_id}.json"]
 
-    def test_delete_removes_state_and_lock(self, state_repo, make_run_state, tmp_path):
+    def test_delete_removes_state_object(self, state_repo, make_run_state):
         state = make_run_state()
         state_repo.write(state, None)
         state_repo.delete(state.flow_name, state.run_id)
 
-        state_dir = tmp_path / "state" / state.flow_name
-        assert list(state_dir.iterdir()) == []
+        assert state_repo.store.list_objects_sync("state/") == []
 
     def test_archive_moves_state_out_of_active_dir(self, state_repo, make_run_state, tmp_path):
         state = make_run_state(status=RunStatus.completed, ended_at=Timestamp.now())

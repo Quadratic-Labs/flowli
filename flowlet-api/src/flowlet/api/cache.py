@@ -17,12 +17,12 @@ import time
 from uuid import UUID
 
 from attrs import Factory, define, field
+from cairndb.storage.base import BlobStorage
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from ..models import RunState
 from ..repository.state import StateRepository
 from ..serdes import from_json
-from ..storage.types import StoragePath
 from .database import ensure_snapshot_schema, upsert_run_state
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ DEFAULT_TTL_SECONDS = 5.0
 #   - state_repository
 #   - database.snapshot
 #   - database.models
-#   - storage.types
+#   - storage.keys
 # aliases:
 #   - run-cache
 # triggers:
@@ -64,13 +64,13 @@ class CacheRepository:
 
     Attributes:
         state_repo: Repository for the active ``state/`` directory.
-        base_path: Storage root containing the ``runs/`` tree.
+        store: CairnDB blob store containing the ``runs/`` tree.
         ttl: Minimum seconds between two storage scans.
         engine: Async in-memory SQLite engine the query layer reads from.
     """
 
     state_repo: StateRepository
-    base_path: StoragePath
+    store: BlobStorage
     ttl: float = DEFAULT_TTL_SECONDS
     engine: AsyncEngine = Factory(
         lambda: create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -85,10 +85,10 @@ class CacheRepository:
 
         Args:
             state_repo: Active-state repository.
-            configs: Application config providing storage_path.
+            configs: Application config providing the blob store.
             **_: Absorbs unused dependency keys.
         """
-        return cls(state_repo=state_repo, base_path=configs.storage_path)
+        return cls(state_repo=state_repo, store=configs.store)
 
     def session_factory(self) -> async_sessionmaker[AsyncSession]:
         """Session factory bound to the cache engine."""
@@ -126,40 +126,32 @@ class CacheRepository:
         )
 
     def _read_new_archived_states(self) -> list[RunState]:
-        """Scan run folders for archived state.json files not yet ingested.
+        """Scan run folders for archived state.json objects not yet ingested.
 
         Archived states are immutable, so each is read exactly once per
         process lifetime (tracked in ``_seen_archived``).
         """
-        runs_dir = self.base_path / "runs"
-        if not runs_dir.exists():
-            return []
-
         states: list[RunState] = []
-        for flow_dir in runs_dir.iterdir():
-            if not flow_dir.is_dir():
+        for key in self.store.list_objects_sync("runs/"):
+            # runs/<flow>/<date>/<run_id>/state.json
+            parts = key.split("/")
+            if len(parts) != 5 or parts[4] != "state.json":
                 continue
-            for date_dir in flow_dir.iterdir():
-                if not date_dir.is_dir():
-                    continue
-                for run_dir in date_dir.iterdir():
-                    try:
-                        run_id = UUID(run_dir.name)
-                    except ValueError:
-                        continue
-                    if run_id in self._seen_archived:
-                        continue
-                    state_file = run_dir / "state.json"
-                    if not state_file.exists():
-                        continue
-                    try:
-                        raw = state_file.read_text(encoding="utf-8")
-                        states.append(from_json(RunState)(raw))
-                    except Exception:
-                        logger.warning(
-                            "cache_archived_state_unreadable",
-                            extra={"path": str(state_file)},
-                        )
+            try:
+                run_id = UUID(parts[3])
+            except ValueError:
+                continue
+            if run_id in self._seen_archived:
+                continue
+            obj = self.store.get_object_sync(key)
+            if obj is None:
+                continue
+            try:
+                states.append(from_json(RunState)(obj.data.decode("utf-8")))
+            except Exception:
+                logger.warning(
+                    "cache_archived_state_unreadable", extra={"key": key}
+                )
         return states
 
 # ---

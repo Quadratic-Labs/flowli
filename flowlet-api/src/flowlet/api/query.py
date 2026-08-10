@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 #      tree, returned as a dict compatible with RunDTO.model_validate.
 #   SQLite queries use CacheRepository's engine; every async query method
 #   awaits cache.refresh() first (TTL-throttled scan of state files).
-#   Log loading is synchronous (mirrors the StoragePath I/O contract).
+#   Log loading is synchronous (the store's *_sync methods are primitive).
 # rules:
 #   - MUST NOT write to the database; this is a read-only component.
 #   - list_recent_states MUST consult the registry when flow_names is None.

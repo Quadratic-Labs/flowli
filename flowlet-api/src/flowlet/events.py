@@ -16,9 +16,9 @@ from typing import Any
 from uuid import UUID
 
 from attrs import define
+from cairndb.storage.base import BlobStorage
 
-from .repository.log import run_folder
-from .storage.types import StoragePath
+from .storage import append_lines, read_lines, run_prefix
 from .types import Timestamp
 
 logger = logging.getLogger(__name__)
@@ -31,19 +31,20 @@ logger = logging.getLogger(__name__)
 # description: >
 #   RunEventLog.append() writes one JSON line per lifecycle event
 #   ({ts, event, actor, attempt, from/to status, cause, details}) into the
-#   run's folder under runs/, next to its span files.  Appends go through
-#   the StoragePath open("a") interface so local and blob backends behave
-#   identically.  The log has no correctness role: losing it loses history,
-#   never state, and every append failure is swallowed after logging.
+#   run's events.jsonl under runs/, next to its span objects.  Appends go
+#   through the storage helper's compare-and-swap loop so local and blob
+#   backends behave identically.  The log has no correctness role: losing
+#   it loses history, never state, and every append failure is swallowed
+#   after logging.
 # rules:
 #   - append() MUST NOT raise; failures are logged and dropped.
-#   - Events MUST be appended, never rewritten — the file is append-only.
+#   - Events MUST be appended, never rewritten — the object is append-only.
 #   - The event log MUST NOT be read to make execution decisions; the
 #     RunState snapshot remains the source of truth.  read() exists for
 #     display/audit only.
 # dependencies:
-#   - log_repository
-#   - storage.types
+#   - storage.keys
+#   - storage.append
 #   - types.time
 # aliases:
 #   - event-log
@@ -56,14 +57,14 @@ logger = logging.getLogger(__name__)
 
 @define(slots=True, kw_only=True)
 class RunEventLog:
-    """Writer for per-run lifecycle event files.
+    """Writer for per-run lifecycle event streams.
 
     Attributes:
-        base_path: Storage root containing the ``runs/`` tree — the same
-            root the span exporter writes under.
+        store: CairnDB blob store containing the ``runs/`` tree — the same
+            store the span exporter writes to.
     """
 
-    base_path: StoragePath
+    store: BlobStorage
 
     def append(
         self,
@@ -111,16 +112,11 @@ class RunEventLog:
         if details:
             record["details"] = details
 
-        try:
-            file = run_folder(self.base_path, flow_name, run_id) / "events.jsonl"
-            file.parent.mkdir(parents=True, exist_ok=True)
-            with file.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, default=str) + "\n")
-        except Exception:
+        key = f"{run_prefix(flow_name, run_id)}/events.jsonl"
+        if not append_lines(self.store, key, json.dumps(record, default=str) + "\n"):
             logger.warning(
                 "run_event_append_failed",
                 extra={"run_id": str(run_id), "event": event},
-                exc_info=True,
             )
 
     def read(self, flow_name: str, run_id: UUID) -> list[dict[str, Any]]:
@@ -136,15 +132,9 @@ class RunEventLog:
         Returns:
             List of event records as plain dicts.
         """
-        file = run_folder(self.base_path, flow_name, run_id) / "events.jsonl"
-        try:
-            raw = file.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return []
+        key = f"{run_prefix(flow_name, run_id)}/events.jsonl"
         records: list[dict[str, Any]] = []
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
+        for line in read_lines(self.store, key):
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError:

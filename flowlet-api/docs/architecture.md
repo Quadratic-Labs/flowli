@@ -177,17 +177,18 @@ flowchart TD
 ## Cloud Deployments
 
 ### Storage
-Use append blobs for log files, and blobs with ETags for runs' state.
-ETags give optimistic concurrency: no-long held locks, and any number of
+One CairnDB blob store holds everything: span/event streams are appended
+via etag compare-and-swap, and runs' state lives in blobs guarded by ETags.
+ETags give optimistic concurrency: no long-held locks, and any number of
 readers can proceed without blocking.
 
 Every state write response includes an `ETag` (an opaque version tag).
-The conditional state writes are delegated to the
-[ChroniQL](https://github.com/Quadratic-Labs/chroniql) object store
-(`chroniql.storage.BlobStorage.put_object_sync(..., if_match=etag)`), which
-implements the `If-Match` compare-and-swap uniformly for Azure, S3, and GCS —
-`StateRepository` receives the store via its `object_store` attribute, wired
-by `FlowletConfig.object_store`. The protocol:
+All conditional writes are delegated to the
+[CairnDB](https://github.com/Quadratic-Labs/cairndb) conditional object store
+(`cairndb.storage.base.BlobStorage.put_object_sync(..., if_match=etag)`),
+which implements the `If-Match` compare-and-swap uniformly for the local
+filesystem, Azure, S3, and GCS — `StateRepository` receives the store via
+its `store` attribute, wired by `FlowletConfig.store`. The protocol:
 
 1. Worker reads the current state blob → receives the blob's current ETag.
 2. Worker prepares the updated state and issues a `PUT` with
@@ -211,9 +212,9 @@ an event-sourced projection instead of rescanning state files. With
 `history: true` in `FlowletConfig`:
 
 - The sweeper durably appends one `run.archived` event per archive candidate
-  to a dedicated ChroniQL log under `<storage root>/history/` — *before*
-  removing any state file. If the append fails, archiving is skipped for the
-  pass and retried on the next sweep.
+  to the CairnDB named log `history` (keys under `logs/history/` on the same
+  store) — *before* removing any state file. If the append fails, archiving
+  is skipped for the pass and retried on the next sweep.
 - Readers call `flowlet.history.refresh_history_db(store, db_path)` to
   incrementally project the log into a durable SQLite `runs` table
   (idempotent `INSERT OR REPLACE` by `run_id`, so re-recorded runs are

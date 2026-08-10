@@ -2,6 +2,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 from sqlalchemy import select
 
 from flowlet.api.cache import CacheRepository
@@ -13,12 +14,12 @@ from flowlet.types import Timestamp
 
 @pytest.fixture
 def state_repo(tmp_path):
-    return StateRepository(root=tmp_path)
+    return StateRepository(store=FilesystemStorage(tmp_path))
 
 
 @pytest.fixture
 def cache(state_repo, tmp_path):
-    return CacheRepository(state_repo=state_repo, base_path=tmp_path, ttl=0.0)
+    return CacheRepository(state_repo=state_repo, store=state_repo.store, ttl=0.0)
 
 
 async def _rows(cache):
@@ -72,7 +73,7 @@ class TestRefresh:
         assert rows[0].status == RunStatus.completed.value
 
     async def test_ttl_throttles_scans(self, state_repo, tmp_path, make_run_state):
-        cache = CacheRepository(state_repo=state_repo, base_path=tmp_path, ttl=3600)
+        cache = CacheRepository(state_repo=state_repo, store=state_repo.store, ttl=3600)
         await cache.refresh()
 
         state_repo.write(make_run_state(), None)

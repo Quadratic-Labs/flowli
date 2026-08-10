@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 from fastapi import HTTPException
 
 from flowlet.api.controller import FlowController
@@ -32,7 +33,7 @@ from .test_worker_layer import FakeQueue, FakeRegistry
 
 @pytest.fixture
 def state_repo(tmp_path):
-    return StateRepository(root=tmp_path)
+    return StateRepository(store=FilesystemStorage(tmp_path))
 
 
 def _claimed_state(state_repo, make_run_state, **overrides):

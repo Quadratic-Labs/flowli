@@ -13,12 +13,14 @@ from fastapi import HTTPException
 
 from flowlet.api.controller import FlowController
 from flowlet.api.models import FlowArguments
+from cairndb.storage.filesystem import FilesystemStorage
+
 from flowlet.repository.dispatch import DispatchKeyRepository
 
 
 @pytest.fixture
 def dispatch_repo(tmp_path):
-    return DispatchKeyRepository(root=tmp_path)
+    return DispatchKeyRepository(store=FilesystemStorage(tmp_path))
 
 
 # ============================================================================

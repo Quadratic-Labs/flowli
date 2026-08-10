@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 
 from flowlet.events import RunEventLog
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
-from flowlet.repository.log import run_folder
+from flowlet.storage import run_prefix
 from flowlet.sweeper import sweep
 from flowlet.types import Timestamp
 from flowlet.worker import execute_job
@@ -22,15 +23,20 @@ from .test_worker_layer import FakeQueue, FakeRegistry
 
 
 @pytest.fixture
-def event_log(tmp_path):
-    return RunEventLog(base_path=tmp_path)
+def store(tmp_path):
+    return FilesystemStorage(tmp_path)
 
 
-def _read_events(base_path, flow_name, run_id):
-    file = run_folder(base_path, flow_name, run_id) / "events.jsonl"
-    if not file.exists():
+@pytest.fixture
+def event_log(store):
+    return RunEventLog(store=store)
+
+
+def _read_events(store, flow_name, run_id):
+    obj = store.get_object_sync(f"{run_prefix(flow_name, run_id)}/events.jsonl")
+    if obj is None:
         return []
-    return [json.loads(line) for line in file.read_text().splitlines()]
+    return [json.loads(line) for line in obj.data.decode().splitlines()]
 
 
 # ============================================================================
@@ -39,12 +45,12 @@ def _read_events(base_path, flow_name, run_id):
 
 
 class TestAppend:
-    def test_event_lands_in_run_folder(self, event_log, tmp_path):
+    def test_event_lands_in_run_folder(self, event_log, store):
         run_id = uuid7()
         event_log.append(
             flow_name="flow", run_id=run_id, event="submitted", actor="api"
         )
-        events = _read_events(tmp_path, "flow", run_id)
+        events = _read_events(store, "flow", run_id)
         assert len(events) == 1
         assert events[0]["event"] == "submitted"
         assert events[0]["actor"] == "api"
@@ -52,25 +58,25 @@ class TestAppend:
         assert events[0]["flow_name"] == "flow"
         assert "ts" in events[0]
 
-    def test_appends_accumulate_in_order(self, event_log, tmp_path):
+    def test_appends_accumulate_in_order(self, event_log, store):
         run_id = uuid7()
         for name in ("submitted", "claimed", "completed"):
             event_log.append(
                 flow_name="flow", run_id=run_id, event=name, actor="w1"
             )
-        events = _read_events(tmp_path, "flow", run_id)
+        events = _read_events(store, "flow", run_id)
         assert [e["event"] for e in events] == ["submitted", "claimed", "completed"]
 
-    def test_optional_fields_are_omitted_when_absent(self, event_log, tmp_path):
+    def test_optional_fields_are_omitted_when_absent(self, event_log, store):
         run_id = uuid7()
         event_log.append(
             flow_name="flow", run_id=run_id, event="submitted", actor="api"
         )
-        record = _read_events(tmp_path, "flow", run_id)[0]
+        record = _read_events(store, "flow", run_id)[0]
         for key in ("attempt", "from", "to", "cause", "details"):
             assert key not in record
 
-    def test_transition_fields_are_recorded(self, event_log, tmp_path):
+    def test_transition_fields_are_recorded(self, event_log, store):
         run_id = uuid7()
         event_log.append(
             flow_name="flow",
@@ -83,18 +89,18 @@ class TestAppend:
             cause="retry",
             details={"case": "ready"},
         )
-        record = _read_events(tmp_path, "flow", run_id)[0]
+        record = _read_events(store, "flow", run_id)[0]
         assert record["attempt"] == 2
         assert record["from"] == "pending"
         assert record["to"] == "running"
         assert record["cause"] == "retry"
         assert record["details"] == {"case": "ready"}
 
-    def test_append_never_raises(self, tmp_path):
-        # Point the log at a base path whose runs/ segment is a plain file,
-        # so mkdir fails — the append must swallow the error.
+    def test_append_never_raises(self, tmp_path, store):
+        # Make the runs/ segment a plain file, so the store cannot create
+        # keys under it — the append must swallow the resulting error.
         (tmp_path / "runs").write_text("not a directory")
-        log = RunEventLog(base_path=tmp_path)
+        log = RunEventLog(store=store)
         log.append(flow_name="flow", run_id=uuid7(), event="submitted", actor="api")
 
 
@@ -114,12 +120,12 @@ class TestRead:
     def test_read_missing_file_returns_empty(self, event_log):
         assert event_log.read("flow", uuid7()) == []
 
-    def test_read_skips_malformed_lines(self, event_log, tmp_path):
+    def test_read_skips_malformed_lines(self, event_log, store):
         run_id = uuid7()
         event_log.append(flow_name="flow", run_id=run_id, event="submitted", actor="api")
-        file = run_folder(tmp_path, "flow", run_id) / "events.jsonl"
-        with file.open("a") as fh:
-            fh.write("not json\n")
+        key = f"{run_prefix('flow', run_id)}/events.jsonl"
+        obj = store.get_object_sync(key)
+        store.put_object_sync(key, obj.data + b"not json\n", if_match=obj.etag)
         event_log.append(flow_name="flow", run_id=run_id, event="claimed", actor="w1")
         records = event_log.read("flow", run_id)
         assert [r["event"] for r in records] == ["submitted", "claimed"]
@@ -144,8 +150,8 @@ def _body_events(response) -> list[dict]:
 
 class TestRunEventsEndpoint:
     @pytest.fixture
-    def state_repo(self, tmp_path):
-        return StateRepository(root=tmp_path)
+    def state_repo(self, store):
+        return StateRepository(store=store)
 
     @pytest.fixture
     def controller(self, registry, state_repo, event_log):
@@ -249,9 +255,9 @@ class TestRunEventsEndpoint:
 
 class TestWorkerEmission:
     def test_success_emits_claimed_then_completed(
-        self, tmp_path, event_log, make_flow_job
+        self, store, event_log, make_flow_job
     ):
-        state_repo = StateRepository(root=tmp_path)
+        state_repo = StateRepository(store=store)
         job = make_flow_job()
         queue = FakeQueue([job])
         registry = FakeRegistry({job.flow_name: lambda **kw: None})
@@ -259,13 +265,13 @@ class TestWorkerEmission:
         rc = execute_job(queue, registry, state_repo, "w1", events=event_log)
 
         assert rc == 0
-        names = [e["event"] for e in _read_events(tmp_path, job.flow_name, job.run_id)]
+        names = [e["event"] for e in _read_events(store, job.flow_name, job.run_id)]
         assert names == ["claimed", "completed"]
 
     def test_failure_emits_retry_then_final_failure(
-        self, tmp_path, event_log, make_flow_job
+        self, store, event_log, make_flow_job
     ):
-        state_repo = StateRepository(root=tmp_path)
+        state_repo = StateRepository(store=store)
 
         def boom(**kw):
             raise ValueError("nope")
@@ -279,7 +285,7 @@ class TestWorkerEmission:
         queue.jobs = [retry_job]
         execute_job(queue, registry, state_repo, "w1", events=event_log)  # attempt 2
 
-        events = _read_events(tmp_path, job.flow_name, job.run_id)
+        events = _read_events(store, job.flow_name, job.run_id)
         names = [e["event"] for e in events]
         assert names == ["claimed", "retry_scheduled", "claimed", "failed"]
         assert events[1]["cause"] == "ValueError"
@@ -292,9 +298,9 @@ class TestWorkerEmission:
 
 class TestSweeperEmission:
     def test_expired_lease_recovery_emits_requeued(
-        self, tmp_path, event_log, make_run_state
+        self, store, event_log, make_run_state
     ):
-        state_repo = StateRepository(root=tmp_path)
+        state_repo = StateRepository(store=store)
         expired = Timestamp(datetime.now(UTC) - timedelta(seconds=5))
         state = make_run_state(status=RunStatus.running, deadline_at=expired)
         state_repo.write(state, None)
@@ -303,7 +309,7 @@ class TestSweeperEmission:
         stats = sweep(state_repo, queue, events=event_log)
 
         assert stats.requeued == 1
-        events = _read_events(tmp_path, state.flow_name, state.run_id)
+        events = _read_events(store, state.flow_name, state.run_id)
         assert [e["event"] for e in events] == ["requeued"]
         assert events[0]["actor"] == "sweeper"
         assert events[0]["cause"] == "lease_expired"

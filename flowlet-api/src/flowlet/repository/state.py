@@ -1,23 +1,19 @@
-"""Atomic state-file repository for worker-owned run state.
+"""Run-state repository on the CairnDB conditional object store.
 
-Implements per-run state files under ``state/<flow_name>/<run_id>.json`` with
-exclusive-lock semantics for local storage and etag-based conditional writes
-(compare-and-swap) via a ChroniQL object store for remote blob storage.
+Per-run state objects live at ``state/<flow_name>/<run_id>.json``.  Every
+write is conditional — put-if-absent for creation, etag compare-and-swap
+for updates — so ownership transfer is arbitrated by the storage itself,
+identically on the local filesystem and on blob storage.
 """
-import fcntl
-import json
 import logging
-import os
-import time
-from pathlib import Path
 from uuid import UUID
 
 from attrs import define
-from chroniql.storage import BlobStorage
+from cairndb.storage.base import BlobStorage
 
 from ..models import RunState
-from ..serdes import to_json, from_json
-from ..storage.types import StatePath, StoragePath
+from ..serdes import from_json, to_json
+from ..storage import run_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -25,163 +21,129 @@ logger = logging.getLogger(__name__)
 # region @state_repository
 # ---
 # role: storage
-# intent: read and write /state/<flow_name>/<run_id>.json atomically
+# intent: read and write state/<flow_name>/<run_id>.json via conditional writes
 # description: >
-#   StateRepository owns per-run state files.  Writes are guarded by an
-#   exclusive flock on a persistent sibling .lock file (local) or an
-#   etag-guarded compare-and-swap through a ChroniQL object store (remote
-#   blob storage: Azure/S3/GCS) so that only one worker can modify a state
-#   at a time.  flock is released by the kernel when the holder dies, so
-#   there is no stale-lock state and no reclamation logic to race on.  State
-#   files are replaced atomically (temp file + os.replace) so lock-free
-#   readers never observe a partial write.
+#   StateRepository owns per-run state objects on the cairndb store.  A
+#   read returns the state with its etag; a write passes that etag back as
+#   the if_match precondition (or if_absent for first creation), so only
+#   one writer can move a state at a time — the CAS discipline every actor
+#   (worker claim/finalize, sweeper recovery, cancel endpoint) shares.
+#   There is no local/remote split and no lock file: cairndb's filesystem
+#   backend provides the same conditional semantics as Azure/S3/GCS.
 # rules:
-#   - write MUST return False when ownership is lost due to a concurrent write.
-#   - The .lock file is persistent and content-less; it MUST NOT be unlinked
-#     while any writer may hold or wait on its flock.
-#   - State-file replacement MUST be atomic (temp + os.replace).
-#   - MUST NOT raise on missing state files; return None instead.
-#   - Remote conditional writes MUST go through the chroniql object store;
-#     plain path writes cannot express the CAS precondition.
+#   - write MUST return False when ownership is lost (stale etag).
+#   - write with etag=None MUST be a put-if-absent (first creation only).
+#   - MUST NOT raise on missing state objects; return None instead.
+#   - archive MUST copy the JSON byte-for-byte into the run folder before
+#     deleting the active object.
 # dependencies:
-#   - storage.types.statepath
+#   - storage.keys
 #   - models.run
 #   - serdes.json
 # ---
 
 @define(slots=True, kw_only=True)
 class StateRepository:
-    """Repository for atomic per-run state-file I/O.
-
-    State files live at ``root/state/<flow_name>/<run_id>.json``.  Concurrent
-    writes are serialised via an exclusive ``flock`` on a sibling ``.lock``
-    file (local filesystem) or etag conditional PUTs issued through a
-    ChroniQL :class:`~chroniql.storage.BlobStorage` (remote blob storage).
-
-    The kernel releases a flock automatically when its holder exits or
-    crashes, so stale locks cannot occur and no reclamation is needed.
-    The ``.lock`` file itself is a persistent, content-less rendezvous point
-    and is only removed together with the state file in :meth:`delete`.
+    """Repository for conditional per-run state I/O on the blob store.
 
     Attributes:
-        root: Storage root under which ``state/`` is written.
-        object_store: ChroniQL object store rooted at the same location as
-            ``root``; required when ``root`` is a remote (non-``Path``)
-            backend, unused for local storage.
-        lock_timeout: Seconds to wait for the write lock before reporting the
-            write as lost.  Writes are millisecond-fast, so contention beyond
-            this indicates a wedged writer.
+        store: CairnDB blob store all state objects live in.
     """
 
-    root: StoragePath
-    object_store: BlobStorage | None = None
-    lock_timeout: float = 5.0
+    store: BlobStorage
 
-    # ------------------------------------------------------------------
-    # Serialisation helpers
-    # ------------------------------------------------------------------
-
-    def _state_path(self, flow_name: str, run_id: UUID) -> StatePath:
-        return StatePath.build(self.root, flow_name, run_id)
-
-    def _state_key(self, flow_name: str, run_id: UUID) -> str:
-        """Object-store key of a state file, relative to the storage root."""
+    @staticmethod
+    def _key(flow_name: str, run_id: UUID) -> str:
         return f"state/{flow_name}/{run_id}.json"
 
-    def _lock_path(self, sp: StatePath) -> Path:
-        """Return the sibling .lock file path (local filesystem only)."""
-        if not isinstance(sp.path, Path):
-            raise TypeError("Lock files are only supported on local storage paths")
-        return sp.path.with_suffix(".lock")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def read(self, flow_name: str, run_id: UUID) -> tuple[RunState, str] | None:
-        """Read the current state for a run, returning the state and its ETag.
+        """Read the current state for a run, returning the state and its etag.
 
-        The ETag must be passed back to ``write()`` to perform a conditional
-        write that fails if another worker has written in the meantime.
+        The etag must be passed back to ``write()`` to perform a conditional
+        write that fails if another actor has written in the meantime.
 
         Args:
             flow_name: Name of the flow.
             run_id: UUID identifying the run.
 
         Returns:
-            A ``(RunState, etag)`` pair, or None if the state file does not exist.
+            A ``(RunState, etag)`` pair, or None if the state does not exist.
         """
-        sp = self._state_path(flow_name, run_id)
-        if isinstance(sp.path, Path):
-            return self._read_local(sp)
-        return self._read_remote(sp)
+        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        if obj is None:
+            return None
+        try:
+            return from_json(RunState)(obj.data.decode("utf-8")), obj.etag
+        except Exception:
+            logger.exception(
+                "state_read_parse_error",
+                extra={"flow_name": flow_name, "run_id": str(run_id)},
+            )
+            return None
 
     def write(self, state: RunState, etag: str | None) -> tuple[bool, str | None]:
-        """Write a RunState conditionally, using an ETag for ownership tracking.
+        """Write a RunState conditionally, using an etag for ownership tracking.
 
         The ``etag`` must be the value returned by the previous ``read()`` or
         ``write()`` call for this run.  Pass ``None`` only when creating a
-        new state file for the first time (expects no pre-existing file).
-
-        Uses an exclusive ``.lock`` file on local paths (mtime-verified inside
-        the lock) and ETag conditional PUTs on Azure blob paths.
+        new state for the first time (put-if-absent).
 
         Args:
             state: The new state to persist.
-            etag: ETag from the caller's last successful read or write.
-                ``None`` asserts that the file does not yet exist.
+            etag: Etag from the caller's last successful read or write, or
+                ``None`` to assert the object does not yet exist.
 
         Returns:
             ``(True, new_etag)`` on success; ``(False, None)`` if ownership
-            was lost (stale ETag, concurrent write, or lock contention).
+            was lost (stale etag or concurrent creation).
         """
-        sp = self._state_path(state.flow_name, state.run_id)
-        if isinstance(sp.path, Path):
-            return self._write_local(sp, state, etag)
-        return self._write_remote(sp, state, etag)
+        key = self._key(state.flow_name, state.run_id)
+        payload = to_json(state).encode()
+        if etag is not None:
+            new_etag = self.store.put_object_sync(key, payload, if_match=etag)
+        else:
+            new_etag = self.store.put_object_sync(key, payload, if_absent=True)
+        if new_etag is None:
+            return False, None
+        return True, new_etag
 
     def delete(self, flow_name: str, run_id: UUID) -> None:
-        """Remove the state file for a completed run.
+        """Remove the state object for a completed run.
 
         Args:
             flow_name: Name of the flow.
             run_id: UUID identifying the run.
         """
-        sp = self._state_path(flow_name, run_id)
         try:
-            sp.path.unlink(missing_ok=True)
-            if isinstance(sp.path, Path):
-                self._lock_path(sp).unlink(missing_ok=True)
-        except OSError:
-            logger.exception("state_delete_error", extra={"path": str(sp.path)})
+            self.store.delete_object_sync(self._key(flow_name, run_id))
+        except Exception:
+            logger.exception(
+                "state_delete_error",
+                extra={"flow_name": flow_name, "run_id": str(run_id)},
+            )
 
     def archive(self, flow_name: str, run_id: UUID) -> None:
-        """Move a closed run's state file into its run folder.
+        """Move a closed run's state into its run folder.
 
         The JSON content is copied byte-for-byte to
-        ``root/runs/<flow_name>/<date>/<run_id>/state.json`` — colocated
-        with the run's span files so the run folder is the complete,
-        self-contained durable record — and the active file plus its lock
-        are removed.  Keeps the active ``state/`` listing O(active runs) so
-        sweep cost never grows with run history.
+        ``runs/<flow_name>/<date>/<run_id>/state.json`` — colocated with the
+        run's span files so the run folder is the complete, self-contained
+        durable record — and the active object is removed.  Keeps the active
+        ``state/`` listing O(active runs) so sweep cost never grows with run
+        history.
 
         Args:
             flow_name: Name of the flow.
             run_id: UUID identifying the run.
         """
-        from .log import run_folder
-
-        sp = self._state_path(flow_name, run_id)
-        try:
-            raw = sp.path.read_bytes()
-        except (FileNotFoundError, OSError):
+        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        if obj is None:
             return
-        target = run_folder(self.root, flow_name, run_id) / "state.json"
+        target = f"{run_prefix(flow_name, run_id)}/state.json"
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(raw)
-        except OSError:
-            logger.exception("state_archive_write_error", extra={"path": str(target)})
+            self.store.put_object_sync(target, obj.data)
+        except Exception:
+            logger.exception("state_archive_write_error", extra={"key": target})
             return
         self.delete(flow_name, run_id)
 
@@ -192,205 +154,22 @@ class StateRepository:
             flow_name: When given, only states for this flow are returned.
 
         Returns:
-            List of RunState objects parsed from the state directory.
+            List of RunState objects parsed from the ``state/`` prefix.
         """
-        state_root = self.root / "state"
-        if not state_root.exists():
-            return []
-
-        dirs: list[StoragePath] = []
-        if flow_name is not None:
-            candidate = state_root / flow_name
-            if candidate.exists():
-                dirs = [candidate]
-        else:
-            dirs = [p for p in state_root.iterdir() if p.is_dir()]
-
+        prefix = f"state/{flow_name}/" if flow_name is not None else "state/"
         results: list[RunState] = []
-        for d in dirs:
-            for p in d.iterdir():
-                try:
-                    sp = StatePath.from_path(p)
-                except ValueError:
-                    continue
-                result = self.read(sp.flow_name, sp.run_id)
-                if result is not None:
-                    results.append(result[0])
+        for key in self.store.list_objects_sync(prefix):
+            parts = key.split("/")
+            if len(parts) != 3 or not parts[2].endswith(".json"):
+                continue
+            try:
+                run_id = UUID(parts[2].removesuffix(".json"))
+            except ValueError:
+                continue
+            read = self.read(parts[1], run_id)
+            if read is not None:
+                results.append(read[0])
         return results
-
-    # ------------------------------------------------------------------
-    # Local filesystem — lock-file strategy
-    # ------------------------------------------------------------------
-
-    def _read_local(self, sp: StatePath) -> tuple[RunState, str] | None:
-        """Read state and version-based ETag from a local file.
-
-        The ETag is the ``_v`` counter embedded in the JSON — a monotonically
-        increasing integer that changes on every write, immune to filesystem
-        mtime resolution issues.
-
-        Args:
-            sp: Resolved local StatePath.
-
-        Returns:
-            A ``(RunState, etag)`` pair, or None if the file does not exist.
-        """
-        assert isinstance(sp.path, Path)
-        try:
-            raw = sp.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return None
-        try:
-            data = json.loads(raw)
-            version = data.get("_v", 0)
-            state = from_json(RunState)(raw)  # _v is an unknown field — silently ignored
-            return state, str(version)
-        except Exception:
-            logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
-            return None
-
-    def _write_local(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
-        """Write state atomically under an exclusive flock, with a version ETag.
-
-        The ``_v`` counter inside the JSON acts as the ETag.  All version
-        checks happen while holding an exclusive ``flock`` on a persistent
-        sibling ``.lock`` file, so no concurrent writer can slip between the
-        check and the write.  The kernel drops the flock if this process dies,
-        so a crashed writer never blocks others.  The state file itself is
-        replaced with ``os.replace`` so lock-free readers always see a
-        complete document.
-
-        Args:
-            sp: Resolved local StatePath.
-            state: State to persist.
-            etag: Expected current version as a string, or ``None`` to assert
-                the file does not yet exist.
-
-        Returns:
-            ``(True, new_etag)`` on success; ``(False, None)`` on conflict or
-            lock timeout.
-        """
-        assert isinstance(sp.path, Path)
-        lock_path = self._lock_path(sp)
-        sp.path.parent.mkdir(parents=True, exist_ok=True)
-
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-        try:
-            if not self._flock_acquire(fd):
-                logger.warning("state_write_lock_timeout", extra={"path": str(sp.path)})
-                return False, None
-            try:
-                if sp.path.exists():
-                    if etag is None:
-                        return False, None  # expected new file, but one exists
-                    try:
-                        current_data = json.loads(sp.path.read_text(encoding="utf-8"))
-                        current_version = current_data.get("_v", 0)
-                    except Exception:
-                        return False, None
-                    if str(current_version) != etag:
-                        return False, None  # stale ETag — another worker wrote
-                    new_version = current_version + 1
-                else:
-                    if etag is not None:
-                        return False, None  # expected existing file, but it's gone
-                    new_version = 1
-
-                state_data = json.loads(to_json(state))
-                state_data["_v"] = new_version
-                tmp_path = sp.path.with_suffix(".json.tmp")
-                tmp_path.write_text(json.dumps(state_data), encoding="utf-8")
-                os.replace(tmp_path, sp.path)
-                return True, str(new_version)
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
-
-    def _flock_acquire(self, fd: int, poll_interval: float = 0.02) -> bool:
-        """Acquire an exclusive flock on *fd*, polling up to ``lock_timeout``.
-
-        Non-blocking attempts with a short sleep bound the total wait, so a
-        wedged writer holding the lock cannot stall callers indefinitely.
-
-        Args:
-            fd: Open file descriptor of the ``.lock`` file.
-            poll_interval: Seconds between acquisition attempts.
-
-        Returns:
-            True when the lock was acquired; False on timeout.
-        """
-        deadline = time.monotonic() + self.lock_timeout
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return True
-            except OSError:
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(poll_interval)
-
-    # ------------------------------------------------------------------
-    # Remote blob storage — etag CAS via the ChroniQL object store
-    # ------------------------------------------------------------------
-
-    def _require_object_store(self) -> BlobStorage:
-        """Return the configured object store or fail with a clear message."""
-        if self.object_store is None:
-            raise RuntimeError(
-                "StateRepository needs a chroniql object store for remote "
-                "storage backends; pass object_store= when configuring."
-            )
-        return self.object_store
-
-    def _read_remote(self, sp: StatePath) -> tuple[RunState, str] | None:
-        """Read state and etag through the ChroniQL object store.
-
-        Args:
-            sp: Resolved StatePath (remote).
-
-        Returns:
-            A ``(RunState, etag)`` pair, or None if the object does not exist.
-        """
-        store = self._require_object_store()
-        obj = store.get_object_sync(self._state_key(sp.flow_name, sp.run_id))
-        if obj is None:
-            return None
-        try:
-            return from_json(RunState)(obj.data.decode("utf-8")), obj.etag
-        except Exception:
-            logger.exception("state_read_parse_error", extra={"path": str(sp.path)})
-            return None
-
-    def _write_remote(self, sp: StatePath, state: RunState, etag: str | None) -> tuple[bool, str | None]:
-        """Write state via an etag-guarded compare-and-swap.
-
-        Uses the caller's etag — captured at the last successful read or
-        write — as the ``if_match`` precondition, so a concurrent write by
-        another worker fails the swap and returns ``(False, None)``.  A
-        ``None`` etag asserts the object does not yet exist (put-if-absent).
-
-        Args:
-            sp: Resolved StatePath (remote).
-            state: State to persist.
-            etag: Etag from the caller's last read/write, or ``None`` for
-                first creation.
-
-        Returns:
-            ``(True, new_etag)`` on success; ``(False, None)`` when the
-            precondition failed (ownership lost).
-        """
-        store = self._require_object_store()
-        key = self._state_key(state.flow_name, state.run_id)
-        payload = to_json(state).encode()
-
-        if etag is not None:
-            new_etag = store.put_object_sync(key, payload, if_match=etag)
-        else:
-            new_etag = store.put_object_sync(key, payload, if_absent=True)
-        if new_etag is None:
-            return False, None
-        return True, new_etag
 
 # ---
 # endregion

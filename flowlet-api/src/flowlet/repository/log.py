@@ -1,18 +1,20 @@
 """
 Log repository for reading per-run span files.
 
-Provides LogRepository, which reads from the
-``runs/<flow_name>/<yyyy-mm-dd>/<run_id>/spans-<attempt>.jsonl`` layout
-produced by the tracing layer (flowlet.tracing.BlobSpanExporter).
+Provides LogRepository, which reads the
+``runs/<flow_name>/<yyyy-mm-dd>/<run_id>/spans-<attempt>.jsonl`` objects
+produced by the tracing layer (flowlet.tracing.BlobSpanExporter) from the
+CairnDB blob store.
 """
 import logging
 from uuid import UUID
 
+from cairndb.storage.base import BlobStorage
+
 from ..models import SpanRecord
 from ..serdes import from_json
-from ..storage.types import StoragePath
-from ..types import Period, PeriodUUID, Timestamp
-
+from ..storage import read_lines, run_prefix
+from ..types import Period, PeriodUUID
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +22,21 @@ logger = logging.getLogger(__name__)
 # region @log_repository
 # ---
 # role: storage
-# intent: read per-run span files from the runs/<flow>/<date>/<run_id>/ layout
+# intent: read per-run span objects from the runs/<flow>/<date>/<run_id>/ layout
 # description: >
 #   LogRepository is the read side of the run-record storage.  Each run owns
-#   one folder containing spans-<attempt>.jsonl files (all spans of one
+#   one key prefix containing spans-<attempt>.jsonl objects (all spans of one
 #   execution attempt) and, once closed and archived, a state.json.  All of a
-#   run's spans live in its own folder, so reading a run is a single folder
-#   scan — no recursive reference-following.  The date partition is derived
-#   from the run_id's uuid7 timestamp, so paths are computable without
-#   listing.
+#   run's objects share its prefix, so reading a run is a single prefix
+#   listing — no recursive reference-following.  The date partition is
+#   derived from the run_id's uuid7 timestamp, so keys are computable
+#   without listing.
 # rules:
-#   - MUST be synchronous (mirrors StoragePath I/O contract).
+#   - MUST be synchronous (the store's *_sync methods are the primitive form).
 #   - list_run_ids MUST return ids in ascending UUIDv7 (chronological) order.
 #   - MUST skip malformed span lines rather than raising.
 # dependencies:
-#   - storage.types
+#   - storage.keys
 #   - models.run
 #   - serdes.json
 #   - tracing
@@ -46,36 +48,18 @@ logger = logging.getLogger(__name__)
 # ---
 
 
-def run_folder(base_path: StoragePath, flow_name: str, run_id: UUID) -> StoragePath:
-    """Compute a run's folder path from its identity alone.
-
-    The date partition comes from the run_id's embedded uuid7 timestamp,
-    so no directory listing is needed to locate a known run.
-
-    Args:
-        base_path: Root directory that contains the ``runs/`` tree.
-        flow_name: The flow the run belongs to.
-        run_id: The run's UUID (uuid7).
-
-    Returns:
-        Path of the run's folder.
-    """
-    date = Timestamp.from_uuid7(run_id).value.strftime("%Y-%m-%d")
-    return base_path / "runs" / flow_name / date / str(run_id)
-
-
 class LogRepository:
-    """Read-only repository for per-run span files.
+    """Read-only repository for per-run span objects.
 
-    Reads from the ``runs/<flow_name>/<date>/<run_id>/`` layout written by
-    the tracing layer.
+    Reads the ``runs/<flow_name>/<date>/<run_id>/`` layout written by the
+    tracing layer.
 
     Attributes:
-        base_path: Root directory that contains the ``runs/`` tree.
+        store: CairnDB blob store containing the ``runs/`` tree.
     """
 
-    def __init__(self, base_path: StoragePath, **_):
-        self.base_path = base_path
+    def __init__(self, store: BlobStorage, **_):
+        self.store = store
 
     def list_run_ids(
         self,
@@ -84,9 +68,9 @@ class LogRepository:
     ) -> list[tuple[str, UUID]]:
         """List recorded (flow_name, run_id) pairs.
 
-        When ``flow_name`` is ``None`` all flow directories under
-        ``<base_path>/runs/`` are scanned.  When a period is given, only the
-        date partitions it covers are walked.
+        When ``flow_name`` is ``None`` the whole ``runs/`` prefix is listed.
+        When a period is given, keys outside the date partitions it covers
+        are skipped.
 
         Args:
             flow_name: Flow name, list of names, or None for all.
@@ -96,43 +80,35 @@ class LogRepository:
             Sorted (oldest-first, ascending UUIDv7) list of
             ``(flow_name, run_id)`` tuples.
         """
-        runs_dir = self.base_path / "runs"
-        if not runs_dir.exists():
-            return []
-
         if flow_name is None:
-            names = [e.name for e in runs_dir.iterdir() if e.is_dir()]
+            prefixes = ["runs/"]
         elif isinstance(flow_name, str):
-            names = [flow_name]
+            prefixes = [f"runs/{flow_name}/"]
         else:
-            names = flow_name
+            prefixes = [f"runs/{name}/" for name in flow_name]
 
         if isinstance(period, Period):
             period = period.to_uuid()
 
-        results: list[tuple[str, UUID]] = []
-        for name in names:
-            flow_dir = runs_dir / name
-            if not flow_dir.exists():
-                continue
-            for date_dir in flow_dir.iterdir():
-                if not date_dir.is_dir():
+        found: set[tuple[str, UUID]] = set()
+        for prefix in prefixes:
+            for key in self.store.list_objects_sync(prefix):
+                # runs/<flow>/<date>/<run_id>/<object>
+                parts = key.split("/")
+                if len(parts) < 5:
                     continue
-                if isinstance(period, PeriodUUID) and not _date_in_period(
-                    date_dir.name, period
-                ):
+                name, date, raw_id = parts[1], parts[2], parts[3]
+                if isinstance(period, PeriodUUID) and not _date_in_period(date, period):
                     continue
-                for entry in date_dir.iterdir():
-                    try:
-                        uid = UUID(entry.name)
-                    except ValueError:
-                        continue
-                    if isinstance(period, PeriodUUID) and not period.covers(uid):
-                        continue
-                    results.append((name, uid))
+                try:
+                    uid = UUID(raw_id)
+                except ValueError:
+                    continue
+                if isinstance(period, PeriodUUID) and not period.covers(uid):
+                    continue
+                found.add((name, uid))
 
-        results.sort(key=lambda t: str(t[1]))
-        return results
+        return sorted(found, key=lambda t: str(t[1]))
 
     def get_spans(self, flow_name: str, run_id: UUID) -> list[SpanRecord]:
         """Read all recorded spans for a run, across all attempts.
@@ -142,16 +118,31 @@ class LogRepository:
             run_id: The run's UUID.
 
         Returns:
-            SpanRecords from every ``spans-<attempt>.jsonl`` in the run
-            folder, in file order.  Empty list when the folder is absent.
+            SpanRecords from every ``spans-<attempt>.jsonl`` under the run
+            prefix, in key order.  Empty list when nothing was recorded.
         """
-        folder = run_folder(self.base_path, flow_name, run_id)
-        if not folder.exists():
-            return []
+        prefix = f"{run_prefix(flow_name, run_id)}/"
         spans: list[SpanRecord] = []
-        for entry in sorted(folder.iterdir(), key=lambda p: p.name):
-            if entry.name.startswith("spans-") and entry.name.endswith(".jsonl"):
-                spans.extend(_read_file(entry))
+        for key in sorted(self.store.list_objects_sync(prefix)):
+            leaf = key.rsplit("/", 1)[-1]
+            if leaf.startswith("spans-") and leaf.endswith(".jsonl"):
+                spans.extend(self._read_span_object(key))
+        return spans
+
+    def _read_span_object(self, key: str) -> list[SpanRecord]:
+        """Parse all SpanRecords from a single .jsonl span object.
+
+        Malformed lines are skipped with a warning.
+        """
+        spans: list[SpanRecord] = []
+        for lineno, raw in enumerate(read_lines(self.store, key), 1):
+            try:
+                spans.append(from_json(SpanRecord)(raw))
+            except Exception:
+                logger.warning(
+                    "skipping_malformed_span_line",
+                    extra={"key": key, "line": lineno},
+                )
         return spans
 
 # ---
@@ -161,11 +152,11 @@ class LogRepository:
 # region
 
 def _date_in_period(date_name: str, period: PeriodUUID) -> bool:
-    """Cheap partition filter: keep date dirs that could contain the period.
+    """Cheap partition filter: keep date segments that could contain the period.
 
-    Compares the directory's date against the period bounds at day
-    granularity; malformed directory names are kept (defensive — the
-    per-run covers() check still applies).
+    Compares the key's date segment against the period bounds at day
+    granularity; malformed segments are kept (defensive — the per-run
+    covers() check still applies).
     """
     bounds = period.to_timestamp()
     try:
@@ -176,37 +167,5 @@ def _date_in_period(date_name: str, period: PeriodUUID) -> bool:
     except Exception:
         return True
     return True
-
-
-def _read_file(file: StoragePath) -> list[SpanRecord]:
-    """Parse all SpanRecords from a single .jsonl span file.
-
-    Malformed lines are skipped with a warning.
-
-    Args:
-        file: Path to a spans-<attempt>.jsonl file (local or blob storage).
-
-    Returns:
-        List of SpanRecord instances in file order.
-    """
-    try:
-        content = file.read_text(encoding="utf-8")
-    except Exception:
-        logger.exception("read_run_spans_failed", extra={"path": str(file)})
-        return []
-
-    spans: list[SpanRecord] = []
-    for lineno, raw in enumerate(content.splitlines(), 1):
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            spans.append(from_json(SpanRecord)(raw))
-        except Exception:
-            logger.warning(
-                "skipping_malformed_span_line",
-                extra={"path": str(file), "line": lineno},
-            )
-    return spans
 
 # endregion

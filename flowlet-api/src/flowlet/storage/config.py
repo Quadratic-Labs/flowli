@@ -1,16 +1,44 @@
+"""Storage backend configuration.
+
+Each backend config builds a CairnDB :class:`~cairndb.storage.base.BlobStorage`
+rooted at the configured location. That store is the single storage and
+concurrency primitive of the framework: conditional writes (put-if-absent,
+etag compare-and-swap), listing, and reads all go through it, on local
+filesystem and blob storage alike.
+"""
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, TYPE_CHECKING, Callable, Union, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal, Union
 
-from pydantic import Field, Discriminator
+from pydantic import Discriminator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
-    from chroniql.storage.azure import AzureBlobStorage as ChroniqlBlobStorage
+    from cairndb.storage.base import BlobStorage
 
-    from .azure import AzureBlobPath
-    from sqlalchemy.engine import Engine
-    from sqlalchemy.orm import Session
+
+# region @storage.config
+# ---
+# role: storage
+# intent: map user-facing storage settings to a cairndb BlobStorage
+# description: >
+#   AzureBlobStorageConfig and FilesystemStorageConfig each expose .store,
+#   a cached cairndb BlobStorage rooted at the configured container/prefix
+#   or directory.  All repository-layer I/O — state CAS writes, dispatch
+#   claims, span/event appends, the history log — runs on that one store,
+#   so backends need nothing beyond what cairndb implements.
+# rules:
+#   - Configs MUST expose the backend only as a cairndb BlobStorage.
+#   - SQLite MUST NOT appear here; it is the CacheRepository's internal
+#     query engine, never a storage backend.
+# dependencies:
+#   - config
+# aliases:
+#   - storage-config
+# triggers:
+#   - how to configure storage
+#   - azure storage configuration
+# ---
 
 
 class AzureBlobStorageConfig(BaseSettings):
@@ -19,7 +47,7 @@ class AzureBlobStorageConfig(BaseSettings):
     Attributes:
         type: Storage type identifier, always "azure_blob".
         connection_string: Azure Storage connection string.
-        container_name: Name of the blob container for logs.
+        container_name: Name of the blob container.
         base_path: Optional base path/prefix within the container.
 
     Example:
@@ -32,7 +60,7 @@ class AzureBlobStorageConfig(BaseSettings):
         env_prefix='FLOWLET_STORAGE_AZURE_BLOB_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
-        arbitrary_types_allowed=True
+        arbitrary_types_allowed=True,
     )
 
     type: Literal["azure_blob"] = "azure_blob"
@@ -49,38 +77,9 @@ class AzureBlobStorageConfig(BaseSettings):
     )
 
     @cached_property
-    def azure_path(self) -> AzureBlobPath:
-        """
-        Build an AzureBlobPath object from the configuration.
-
-        This is computed once and cached for subsequent accesses.
-
-        Returns:
-            AzureBlobPath instance configured with connection string,
-            container name, and base path.
-        """
-        from flowlet.storage.azure.path import AzureBlobPath
-
-        return AzureBlobPath.from_connection_string(
-            connection_string=self.connection_string,
-            container=self.container_name,
-            path=self.base_path
-        )
-
-    @cached_property
-    def object_store(self) -> 'ChroniqlBlobStorage':
-        """
-        Build a ChroniQL object store rooted at the same container/prefix.
-
-        The store provides the etag-guarded conditional writes
-        (compare-and-swap) that StateRepository needs for run-state
-        ownership transfer on remote storage.
-
-        Returns:
-            A chroniql AzureBlobStorage sharing this configuration's
-            container and base path.
-        """
-        from chroniql.storage.azure import AzureBlobStorage
+    def store(self) -> "BlobStorage":
+        """CairnDB blob store rooted at the container/prefix (cached)."""
+        from cairndb.storage.azure import AzureBlobStorage
 
         return AzureBlobStorage(
             container=self.container_name,
@@ -94,7 +93,7 @@ class FilesystemStorageConfig(BaseSettings):
 
     Attributes:
         type: Storage type identifier, always "filesystem".
-        base_path: Base directory path for storing logs and runs.
+        base_path: Base directory for all framework data.
 
     Example:
         >>> config = FilesystemStorageConfig(base_path="./storage")
@@ -103,7 +102,7 @@ class FilesystemStorageConfig(BaseSettings):
         env_prefix='FLOWLET_STORAGE_FILESYSTEM_',
         env_nested_delimiter='_',
         env_nested_max_split=1,
-        arbitrary_types_allowed=True
+        arbitrary_types_allowed=True,
     )
     type: Literal["filesystem"] = "filesystem"
     base_path: Path = Field(
@@ -111,116 +110,27 @@ class FilesystemStorageConfig(BaseSettings):
         description="Base directory path for storing logs and runs"
     )
 
-
-class SQLiteStorageConfig(BaseSettings):
-    """Configuration for SQLite database storage.
-
-    Attributes:
-        type: Storage type identifier, always "sqlite".
-        database_path: Path to the SQLite database file.
-        table_name: Name of the table to store logs.
-
-    Example:
-        >>> config = SQLiteStorageConfig(database_path="./flowlet.db")
-    """
-    model_config = SettingsConfigDict(
-        env_prefix='FLOWLET_STORAGE_SQLITE_',
-        env_nested_delimiter='_',
-        env_nested_max_split=1,
-        arbitrary_types_allowed=True
-    )
-    type: Literal["sqlite"] = "sqlite"
-    database_path: str = Field(
-        default="./flowlet.db",
-        description="Path to the SQLite database file"
-    )
-    logs_table_name: str = Field(
-        default="logs",
-        description="Name of the table for storing logs"
-    )
-    runs_table_name: str = Field(
-        default="runs",
-        description="Name of the table for storing run summaries"
-    )
-
     @cached_property
-    def engine(self) -> Engine:
+    def store(self) -> "BlobStorage":
+        """CairnDB filesystem store rooted at base_path (cached).
+
+        The filesystem backend provides the same conditional-write
+        semantics as the blob backends (flock-serialised compare-and-swap),
+        so local and remote deployments share one code path.
         """
-        Create and cache a SQLAlchemy engine.
+        from cairndb.storage.filesystem import FilesystemStorage
 
-        The engine is thread-safe and uses connection pooling.
-        This is computed once and cached for subsequent accesses.
-
-        Returns:
-            SQLAlchemy Engine instance.
-        """
-        from sqlalchemy import create_engine
-
-        # For SQLite, we need to use check_same_thread=False for multi-threading
-        # The engine itself is thread-safe via connection pooling
-        return create_engine(
-            f"sqlite:///{self.database_path}",
-            connect_args={"check_same_thread": False},
-            echo=False,  # Set to True for SQL query logging
-        )
-
-    @cached_property
-    def session_factory(self) -> Callable[[], Session]:
-        """
-        Create and cache a SQLAlchemy session factory (sessionmaker).
-
-        The factory itself is thread-safe. Each call to the factory
-        creates a new Session instance that should NOT be shared
-        between threads.
-
-        Returns:
-            Session factory callable that creates new Session instances.
-
-        Example:
-            >>> config = SQLiteStorageConfig(database_path="./db.sqlite")
-            >>> # Create a new session (not thread-safe, use per-thread)
-            >>> session = config.session_factory()
-            >>> try:
-            ...     # Use session
-            ...     session.query(...)
-            ...     session.commit()
-            ... finally:
-            ...     session.close()
-        """
-        from sqlalchemy.orm import sessionmaker
-
-        return sessionmaker(bind=self.engine, expire_on_commit=False)
-
-    def create_session(self) -> 'Session':
-        """
-        Create a new SQLAlchemy session.
-
-        This is a convenience method that uses the cached session_factory.
-        Each session should be used in a single thread and properly closed.
-
-        Returns:
-            New Session instance.
-
-        Example:
-            >>> config = SQLiteStorageConfig(database_path="./db.sqlite")
-            >>> with config.create_session() as session:
-            ...     session.query(...)
-            ...     session.commit()
-        """
-        return self.session_factory()
+        return FilesystemStorage(self.base_path)
 
 
-# Discriminated union type for all storage configurations
 StorageConfig = Annotated[
     Union[
         AzureBlobStorageConfig,
         FilesystemStorageConfig,
-        SQLiteStorageConfig,
     ],
     Discriminator('type'),
 ]
-"""Discriminated union of supported user-facing storage backends.
+"""Discriminated union of supported user-facing storage backends."""
 
-SQLite is intentionally excluded; it is used internally by the CacheRepository
-as the ephemeral query engine and is not a user-facing storage option.
-"""
+# ---
+# endregion

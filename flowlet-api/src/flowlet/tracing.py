@@ -44,8 +44,10 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import Status, StatusCode
 
+from cairndb.storage.base import BlobStorage
+
 from .models import RunType
-from .storage.types import StoragePath
+from .storage import append_lines, run_prefix
 from .types import Timestamp
 
 logger = logging.getLogger(__name__)
@@ -75,7 +77,7 @@ SPAN_TYPE_KEY = "flowlet.span_type"
 #   - Workers MUST force_flush() before their terminal state write.
 # dependencies:
 #   - models.run
-#   - storage.types
+#   - storage.keys
 #   - types.time
 # aliases:
 #   - tracing
@@ -119,23 +121,23 @@ class FlowletIdGenerator(RandomIdGenerator):
 
 
 class BlobSpanExporter(SpanExporter):
-    """Span exporter appending JSON lines to per-run files on StoragePath.
+    """Span exporter appending JSON lines to per-run objects on the store.
 
-    Works with both local ``Path`` and ``AzureBlobPath`` roots.  Files are
-    opened per export batch (append) and closed immediately — exports are
-    infrequent (batch processor) so handle churn is negligible and no fd
-    cache is needed.
+    One code path for every backend: appends go through the storage
+    helper's compare-and-swap loop.  Exports are infrequent (batch
+    processor) and each run/attempt has a single writer, so contention is
+    negligible.
 
     Attributes:
-        base_path: Root under which the ``runs/`` tree is written.
+        store: CairnDB blob store the ``runs/`` tree is written to.
     """
 
-    def __init__(self, base_path: StoragePath):
-        self.base_path = base_path
+    def __init__(self, store: BlobStorage):
+        self.store = store
         self._lock = threading.Lock()
 
     def export(self, spans: typing.Sequence[ReadableSpan]) -> SpanExportResult:
-        """Append finished spans to their run files, grouped per run/attempt.
+        """Append finished spans to their run objects, grouped per run/attempt.
 
         Args:
             spans: Finished spans handed over by the batch processor.
@@ -143,7 +145,7 @@ class BlobSpanExporter(SpanExporter):
         Returns:
             SUCCESS when every group was written; FAILURE otherwise (the
             batch processor drops the batch — the run's terminal status
-            lives in the state file regardless).
+            lives in the state object regardless).
         """
         groups: dict[tuple[str, UUID, int], list[str]] = {}
         for span in spans:
@@ -157,18 +159,10 @@ class BlobSpanExporter(SpanExporter):
         ok = True
         with self._lock:
             for (flow_name, run_id, attempt), lines in groups.items():
-                try:
-                    date = Timestamp.from_uuid7(run_id).value.strftime("%Y-%m-%d")
-                    file = (
-                        self.base_path / "runs" / flow_name / date
-                        / str(run_id) / f"spans-{attempt}.jsonl"
-                    )
-                    file.parent.mkdir(parents=True, exist_ok=True)
-                    with file.open("a", encoding="utf-8") as fh:
-                        fh.write("\n".join(lines) + "\n")
-                except Exception:
+                key = f"{run_prefix(flow_name, run_id)}/spans-{attempt}.jsonl"
+                if not append_lines(self.store, key, "\n".join(lines) + "\n"):
                     ok = False
-                    logger.exception(
+                    logger.error(
                         "span_export_failed",
                         extra={"flow_name": flow_name, "run_id": str(run_id)},
                     )
@@ -183,7 +177,7 @@ class BlobSpanExporter(SpanExporter):
 
 
 def configure_tracing(
-    base_path: StoragePath,
+    store: BlobStorage,
     extra_exporters: typing.Sequence[SpanExporter] = (),
 ) -> TracerProvider:
     """Create (or replace) the Flowlet tracer provider.
@@ -192,7 +186,7 @@ def configure_tracing(
     so repeated calls (tests, reconfiguration) simply swap it.
 
     Args:
-        base_path: Storage root; spans land under ``base_path/runs/``.
+        store: CairnDB blob store; spans land under ``runs/``.
         extra_exporters: Optional additional sinks (e.g. OTLP) attached
             alongside the mandatory blob exporter.
 
@@ -204,7 +198,7 @@ def configure_tracing(
         if _provider is not None:
             _provider.shutdown()
         provider = TracerProvider(id_generator=FlowletIdGenerator())
-        provider.add_span_processor(BatchSpanProcessor(BlobSpanExporter(base_path)))
+        provider.add_span_processor(BatchSpanProcessor(BlobSpanExporter(store)))
         for exporter in extra_exporters:
             provider.add_span_processor(BatchSpanProcessor(exporter))
         _provider = provider
