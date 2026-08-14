@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .queue import JobQueueProtocol
     from .repository.dispatch import DispatchKeyRepository
     from .repository.log import LogRepository
+    from .repository.signals import SignalRepository
     from .repository.state import StateRepository
 
 
@@ -88,6 +89,7 @@ class FlowletDeps(TypedDict, total=False):
     registry: Registry
     log_repo: LogRepository
     state_repo: StateRepository
+    signals: "SignalRepository | None"
     cache_repo: CacheRepository
     querier: RunQuery | None
     dispatch_repo: "DispatchKeyRepository | None"
@@ -134,6 +136,7 @@ class Flowlet:
         self.router: APIRouter = deps["router"]  # type: ignore[assignment]
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
+        self.signals = deps.get("signals")
         self.history = deps.get("history")
         self.dispatch_repo = deps.get("dispatch_repo")
         self.events = deps.get("events")
@@ -184,6 +187,7 @@ class Flowlet:
 
         deps["querier"] = None
         deps["dispatch_repo"] = None
+        deps["signals"] = None
         deps["events"] = None
         if configs.storage is not None:
             from .repository.log import LogRepository
@@ -202,9 +206,11 @@ class Flowlet:
             # RunQuery(**deps) can pick them up via its own named parameters.
             from .events import RunEventLog
             from .repository.dispatch import DispatchKeyRepository
+            from .repository.signals import SignalRepository
             from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(store=store)
             deps["state_repo"] = StateRepository(store=store)
+            deps["signals"] = SignalRepository(store=store)
             deps["dispatch_repo"] = DispatchKeyRepository(store=store)
             deps["events"] = RunEventLog(store=store)
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
@@ -239,6 +245,7 @@ class Flowlet:
             querier=deps["querier"],
             queue=deps["queue"],
             state_repo=deps.get("state_repo"),
+            signals=deps.get("signals"),
             dispatch_repo=deps.get("dispatch_repo"),
             events=deps.get("events"),
         )

@@ -1,27 +1,25 @@
 """Lease renewal and cooperative cancellation for running flows.
 
 ``flowlet.heartbeat()`` is the single user-facing call: inside a worker it
-renews the run's lease deadline and observes the ``cancel_requested`` flag;
-outside any worker context it is a no-op, so flows remain plain callables.
+renews the run's lease (epoch-fenced by the cairndb engine) and observes the
+run's ``cancel`` signal; outside any worker context it is a no-op, so flows
+remain plain callables.
 
-The cancellation channel is the CAS state write itself: the API sets
-``cancel_requested`` with a conditional write, which bumps the state version.
-The worker's next heartbeat write then fails its precondition, re-reads, and
-discovers the flag — no polling channel beyond the state file is needed.
+Cancellation travels out-of-band: the API sets an immutable signal object
+under ``signals/<flow>/<run_id>/``, never touching the lease document.  The
+lease document therefore has exactly one writer — its holder — and a failed
+renewal always means the lease was fenced (stolen after expiry), never a
+flag to reinterpret.
 """
 import contextvars
 import logging
 import time
-from datetime import timedelta
-from typing import TYPE_CHECKING
 
 from attrs import define, field
+from cairndb.core.exceptions import LeaseLost as LeaseLost  # re-export
 
-from .models import RunState, RunStatus
-from .types import Timestamp
-
-if TYPE_CHECKING:
-    from .repository.state import StateRepository
+from .repository.signals import CANCEL, SignalRepository
+from .repository.state import StateLease
 
 logger = logging.getLogger(__name__)
 
@@ -35,24 +33,21 @@ DEFAULT_MIN_BEAT_INTERVAL = 5.0  # seconds between effective (I/O) heartbeats
 # description: >
 #   RunLease is created by the worker at claim time and bound to a
 #   contextvar for the duration of the flow call.  heartbeat() (module
-#   function, exported as flowlet.heartbeat) is throttled to one CAS write
-#   per min_interval: a successful conditional write extends deadline_at;
-#   a failed one is re-read to distinguish a cancel request (flag set by
-#   the API) from lost ownership (reclaimed after lease expiry).  Flows
-#   that never call heartbeat() keep the original static-deadline
+#   function, exported as flowlet.heartbeat) is throttled to one effective
+#   beat per min_interval: it renews the engine lease (LeaseLost propagates
+#   when the run was reclaimed after expiry) and reads the cancel signal.
+#   Flows that never call heartbeat() keep the original static-deadline
 #   behaviour.
 # rules:
 #   - heartbeat() MUST be a no-op outside a worker-managed run context.
-#   - Lease renewal MUST go through a conditional state write; a lost CAS
-#     MUST NOT be retried blindly — re-read and reinterpret first.
-#   - RunCancelled MUST only be raised for a deliberate cancel request;
-#     lost ownership raises LeaseLost.
-#   - The worker MUST use lease.etag (not the claim etag) for its terminal
-#     write, since every renewal advances the version.
+#   - LeaseLost MUST mean fenced ownership, nothing else — the lease
+#     document is single-writer and renewals are never reinterpreted.
+#   - RunCancelled MUST only be raised for a deliberate cancel signal.
+#   - Cancellation MUST be observed from the signal object, never from the
+#     lease payload.
 # dependencies:
-#   - models.run
 #   - state_repository
-#   - types.time
+#   - signals_repository
 # aliases:
 #   - heartbeat
 #   - run-lease
@@ -71,35 +66,20 @@ class RunCancelled(Exception):
     """
 
 
-class LeaseLost(Exception):
-    """Raised when the run's state no longer belongs to this worker.
-
-    Happens when the lease expired mid-run and the run was reclaimed
-    (sweeper or another worker).  The flow must stop; the worker discards
-    the outcome without writing state it no longer owns.
-    """
-
-
 @define(kw_only=True)
 class RunLease:
     """Live lease over a claimed run, owned by the executing worker.
 
     Attributes:
-        state: The claimed RunState; ``deadline_at`` is advanced in place on
-            every effective heartbeat.
-        etag: Version of the last successful state write.  Terminal writes
-            must use this value.
-        state_repo: Repository used for conditional renewal writes.
-        timeout_seconds: Lease duration; each renewal sets
-            ``deadline_at = now + timeout_seconds``.
+        lease: The owned StateLease; renewals and the terminal release go
+            through it and are epoch-fenced.
+        signals: Signal repository the cancel signal is read from.
         min_interval: Seconds below which heartbeat() calls are free no-ops,
             bounding state-store I/O regardless of call frequency.
     """
 
-    state: RunState
-    etag: str
-    state_repo: "StateRepository"
-    timeout_seconds: int
+    lease: StateLease
+    signals: SignalRepository
     min_interval: float = DEFAULT_MIN_BEAT_INTERVAL
     _last_beat: float = field(factory=time.monotonic, init=False)
 
@@ -110,7 +90,7 @@ class RunLease:
         call returns False without any I/O.
 
         Returns:
-            True when a cancel request was observed, False otherwise.
+            True when a cancel signal was observed, False otherwise.
 
         Raises:
             LeaseLost: When the run is no longer owned by this worker.
@@ -119,51 +99,11 @@ class RunLease:
             return False
         self._last_beat = time.monotonic()
 
-        self.state.deadline_at = Timestamp(
-            Timestamp.now().value + timedelta(seconds=self.timeout_seconds)
+        self.lease.renew()
+        state = self.lease.state
+        return (
+            self.signals.get(state.flow_name, state.run_id, CANCEL) is not None
         )
-        ok, new_etag = self.state_repo.write(self.state, self.etag)
-        if ok:
-            self.etag = new_etag
-            return False
-        return self._reinterpret_conflict()
-
-    def _reinterpret_conflict(self) -> bool:
-        """Decide what a failed renewal means: cancel request or lost lease.
-
-        The only legitimate concurrent writer of an owned, unexpired run is
-        the cancel endpoint, so a conflict where we still own the run means
-        the flag was set; anything else means ownership is gone.
-
-        Returns:
-            True when the conflict was a cancel request.
-
-        Raises:
-            LeaseLost: When the current state is not ours anymore.
-        """
-        read = self.state_repo.read(self.state.flow_name, self.state.run_id)
-        if read is None:
-            raise LeaseLost(f"state for run {self.state.run_id} disappeared")
-        current, current_etag = read
-        if (
-            current.status != RunStatus.running
-            or current.worker_id != self.state.worker_id
-            or current.attempt != self.state.attempt
-        ):
-            raise LeaseLost(
-                f"run {self.state.run_id} reclaimed "
-                f"(status={current.status}, worker={current.worker_id})"
-            )
-        # Still ours — adopt the concurrent write (cancel flag and version).
-        self.state.cancel_requested = current.cancel_requested
-        self.etag = current_etag
-        if current.cancel_requested:
-            return True
-        # Unexpected but recoverable: retry the renewal once on the new version.
-        ok, new_etag = self.state_repo.write(self.state, self.etag)
-        if ok:
-            self.etag = new_etag
-        return False
 
 
 _current_lease: contextvars.ContextVar[RunLease | None] = contextvars.ContextVar(
@@ -195,7 +135,7 @@ def heartbeat(*, raise_on_cancel: bool = True) -> bool:
     this is a no-op returning False.
 
     Args:
-        raise_on_cancel: When True (default) a pending cancel request raises
+        raise_on_cancel: When True (default) a pending cancel signal raises
             :class:`RunCancelled`, so unmodified flows stop at their next
             heartbeat.  Pass False to receive the request as a return value
             and shut down gracefully.
@@ -218,7 +158,7 @@ def heartbeat(*, raise_on_cancel: bool = True) -> bool:
         return False
     cancelled = lease.beat()
     if cancelled and raise_on_cancel:
-        raise RunCancelled(f"run {lease.state.run_id} cancelled")
+        raise RunCancelled(f"run {lease.lease.state.run_id} cancelled")
     return cancelled
 
 # ---

@@ -29,6 +29,7 @@ def run_worker(worker_id: str = "dev-worker-1", poll_interval: float = 1.0) -> N
                     queue=flowlet.queue,
                     registry=flowlet.registry,
                     state_repo=flowlet.state_repo,
+                    signals=flowlet.signals,
                     worker_id=worker_id,
                 )
                 if result == 2:

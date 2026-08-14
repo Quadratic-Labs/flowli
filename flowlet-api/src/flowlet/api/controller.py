@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..events import RunEventLog
     from ..registry import Registry
     from ..repository.dispatch import DispatchKeyRepository
+    from ..repository.signals import SignalRepository
     from ..repository.state import StateRepository
 
 
@@ -115,6 +116,7 @@ class FlowController:
         querier: RunQuery | None = None,
         queue: JobQueueProtocol | None = None,
         state_repo: "StateRepository | None" = None,
+        signals: "SignalRepository | None" = None,
         dispatch_repo: "DispatchKeyRepository | None" = None,
         events: "RunEventLog | None" = None,
         **_,
@@ -129,6 +131,8 @@ class FlowController:
             state_repo: Optional state repository so synchronous executions
                 leave the same durable record a worker would; also required
                 by the cancel endpoint.
+            signals: Optional signal repository; required by the cancel
+                endpoint to reach an actively-owned run.
             dispatch_repo: Optional dispatch-key repository enabling
                 idempotent submissions; when None, dispatch_key submissions
                 return 503.
@@ -139,6 +143,7 @@ class FlowController:
         self.querier = querier
         self.queue = queue
         self.state_repo = state_repo
+        self.signals = signals
         self.dispatch_repo = dispatch_repo
         self.events = events
 
@@ -184,20 +189,23 @@ class FlowController:
         kwargs = self._parse_kwargs(flow_name, payload)
 
         run_id = uuid7()
+        from attrs import evolve
+
         from .. import tracing
         from ..models import RunState, RunStatus, Timestamp
+        from ..worker import DEFAULT_TIMEOUT
 
         logger.info(
             "flow_run_started",
             extra={"flow_name": flow_name, "run_id": str(run_id)},
         )
 
-        # Record state like a worker would (best-effort; sync runs have no
-        # lease because there is no takeover story for an in-process call).
-        state = None
-        etag = None
+        # Record state like a worker would: acquire the run's lease so the
+        # record follows the same fenced discipline (best-effort — a failed
+        # acquisition never blocks the synchronous call).
+        lease = None
         if self.state_repo is not None:
-            state = RunState(
+            initial = RunState(
                 run_id=run_id,
                 flow_name=flow_name,
                 status=RunStatus.running,
@@ -205,9 +213,30 @@ class FlowController:
                 started_at=Timestamp.now(),
                 kwargs=kwargs,
             )
-            ok, etag = self.state_repo.write(state, None)
-            if not ok:
-                state = None
+            try:
+                lease = self.state_repo.acquire(
+                    flow_name,
+                    run_id,
+                    ttl=DEFAULT_TIMEOUT,
+                    holder="sync-worker",
+                    state_fn=lambda _existing: initial,
+                )
+            except Exception:
+                logger.exception(
+                    "sync_run_state_acquire_failed", extra={"run_id": str(run_id)}
+                )
+
+        def _finalize(status: RunStatus) -> None:
+            if lease is None:
+                return
+            try:
+                lease.release(
+                    evolve(lease.state, status=status, ended_at=Timestamp.now())
+                )
+            except Exception:
+                logger.exception(
+                    "sync_run_state_release_failed", extra={"run_id": str(run_id)}
+                )
 
         try:
             try:
@@ -216,11 +245,7 @@ class FlowController:
             finally:
                 tracing.force_flush()
 
-            if state is not None:
-                state.status = RunStatus.completed
-                state.ended_at = Timestamp.now()
-                self.state_repo.write(state, etag)
-
+            _finalize(RunStatus.completed)
             logger.info(
                 "flow_run_completed",
                 extra={"flow_name": flow_name, "run_id": str(run_id)},
@@ -231,10 +256,7 @@ class FlowController:
                 "flow_run_failed",
                 extra={"flow_name": flow_name, "run_id": str(run_id)},
             )
-            if state is not None:
-                state.status = RunStatus.failed
-                state.ended_at = Timestamp.now()
-                self.state_repo.write(state, etag)
+            _finalize(RunStatus.failed)
             raise
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
@@ -340,9 +362,10 @@ class FlowController:
     def cancel_run(self, run_id: UUID) -> CancelRunResponse:
         """Request cancellation of an active run.
 
-        A ``pending``/``retry`` run is closed as ``canceled`` directly (no
-        worker owns it).  A ``running`` run gets its ``cancel_requested``
-        flag set; the owning worker observes it at its next heartbeat and
+        An unowned run (released ``pending``, or ``running`` with an expired
+        lease) is closed as ``canceled`` directly through a fenced lease
+        steal.  An actively-owned run gets its durable ``cancel`` signal
+        set; the owning worker observes it at its next heartbeat and
         finalizes the run as ``canceled``.  Already-closed runs are left
         untouched and reported as-is.
 
@@ -355,70 +378,92 @@ class FlowController:
         Raises:
             HTTPException: 503 when no storage backend is configured.
             HTTPException: 404 when the run is not among the active states.
-            HTTPException: 409 when concurrent writes prevented the update.
         """
-        if self.state_repo is None:
+        if self.state_repo is None or self.signals is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
 
         match = next(
-            (s for s in self.state_repo.list_states() if s.run_id == run_id), None
+            (v for v in self.state_repo.list_views() if v.state.run_id == run_id),
+            None,
         )
         if match is None:
             raise HTTPException(
                 status_code=404,
                 detail="Run not found among active runs (it may already be archived)",
             )
+        flow_name = match.state.flow_name
 
-        from ..models import RunStatus
+        from attrs import evolve
+
+        from ..models import RunState, RunStatus
+        from ..repository import AlreadyClosed
+        from ..repository.signals import CANCEL
         from ..types import Timestamp
 
-        for _ in range(3):
-            read = self.state_repo.read(match.flow_name, run_id)
-            if read is None:
-                raise HTTPException(status_code=404, detail="Run state disappeared")
-            state, etag = read
-
-            if state.status.is_closed():
-                return CancelRunResponse(
+        def _respond(state, event: str | None) -> CancelRunResponse:
+            if event is not None and self.events is not None:
+                self.events.append(
+                    flow_name=flow_name,
                     run_id=run_id,
-                    status=state.status,
-                    cancel_requested=state.cancel_requested,
+                    event=event,
+                    actor="api",
+                    attempt=state.attempt,
+                    to_status=str(state.status),
                 )
+            logger.info(
+                "run_cancel_requested",
+                extra={"run_id": str(run_id), "status": str(state.status)},
+            )
+            return CancelRunResponse(
+                run_id=run_id,
+                status=state.status,
+                cancel_requested=state.cancel_requested or event is not None,
+            )
 
-            if state.status == RunStatus.running:
-                event = "cancel_requested"
-                state.cancel_requested = True
-            else:  # pending / retry — nobody owns it, close it here
-                event = "canceled"
-                state.status = RunStatus.canceled
-                state.cancel_requested = True
-                state.ended_at = Timestamp.now()
+        view = self.state_repo.read(flow_name, run_id)
+        if view is None:
+            raise HTTPException(status_code=404, detail="Run state disappeared")
+        if view.state.status.is_closed():
+            return _respond(view.state, None)
 
-            ok, _ = self.state_repo.write(state, etag)
-            if ok:
-                if self.events is not None:
-                    self.events.append(
-                        flow_name=state.flow_name,
-                        run_id=run_id,
-                        event=event,
-                        actor="api",
-                        attempt=state.attempt,
-                        to_status=str(state.status),
-                    )
-                logger.info(
-                    "run_cancel_requested",
-                    extra={"run_id": str(run_id), "status": str(state.status)},
-                )
-                return CancelRunResponse(
-                    run_id=run_id,
-                    status=state.status,
-                    cancel_requested=state.cancel_requested,
-                )
+        if view.held():
+            # Actively owned: set the durable cancel signal; the worker's
+            # next heartbeat observes it and finalizes as canceled.
+            self.signals.send(flow_name, run_id, CANCEL, actor="api")
+            return _respond(view.state, "cancel_requested")
 
-        raise HTTPException(
-            status_code=409,
-            detail="Concurrent state writes prevented cancellation; retry",
-        )
+        # Unowned (released pending, or expired running): close it here
+        # through a fenced steal — the same discipline every actor uses.
+        def transition(existing: RunState | None) -> RunState:
+            if existing is None:
+                raise LookupError(f"state for run {run_id} disappeared")
+            if existing.status.is_closed():
+                raise AlreadyClosed(existing)
+            return evolve(
+                existing,
+                status=RunStatus.canceled,
+                cancel_requested=True,
+                ended_at=Timestamp.now(),
+            )
+
+        try:
+            lease = self.state_repo.acquire(
+                flow_name, run_id, ttl=60, holder="api", state_fn=transition
+            )
+        except AlreadyClosed as closed:
+            return _respond(closed.state, None)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Run state disappeared")
+
+        if lease is None:
+            # A worker claimed it between the read and the steal — fall back
+            # to the signal so the new owner cancels cooperatively.
+            self.signals.send(flow_name, run_id, CANCEL, actor="api")
+            return _respond(view.state, "cancel_requested")
+
+        state = lease.state
+        lease.release()
+        return _respond(state, "canceled")
 
     # ------------------------------------------------------------------
     # Query endpoints

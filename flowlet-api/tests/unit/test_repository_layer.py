@@ -2,21 +2,26 @@
 Unit tests for the storage repository layer.
 
 Covers:
-- StateRepository: conditional write → read round-trips and CAS semantics
-  on the cairndb store (the filesystem backend implements the same
-  conditional-write contract as the cloud backends, so these exercise
-  genuine CAS without mocks)
+- StateRepository: lease acquisition with atomic state transitions, fenced
+  writes, and StateView reads on the cairndb store (the filesystem backend
+  implements the same conditional-write contract as the cloud backends, so
+  these exercise genuine CAS and epoch fencing without mocks)
+- SignalRepository: idempotent run-scoped signals
 - LogRepository: span reading over the runs/<flow>/<date>/<run_id>/ layout
 """
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid7
 
 import pytest
+from attrs import evolve
+from cairndb.core.exceptions import LeaseLost
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.models import SpanRecord
+from flowlet.models import RunStatus, SpanRecord
 from flowlet.repository.log import LogRepository
-from flowlet.repository.state import StateRepository
+from flowlet.repository.signals import CANCEL, SignalRepository
+from flowlet.repository.state import AlreadyClosed, StateRepository
 from flowlet.serdes import to_json
 from flowlet.storage import run_prefix
 
@@ -31,6 +36,11 @@ def state_repo(store) -> StateRepository:
     return StateRepository(store=store)
 
 
+@pytest.fixture
+def signals(store) -> SignalRepository:
+    return SignalRepository(store=store)
+
+
 # ============================================================================
 # StateRepository
 # ============================================================================
@@ -38,95 +48,144 @@ def state_repo(store) -> StateRepository:
 
 @pytest.mark.unit
 class TestStateRepository:
-    def test_write_and_read_round_trip(self, state_repo, make_run_state):
+    def test_acquire_and_read_round_trip(self, state_repo, make_run_state):
         state = make_run_state(flow_name="my_flow")
-        ok, etag = state_repo.write(state, etag=None)
-        assert ok is True
-        assert etag is not None
+        lease = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w1", state_fn=lambda _: state,
+        )
+        assert lease is not None
+        assert lease.holder == "w1"
+        assert lease.epoch == 1
 
-        result = state_repo.read(state.flow_name, state.run_id)
-        assert result is not None
-        restored, read_etag = result
-        assert restored.run_id == state.run_id
-        assert restored.flow_name == state.flow_name
-        assert restored.status == state.status
-        assert read_etag == etag
+        view = state_repo.read(state.flow_name, state.run_id)
+        assert view is not None
+        assert view.state.run_id == state.run_id
+        assert view.state.status == state.status
+        assert view.holder == "w1"
+        assert view.held() is True
 
     def test_read_missing_returns_none(self, state_repo):
         assert state_repo.read("no_such_flow", uuid7()) is None
 
-    def test_write_returns_false_on_stale_etag(self, state_repo, make_run_state):
-        """A write with a stale etag must be rejected."""
-        from attrs import evolve
-        from flowlet.models import RunStatus
-
-        state = make_run_state(status=RunStatus.running)
-        ok, etag_v1 = state_repo.write(state, etag=None)
-        assert ok
-
-        # Second write with a correct etag succeeds and mints a new etag.
-        ok2, etag_v2 = state_repo.write(evolve(state, status=RunStatus.completed), etag=etag_v1)
-        assert ok2
-        assert etag_v2 != etag_v1
-
-        # Third write reusing the first (stale) etag must be rejected.
-        ok3, etag_v3 = state_repo.write(evolve(state, status=RunStatus.running), etag=etag_v1)
-        assert ok3 is False
-        assert etag_v3 is None
-
-    def test_write_updates_on_second_call(self, state_repo, make_run_state):
-        from attrs import evolve
-        from flowlet.models import RunStatus
-
-        state = make_run_state(status=RunStatus.running)
-        ok, etag = state_repo.write(state, etag=None)
-        assert ok
-
-        ok2, _ = state_repo.write(evolve(state, status=RunStatus.completed), etag=etag)
-        assert ok2
-
-        result = state_repo.read(state.flow_name, state.run_id)
-        assert result is not None
-        restored, _ = result
-        assert restored.status == RunStatus.completed
-
-    def test_write_new_fails_when_state_already_exists(self, state_repo, make_run_state):
-        """etag=None is a put-if-absent — must fail if the state exists."""
+    def test_acquire_held_returns_none(self, state_repo, make_run_state):
         state = make_run_state()
-        ok, _ = state_repo.write(state, etag=None)
-        assert ok
+        assert state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w1", state_fn=lambda _: state,
+        ) is not None
+        assert state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w2", state_fn=lambda _: state,
+        ) is None
 
-        ok2, _ = state_repo.write(state, etag=None)
-        assert ok2 is False
-
-    def test_write_with_etag_after_delete_is_rejected(
+    def test_release_then_reacquire_applies_transition(
         self, state_repo, make_run_state
     ):
-        state = make_run_state()
-        ok, etag = state_repo.write(state, etag=None)
-        assert ok
+        state = make_run_state(status=RunStatus.running, attempt=1)
+        lease = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w1", state_fn=lambda _: state,
+        )
+        lease.release(evolve(state, status=RunStatus.pending))
 
-        state_repo.delete(state.flow_name, state.run_id)
-        assert state_repo.write(state, etag) == (False, None)
+        second = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w2",
+            state_fn=lambda s: evolve(
+                s, status=RunStatus.running, attempt=s.attempt + 1
+            ),
+        )
+        assert second is not None
+        assert second.epoch == 2
+        assert second.state.attempt == 2
+        assert second.state.status == RunStatus.running
 
-    def test_delete_removes_state(self, state_repo, make_run_state):
+    def test_fenced_holder_gets_lease_lost(
+        self, state_repo, make_run_state, seed_lease, store
+    ):
+        """A holder whose lease expired and was stolen cannot write."""
+        state = make_run_state(status=RunStatus.running)
+        # Seed an expired held lease, then steal it.
+        seed_lease(
+            store, state, holder="w1",
+            deadline=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        thief = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w2", state_fn=lambda s: s,
+        )
+        assert thief is not None
+        assert thief.epoch == 2
+
+        # Reconstruct the old holder's lease via a fresh steal race: the
+        # thief's own handle must keep working, while writes through a
+        # stale-epoch handle raise LeaseLost.  Simulate the stale holder by
+        # stealing with an expired deadline again.
+        seed_lease(
+            store, state, holder="w2",
+            deadline=datetime.now(UTC) - timedelta(seconds=5), epoch=2,
+        )
+        stale = thief  # epoch 2 handle, but the document was rewritten
+        third = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w3", state_fn=lambda s: s,
+        )
+        assert third is not None
+        with pytest.raises(LeaseLost):
+            stale.renew()
+
+    def test_state_fn_exception_aborts_acquisition(
+        self, state_repo, make_run_state, seed_lease, store
+    ):
+        state = make_run_state(status=RunStatus.completed)
+        seed_lease(store, state)  # released, closed
+
+        def refuse(existing):
+            if existing.status.is_closed():
+                raise AlreadyClosed(existing)
+            return existing
+
+        with pytest.raises(AlreadyClosed):
+            state_repo.acquire(
+                state.flow_name, state.run_id,
+                ttl=60, holder="w1", state_fn=refuse,
+            )
+        # Nothing was written: still released at epoch 1.
+        view = state_repo.read(state.flow_name, state.run_id)
+        assert view.epoch == 1
+        assert view.holder is None
+
+    def test_write_through_lease_updates_payload(self, state_repo, make_run_state):
+        state = make_run_state(status=RunStatus.running)
+        lease = state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w1", state_fn=lambda _: state,
+        )
+        lease.write(evolve(state, attempt=2))
+        view = state_repo.read(state.flow_name, state.run_id)
+        assert view.state.attempt == 2
+        assert view.holder == "w1"
+
+    def test_delete_removes_state(self, state_repo, make_run_state, seed_lease, store):
         state = make_run_state(flow_name="temp_flow")
-        ok, _ = state_repo.write(state, etag=None)
-        assert ok
+        seed_lease(store, state)
         state_repo.delete(state.flow_name, state.run_id)
         assert state_repo.read(state.flow_name, state.run_id) is None
 
-    def test_list_states_returns_all(self, state_repo, make_run_state):
+    def test_list_views_returns_all(self, state_repo, make_run_state, seed_lease, store):
         states = [make_run_state(flow_name="batch_flow") for _ in range(3)]
         for s in states:
-            state_repo.write(s, etag=None)
+            seed_lease(store, s)
 
-        listed = state_repo.list_states(flow_name="batch_flow")
-        assert {s.run_id for s in listed} == {s.run_id for s in states}
+        listed = state_repo.list_views(flow_name="batch_flow")
+        assert {v.state.run_id for v in listed} == {s.run_id for s in states}
 
-    def test_list_states_filtered_by_flow(self, state_repo, make_run_state):
-        state_repo.write(make_run_state(flow_name="flow_a"), etag=None)
-        state_repo.write(make_run_state(flow_name="flow_b"), etag=None)
+    def test_list_states_filtered_by_flow(
+        self, state_repo, make_run_state, seed_lease, store
+    ):
+        seed_lease(store, make_run_state(flow_name="flow_a"))
+        seed_lease(store, make_run_state(flow_name="flow_b"))
 
         only_a = state_repo.list_states(flow_name="flow_a")
         assert len(only_a) == 1
@@ -136,18 +195,21 @@ class TestStateRepository:
         assert state_repo.list_states() == []
 
     def test_state_key_layout(self, state_repo, store, make_run_state):
-        """State objects live at state/<flow>/<run_id>.json."""
+        """Lease documents live at state/<flow>/<run_id>.json."""
         state = make_run_state(flow_name="my_flow")
-        state_repo.write(state, etag=None)
+        state_repo.acquire(
+            state.flow_name, state.run_id,
+            ttl=60, holder="w1", state_fn=lambda _: state,
+        )
 
         keys = store.list_objects_sync("state/")
         assert keys == [f"state/my_flow/{state.run_id}.json"]
 
-    def test_archive_moves_state_into_run_folder(
-        self, state_repo, store, make_run_state
+    def test_archive_moves_payload_into_run_folder(
+        self, state_repo, store, make_run_state, seed_lease
     ):
-        state = make_run_state(flow_name="my_flow")
-        state_repo.write(state, etag=None)
+        state = make_run_state(flow_name="my_flow", status=RunStatus.completed)
+        seed_lease(store, state)
 
         state_repo.archive(state.flow_name, state.run_id)
 
@@ -156,7 +218,44 @@ class TestStateRepository:
             f"{run_prefix(state.flow_name, state.run_id)}/state.json"
         )
         assert archived is not None
-        assert str(state.run_id) in archived.data.decode()
+        # The archived object is the bare RunState wire format (no envelope).
+        from flowlet.models import RunState
+        from flowlet.serdes import from_json
+
+        restored = from_json(RunState)(archived.data.decode())
+        assert restored.run_id == state.run_id
+        assert restored.status == RunStatus.completed
+
+
+# ============================================================================
+# SignalRepository
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestSignalRepository:
+    def test_send_and_get_round_trip(self, signals):
+        run_id = uuid7()
+        assert signals.send("my_flow", run_id, CANCEL, actor="api") is True
+        payload = signals.get("my_flow", run_id, CANCEL)
+        assert payload is not None
+        assert payload["actor"] == "api"
+
+    def test_send_is_idempotent(self, signals):
+        run_id = uuid7()
+        assert signals.send("my_flow", run_id, CANCEL, actor="api") is True
+        assert signals.send("my_flow", run_id, CANCEL, actor="other") is False
+        # First sender's payload wins.
+        assert signals.get("my_flow", run_id, CANCEL)["actor"] == "api"
+
+    def test_get_missing_returns_none(self, signals):
+        assert signals.get("my_flow", uuid7(), CANCEL) is None
+
+    def test_clear_removes_all_signals(self, signals):
+        run_id = uuid7()
+        signals.send("my_flow", run_id, CANCEL, actor="api")
+        signals.clear("my_flow", run_id)
+        assert signals.get("my_flow", run_id, CANCEL) is None
 
 
 # ============================================================================

@@ -181,35 +181,34 @@ class Run(RunSummary):
 @define(slots=True, kw_only=True)
 class RunState:
     """
-    Worker-owned state for a single flow execution.
+    The run's durable record, carried as the payload of its lease document.
 
-    Written atomically to the state store on every transition.
-    Acts as the source of truth for ownership and retry logic: a worker owns
-    a run by CAS-writing ``status=running`` with a lease ``deadline_at``;
-    anything running past its deadline is reclaimable (by another worker or
-    the sweeper).  The lease is the liveness signal; flows may renew it
-    mid-run via ``flowlet.heartbeat()``, which also observes
-    ``cancel_requested``.
+    Ownership and liveness live in the surrounding cairndb lease envelope
+    (``{epoch, holder, deadline_at, state}``), never here: a worker owns a
+    run by acquiring the lease, renews it via ``flowlet.heartbeat()``, and
+    every payload write is fenced by the lease epoch.  RunState itself is
+    pure record — what the run is, how far it got, and what it cost in
+    attempts — and is what gets archived into the run folder when the run
+    closes.
 
     Attributes:
         run_id: Unique identifier for the run.
         flow_name: Name of the flow being executed.
         status: Current execution status.
-        worker_id: Identifier of the owning worker process.
+        worker_id: Identifier of the worker that executed the recorded
+            attempt (record, not ownership — the lease holder is
+            authoritative while the run is active).
         started_at: Timestamp when the run was first started.
         ended_at: Timestamp when the run finished (completed or failed).
-        deadline_at: Lease expiry — reset on every claim to now + timeout,
-            and renewed by heartbeats.
         attempt: Current attempt number (1-based); incremented on each claim
             of an existing state.
         max_retries: Maximum number of execution attempts allowed.
         kwargs: Flow keyword arguments, copied from the job at first claim so
             the sweeper can re-enqueue a crashed run without the original
             queue message.
-        cancel_requested: Cooperative-cancellation flag set through the API.
-            The owning worker observes it on its next heartbeat and finalizes
-            the run as ``canceled``; a claim of a flagged state cancels
-            without executing.
+        cancel_requested: Whether cancellation was requested for this run.
+            The live channel is the run's cancel signal object; this field
+            records the fact on the closed state.
     """
     run_id: UUID
     flow_name: str
@@ -217,7 +216,6 @@ class RunState:
     worker_id: str
     started_at: Timestamp
     ended_at: Timestamp | None = field(default=None)
-    deadline_at: Timestamp | None = field(default=None)
     attempt: int = 1
     max_retries: int = 3
     kwargs: dict[str, Any] = Factory(dict)

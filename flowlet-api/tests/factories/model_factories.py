@@ -51,7 +51,6 @@ class RunStateFactory(factory.Factory):
     worker_id     = "worker-1"
     started_at    = factory.SubFactory(TimestampFactory)
     ended_at      = None
-    deadline_at   = None
     attempt       = 1
     max_retries   = 3
 

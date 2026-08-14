@@ -57,6 +57,21 @@ def _closed(make_run_state, **overrides):
     return make_run_state(**defaults)
 
 
+def _seed(store, state):
+    """Write a released lease document holding *state* as its payload."""
+    from flowlet.serdes import to_payload
+
+    doc = {
+        "epoch": 1,
+        "holder": None,
+        "deadline_at": datetime.now(UTC).isoformat(),
+        "state": to_payload(state),
+    }
+    store.put_object_sync(
+        f"state/{state.flow_name}/{state.run_id}.json", json.dumps(doc).encode()
+    )
+
+
 @pytest.mark.unit
 class TestRunHistory:
     def test_record_and_project_round_trip(
@@ -132,7 +147,7 @@ class TestSweeperHistoryIntegration:
     ):
         state_repo = StateRepository(store=store)
         state = _closed(make_run_state)
-        state_repo.write(state, None)
+        _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)
 
@@ -143,7 +158,7 @@ class TestSweeperHistoryIntegration:
     def test_sweep_without_history_archives_as_before(self, store, make_run_state):
         state_repo = StateRepository(store=store)
         state = _closed(make_run_state)
-        state_repo.write(state, None)
+        _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600)
 
@@ -158,7 +173,7 @@ class TestSweeperHistoryIntegration:
 
         state_repo = StateRepository(store=store)
         state = _closed(make_run_state)
-        state_repo.write(state, None)
+        _seed(store, state)
 
         stats = sweep(
             state_repo, self._FakeQueue(), archive_grace=3600, history=BoomHistory()
@@ -174,7 +189,7 @@ class TestSweeperHistoryIntegration:
         """Runs inside the grace window are neither recorded nor archived."""
         state_repo = StateRepository(store=store)
         state = make_run_state(status=RunStatus.completed, ended_at=Timestamp.now())
-        state_repo.write(state, None)
+        _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)
 

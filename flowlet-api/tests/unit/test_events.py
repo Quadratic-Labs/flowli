@@ -163,10 +163,10 @@ class TestRunEventsEndpoint:
 
     @pytest.mark.asyncio
     async def test_events_of_active_run(
-        self, controller, state_repo, event_log, make_run_state
+        self, controller, state_repo, event_log, make_run_state, seed_lease, store
     ):
         state = make_run_state(status=RunStatus.running)
-        state_repo.write(state, None)
+        seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, run_id=state.run_id,
             event="claimed", actor="w1",
@@ -218,10 +218,10 @@ class TestRunEventsEndpoint:
 
     @pytest.mark.asyncio
     async def test_etag_roundtrip_yields_304(
-        self, controller, state_repo, event_log, make_run_state
+        self, controller, state_repo, event_log, make_run_state, seed_lease, store
     ):
         state = make_run_state(status=RunStatus.running)
-        state_repo.write(state, None)
+        seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, run_id=state.run_id,
             event="claimed", actor="w1",
@@ -257,12 +257,15 @@ class TestWorkerEmission:
     def test_success_emits_claimed_then_completed(
         self, store, event_log, make_flow_job
     ):
+        from flowlet.repository import SignalRepository
+
         state_repo = StateRepository(store=store)
+        signals = SignalRepository(store=store)
         job = make_flow_job()
         queue = FakeQueue([job])
         registry = FakeRegistry({job.flow_name: lambda **kw: None})
 
-        rc = execute_job(queue, registry, state_repo, "w1", events=event_log)
+        rc = execute_job(queue, registry, state_repo, signals, "w1", events=event_log)
 
         assert rc == 0
         names = [e["event"] for e in _read_events(store, job.flow_name, job.run_id)]
@@ -271,7 +274,10 @@ class TestWorkerEmission:
     def test_failure_emits_retry_then_final_failure(
         self, store, event_log, make_flow_job
     ):
+        from flowlet.repository import SignalRepository
+
         state_repo = StateRepository(store=store)
+        signals = SignalRepository(store=store)
 
         def boom(**kw):
             raise ValueError("nope")
@@ -280,10 +286,10 @@ class TestWorkerEmission:
         queue = FakeQueue([job])
         registry = FakeRegistry({job.flow_name: boom})
 
-        execute_job(queue, registry, state_repo, "w1", events=event_log)  # attempt 1
+        execute_job(queue, registry, state_repo, signals, "w1", events=event_log)  # attempt 1
         retry_job = queue.enqueued[0][0]
         queue.jobs = [retry_job]
-        execute_job(queue, registry, state_repo, "w1", events=event_log)  # attempt 2
+        execute_job(queue, registry, state_repo, signals, "w1", events=event_log)  # attempt 2
 
         events = _read_events(store, job.flow_name, job.run_id)
         names = [e["event"] for e in events]
@@ -298,12 +304,14 @@ class TestWorkerEmission:
 
 class TestSweeperEmission:
     def test_expired_lease_recovery_emits_requeued(
-        self, store, event_log, make_run_state
+        self, store, event_log, make_run_state, seed_lease
     ):
         state_repo = StateRepository(store=store)
-        expired = Timestamp(datetime.now(UTC) - timedelta(seconds=5))
-        state = make_run_state(status=RunStatus.running, deadline_at=expired)
-        state_repo.write(state, None)
+        state = make_run_state(status=RunStatus.running)
+        seed_lease(
+            store, state, holder="dead-worker",
+            deadline=datetime.now(UTC) - timedelta(seconds=5),
+        )
         queue = FakeQueue()
 
         stats = sweep(state_repo, queue, events=event_log)

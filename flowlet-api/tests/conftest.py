@@ -45,10 +45,10 @@ def _make_run_state(
     worker_id: str = "worker-1",
     started_at: Timestamp | None = None,
     ended_at: Timestamp | None = None,
-    deadline_at: Timestamp | None = None,
     attempt: int = 1,
     max_retries: int = 3,
     kwargs: dict | None = None,
+    cancel_requested: bool = False,
 ) -> RunState:
     now = _make_ts()
     return RunState(
@@ -58,11 +58,40 @@ def _make_run_state(
         worker_id=worker_id,
         started_at=started_at or now,
         ended_at=ended_at,
-        # Default to a live lease so a bare running state reads as "busy".
-        deadline_at=deadline_at or _make_ts(datetime.now(UTC) + timedelta(seconds=300)),
         attempt=attempt,
         max_retries=max_retries,
         kwargs=kwargs or {},
+        cancel_requested=cancel_requested,
+    )
+
+
+def _seed_lease(
+    store,
+    state: RunState,
+    *,
+    holder: str | None = None,
+    deadline: datetime | None = None,
+    epoch: int = 1,
+) -> None:
+    """Write a run's lease document directly — test seeding only.
+
+    Defaults model a *released* lease (holder None, deadline = now, the
+    release time).  Pass ``holder`` and a future ``deadline`` for a held
+    lease, or a past deadline for an expired one.
+    """
+    import json
+
+    from flowlet.serdes import to_payload
+
+    doc = {
+        "epoch": epoch,
+        "holder": holder,
+        "deadline_at": (deadline or datetime.now(UTC)).isoformat(),
+        "state": to_payload(state),
+    }
+    key = f"state/{state.flow_name}/{state.run_id}.json"
+    store.put_object_sync(
+        key, json.dumps(doc, separators=(",", ":"), sort_keys=True).encode()
     )
 
 
@@ -131,6 +160,12 @@ def make_ts():
 def make_run_state():
     """Return the _make_run_state builder callable."""
     return _make_run_state
+
+
+@pytest.fixture
+def seed_lease():
+    """Return the _seed_lease builder callable (writes a lease document)."""
+    return _seed_lease
 
 
 @pytest.fixture

@@ -1,11 +1,11 @@
 import functools
 import json
-from typing import Any, Callable, get_args, get_origin
+from collections.abc import Callable
+from typing import Any, get_args, get_origin
 from uuid import UUID
 
-from .models import FlowJob, RunStatus, RunState, RunType, RunSummary, SpanEvent, SpanRecord
+from .models import FlowJob, RunState, RunStatus, RunSummary, RunType, SpanEvent, SpanRecord
 from .types import JsonAtom, Timestamp
-
 
 # region @valuedispatch
 # ---
@@ -141,7 +141,6 @@ def _(data: RunState) -> dict:
         "worker_id": data.worker_id,
         "started_at": data.started_at,
         "ended_at": data.ended_at,
-        "deadline_at": data.deadline_at,
         "attempt": data.attempt,
         "max_retries": data.max_retries,
         "kwargs": data.kwargs,
@@ -209,7 +208,6 @@ def _(data: dict) -> RunState:
         worker_id=data["worker_id"],
         started_at=data["started_at"],
         ended_at=data.get("ended_at"),
-        deadline_at=data.get("deadline_at"),
         attempt=data.get("attempt", 1),
         max_retries=data.get("max_retries", 3),
         kwargs=data.get("kwargs") or {},
@@ -303,12 +301,31 @@ def _(data: str) -> RunState:
         worker_id=raw["worker_id"],
         started_at=Timestamp.from_iso(raw["started_at"]),
         ended_at=Timestamp.from_iso(raw["ended_at"]) if raw.get("ended_at") else None,
-        deadline_at=Timestamp.from_iso(raw["deadline_at"]) if raw.get("deadline_at") else None,
         attempt=raw.get("attempt", 1),
         max_retries=raw.get("max_retries", 3),
         kwargs=raw.get("kwargs") or {},
         cancel_requested=raw.get("cancel_requested", False),
     )
+
+
+def to_payload(data: Any) -> Any:
+    """Convert a domain model to a JSON-safe tree (the wire format as data).
+
+    Used where a model travels inside another JSON document — e.g. RunState
+    as the state payload of a cairndb lease document — so the embedded form
+    is byte-equivalent to the ``to_json`` wire format.
+    """
+    return json.loads(to_json(data))
+
+
+def from_payload(model: type) -> Callable[[Any], Any]:
+    """Curried inverse of :func:`to_payload`: ``from_payload(RunState)(tree)``.
+
+    Round-trips through the ``from_json`` handlers so they remain the single
+    source of truth for the wire format.
+    """
+    deser = from_json(model)
+    return lambda payload: deser(json.dumps(payload))
 
 
 @from_json.register(FlowJob)

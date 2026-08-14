@@ -13,8 +13,13 @@ from flowlet.types import Timestamp
 
 
 @pytest.fixture
-def state_repo(tmp_path):
-    return StateRepository(store=FilesystemStorage(tmp_path))
+def store(tmp_path):
+    return FilesystemStorage(tmp_path)
+
+
+@pytest.fixture
+def state_repo(store):
+    return StateRepository(store=store)
 
 
 @pytest.fixture
@@ -30,9 +35,11 @@ async def _rows(cache):
 
 @pytest.mark.unit
 class TestRefresh:
-    async def test_active_states_are_indexed(self, cache, state_repo, make_run_state):
+    async def test_active_states_are_indexed(
+        self, cache, state_repo, make_run_state, seed_lease, store
+    ):
         state = make_run_state(flow_name="flow_a")
-        state_repo.write(state, None)
+        seed_lease(store, state)
 
         await cache.refresh()
 
@@ -41,27 +48,29 @@ class TestRefresh:
         assert rows[0].run_id == state.run_id
         assert rows[0].status == RunStatus.running.value
 
-    async def test_state_transitions_are_reflected(self, cache, state_repo, make_run_state):
+    async def test_state_transitions_are_reflected(
+        self, cache, state_repo, make_run_state, seed_lease, store
+    ):
         state = make_run_state()
-        _, etag = state_repo.write(state, None)
+        seed_lease(store, state)
         await cache.refresh()
 
         state.status = RunStatus.completed
         state.ended_at = Timestamp.now()
-        state_repo.write(state, etag)
+        seed_lease(store, state, epoch=2)
         await cache.refresh(force=True)
 
         rows = await _rows(cache)
         assert rows[0].status == RunStatus.completed.value
 
     async def test_archived_state_survives_removal_from_active_dir(
-        self, cache, state_repo, make_run_state
+        self, cache, state_repo, make_run_state, seed_lease, store
     ):
         state = make_run_state(
             status=RunStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
-        state_repo.write(state, None)
+        seed_lease(store, state)
         state_repo.archive(state.flow_name, state.run_id)
         assert state_repo.list_states() == []
 
@@ -72,11 +81,13 @@ class TestRefresh:
         assert rows[0].run_id == state.run_id
         assert rows[0].status == RunStatus.completed.value
 
-    async def test_ttl_throttles_scans(self, state_repo, tmp_path, make_run_state):
+    async def test_ttl_throttles_scans(
+        self, state_repo, tmp_path, make_run_state, seed_lease, store
+    ):
         cache = CacheRepository(state_repo=state_repo, store=state_repo.store, ttl=3600)
         await cache.refresh()
 
-        state_repo.write(make_run_state(), None)
+        seed_lease(store, make_run_state())
         await cache.refresh()  # within TTL — must not rescan
 
         assert await _rows(cache) == []
