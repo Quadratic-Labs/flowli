@@ -48,64 +48,73 @@ def signals(store) -> SignalRepository:
 
 @pytest.mark.unit
 class TestStateRepository:
-    def test_acquire_and_read_round_trip(self, state_repo, make_run_state):
-        state = make_run_state(flow_name="my_flow")
+    def test_acquire_and_read_round_trip(self, state_repo, make_record):
+        record = make_record(flow_name="my_flow")
+        obligation = record.obligation
         lease = state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w1", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w1", state_fn=lambda _: record,
         )
         assert lease is not None
         assert lease.holder == "w1"
         assert lease.epoch == 1
 
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(obligation.flow_name, obligation.id)
         assert view is not None
-        assert view.state.run_id == state.run_id
-        assert view.state.status == state.status
+        assert view.record.obligation.id == obligation.id
+        assert view.state.status == record.summary().status
         assert view.holder == "w1"
         assert view.held() is True
 
     def test_read_missing_returns_none(self, state_repo):
         assert state_repo.read("no_such_flow", uuid7()) is None
 
-    def test_acquire_held_returns_none(self, state_repo, make_run_state):
-        state = make_run_state()
+    def test_acquire_held_returns_none(self, state_repo, make_record):
+        record = make_record()
+        obligation = record.obligation
         assert state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w1", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w1", state_fn=lambda _: record,
         ) is not None
         assert state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w2", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w2", state_fn=lambda _: record,
         ) is None
 
     def test_release_then_reacquire_applies_transition(
-        self, state_repo, make_run_state
+        self, state_repo, make_record
     ):
-        state = make_run_state(status=RunStatus.running, attempt=1)
+        from flowlet.models import AttemptOutcome
+
+        record = make_record(status=RunStatus.running, attempt=1)
+        obligation = record.obligation
         lease = state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w1", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w1", state_fn=lambda _: record,
         )
-        lease.release(evolve(state, status=RunStatus.pending))
+        record.record_outcome(AttemptOutcome.raised, error="ValueError")
+        lease.release(record)
+
+        def next_attempt(current):
+            current.begin_attempt("w2")
+            return current
 
         second = state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w2",
-            state_fn=lambda s: evolve(
-                s, status=RunStatus.running, attempt=s.attempt + 1
-            ),
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w2", state_fn=next_attempt,
         )
         assert second is not None
         assert second.epoch == 2
-        assert second.state.attempt == 2
-        assert second.state.status == RunStatus.running
+        assert len(second.record.attempts) == 2
+        assert second.record.open_attempt is not None
+        assert second.record.open_attempt.executor == "w2"
 
     def test_fenced_holder_gets_lease_lost(
         self, state_repo, make_run_state, seed_lease, store
     ):
         """A holder whose lease expired and was stolen cannot write."""
         state = make_run_state(status=RunStatus.running)
+        # (seed_lease expands the RunState spec into an account)
         # Seed an expired held lease, then steal it.
         seed_lease(
             store, state, holder="w1",
@@ -142,7 +151,7 @@ class TestStateRepository:
         seed_lease(store, state)  # released, closed
 
         def refuse(existing):
-            if existing.status.is_closed():
+            if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
             return existing
 
@@ -156,15 +165,17 @@ class TestStateRepository:
         assert view.epoch == 1
         assert view.holder is None
 
-    def test_write_through_lease_updates_payload(self, state_repo, make_run_state):
-        state = make_run_state(status=RunStatus.running)
+    def test_write_through_lease_updates_payload(self, state_repo, make_record):
+        record = make_record(status=RunStatus.running)
+        obligation = record.obligation
         lease = state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w1", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w1", state_fn=lambda _: record,
         )
-        lease.write(evolve(state, attempt=2))
-        view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.attempt == 2
+        record.obligation.cancel_requested = True
+        lease.write(record)
+        view = state_repo.read(obligation.flow_name, obligation.id)
+        assert view.record.obligation.cancel_requested is True
         assert view.holder == "w1"
 
     def test_delete_removes_state(self, state_repo, make_run_state, seed_lease, store):
@@ -194,16 +205,17 @@ class TestStateRepository:
     def test_list_states_empty_when_no_state_prefix(self, state_repo):
         assert state_repo.list_states() == []
 
-    def test_state_key_layout(self, state_repo, store, make_run_state):
-        """Lease documents live at state/<flow>/<run_id>.json."""
-        state = make_run_state(flow_name="my_flow")
+    def test_state_key_layout(self, state_repo, store, make_record):
+        """Lease documents live at state/<flow>/<obligation_id>.json."""
+        record = make_record(flow_name="my_flow")
+        obligation = record.obligation
         state_repo.acquire(
-            state.flow_name, state.run_id,
-            ttl=60, holder="w1", state_fn=lambda _: state,
+            obligation.flow_name, obligation.id,
+            ttl=60, holder="w1", state_fn=lambda _: record,
         )
 
         keys = store.list_objects_sync("state/")
-        assert keys == [f"state/my_flow/{state.run_id}.json"]
+        assert keys == [f"state/my_flow/{obligation.id}.json"]
 
     def test_archive_moves_payload_into_run_folder(
         self, state_repo, store, make_run_state, seed_lease
@@ -218,13 +230,14 @@ class TestStateRepository:
             f"{run_prefix(state.flow_name, state.run_id)}/state.json"
         )
         assert archived is not None
-        # The archived object is the bare RunState wire format (no envelope).
-        from flowlet.models import RunState
+        # The archived object is the bare account wire format (no envelope).
+        from flowlet.models import ObligationRecord, ObligationStatus
         from flowlet.serdes import from_json
 
-        restored = from_json(RunState)(archived.data.decode())
-        assert restored.run_id == state.run_id
-        assert restored.status == RunStatus.completed
+        restored = from_json(ObligationRecord)(archived.data.decode())
+        assert restored.obligation.id == state.run_id
+        assert restored.obligation.status == ObligationStatus.discharged
+        assert restored.summary().status == RunStatus.completed
 
 
 # ============================================================================

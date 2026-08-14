@@ -4,7 +4,22 @@ from collections.abc import Callable
 from typing import Any, get_args, get_origin
 from uuid import UUID
 
-from .models import FlowJob, RunState, RunStatus, RunSummary, RunType, SpanEvent, SpanRecord
+from .models import (
+    Attempt,
+    AttemptOutcome,
+    FlowJob,
+    Obligation,
+    ObligationRecord,
+    ObligationStatus,
+    RunState,
+    RunStatus,
+    RunSummary,
+    RunType,
+    SpanEvent,
+    SpanRecord,
+    Verdict,
+    VerdictDecision,
+)
 from .types import JsonAtom, Timestamp
 
 # region @valuedispatch
@@ -158,6 +173,56 @@ def _(data: FlowJob) -> dict:
         "submitted_at": data.submitted_at,
         "max_retries": data.max_retries,
         "timeout_seconds": data.timeout_seconds,
+        "parent_id": data.parent_id,
+        "root_id": data.root_id,
+    }
+
+
+@destructure.register(Verdict)
+def _(data: Verdict) -> dict:
+    return {
+        "decision": data.decision,
+        "by": data.by,
+        "rendered_at": data.rendered_at,
+        "reason": data.reason,
+    }
+
+
+@destructure.register(Attempt)
+def _(data: Attempt) -> dict:
+    return {
+        "n": data.n,
+        "executor": data.executor,
+        "started_at": data.started_at,
+        "ended_at": data.ended_at,
+        "outcome": data.outcome,
+        "error": data.error,
+        "verdict": destructure(data.verdict) if data.verdict is not None else None,
+    }
+
+
+@destructure.register(Obligation)
+def _(data: Obligation) -> dict:
+    return {
+        "id": data.id,
+        "flow_name": data.flow_name,
+        "kwargs": data.kwargs,
+        "parent_id": data.parent_id,
+        "root_id": data.root_id,
+        "max_retries": data.max_retries,
+        "created_at": data.created_at,
+        "closed_at": data.closed_at,
+        "status": data.status,
+        "cause": data.cause,
+        "cancel_requested": data.cancel_requested,
+    }
+
+
+@destructure.register(ObligationRecord)
+def _(data: ObligationRecord) -> dict:
+    return {
+        "obligation": destructure(data.obligation),
+        "attempts": [destructure(a) for a in data.attempts],
     }
 
 
@@ -339,6 +404,56 @@ def _(data: str) -> FlowJob:
         submitted_at=Timestamp.from_iso(raw["submitted_at"]),
         max_retries=raw.get("max_retries", 3),
         timeout_seconds=raw.get("timeout_seconds"),
+        parent_id=UUID(raw["parent_id"]) if raw.get("parent_id") else None,
+        root_id=UUID(raw["root_id"]) if raw.get("root_id") else None,
+    )
+
+
+def _verdict_from_raw(raw: dict | None) -> Verdict | None:
+    if raw is None:
+        return None
+    return Verdict(
+        decision=VerdictDecision(raw["decision"]),
+        by=raw.get("by", "auto"),
+        rendered_at=Timestamp.from_iso(raw["rendered_at"]),
+        reason=raw.get("reason"),
+    )
+
+
+def _attempt_from_raw(raw: dict) -> Attempt:
+    return Attempt(
+        n=raw["n"],
+        executor=raw["executor"],
+        started_at=Timestamp.from_iso(raw["started_at"]),
+        ended_at=Timestamp.from_iso(raw["ended_at"]) if raw.get("ended_at") else None,
+        outcome=AttemptOutcome(raw["outcome"]) if raw.get("outcome") else None,
+        error=raw.get("error"),
+        verdict=_verdict_from_raw(raw.get("verdict")),
+    )
+
+
+def _obligation_from_raw(raw: dict) -> Obligation:
+    return Obligation(
+        id=UUID(raw["id"]),
+        flow_name=raw["flow_name"],
+        kwargs=raw.get("kwargs") or {},
+        parent_id=UUID(raw["parent_id"]) if raw.get("parent_id") else None,
+        root_id=UUID(raw["root_id"]) if raw.get("root_id") else None,
+        max_retries=raw.get("max_retries", 3),
+        created_at=Timestamp.from_iso(raw["created_at"]),
+        closed_at=Timestamp.from_iso(raw["closed_at"]) if raw.get("closed_at") else None,
+        status=ObligationStatus(raw.get("status", "open")),
+        cause=raw.get("cause"),
+        cancel_requested=raw.get("cancel_requested", False),
+    )
+
+
+@from_json.register(ObligationRecord)
+def _(data: str) -> ObligationRecord:
+    raw = json.loads(data)
+    return ObligationRecord(
+        obligation=_obligation_from_raw(raw["obligation"]),
+        attempts=[_attempt_from_raw(a) for a in raw.get("attempts") or []],
     )
 
 # ---

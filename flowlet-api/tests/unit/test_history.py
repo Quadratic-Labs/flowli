@@ -58,18 +58,10 @@ def _closed(make_run_state, **overrides):
 
 
 def _seed(store, state):
-    """Write a released lease document holding *state* as its payload."""
-    from flowlet.serdes import to_payload
+    """Write a released lease document for a RunState-spec'd account."""
+    from conftest import _seed_lease
 
-    doc = {
-        "epoch": 1,
-        "holder": None,
-        "deadline_at": datetime.now(UTC).isoformat(),
-        "state": to_payload(state),
-    }
-    store.put_object_sync(
-        f"state/{state.flow_name}/{state.run_id}.json", json.dumps(doc).encode()
-    )
+    _seed_lease(store, state)
 
 
 @pytest.mark.unit

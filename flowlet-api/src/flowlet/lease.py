@@ -100,9 +100,10 @@ class RunLease:
         self._last_beat = time.monotonic()
 
         self.lease.renew()
-        state = self.lease.state
+        obligation = self.lease.record.obligation
         return (
-            self.signals.get(state.flow_name, state.run_id, CANCEL) is not None
+            self.signals.get(obligation.flow_name, obligation.id, CANCEL)
+            is not None
         )
 
 
@@ -158,7 +159,9 @@ def heartbeat(*, raise_on_cancel: bool = True) -> bool:
         return False
     cancelled = lease.beat()
     if cancelled and raise_on_cancel:
-        raise RunCancelled(f"run {lease.lease.state.run_id} cancelled")
+        raise RunCancelled(
+            f"obligation {lease.lease.record.obligation.id} cancelled"
+        )
     return cancelled
 
 # ---

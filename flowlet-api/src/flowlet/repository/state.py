@@ -18,7 +18,7 @@ from attrs import define, field
 from cairndb.engine.coordination import Lease, acquire_sync
 from cairndb.storage.base import BlobStorage
 
-from ..models import RunState
+from ..models import ObligationRecord, RunState
 from ..serdes import from_payload, to_payload
 from ..storage import run_prefix
 from ..types import Timestamp
@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # role: storage
 # intent: own run lease documents at state/<flow_name>/<run_id>.json
 # description: >
-#   StateRepository wraps the cairndb lease primitive with RunState-typed
-#   payloads.  acquire() takes ownership and applies a state transition
+#   StateRepository wraps the cairndb lease primitive with
+#   ObligationRecord-typed payloads (the account model).  acquire() takes ownership and applies a state transition
 #   atomically with the acquisition itself (engine state_fn), returning a
 #   StateLease whose renew/write/release are epoch-fenced; a fenced holder
 #   gets LeaseLost and must discard its outcome.  read()/list_views() parse
@@ -43,10 +43,11 @@ logger = logging.getLogger(__name__)
 #   - Ownership MUST only be taken via acquire(); never by direct writes.
 #   - acquire()'s state_fn MUST be pure — a lost CAS race re-runs it.
 #   - Expiry and ownership MUST be judged from the envelope (holder,
-#     deadline_at), never from RunState fields.
+#     deadline_at), never from payload fields.
 #   - MUST NOT raise on missing state objects; return None instead.
-#   - archive MUST write the RunState payload in the to_json wire format to
-#     runs/<flow>/<date>/<run_id>/state.json before deleting the document.
+#   - archive MUST write the ObligationRecord payload in the to_json wire
+#     format to runs/<flow>/<date>/<run_id>/state.json before deleting the
+#     document.
 # dependencies:
 #   - storage.keys
 #   - models.run
@@ -60,33 +61,41 @@ logger = logging.getLogger(__name__)
 # ---
 
 class AlreadyClosed(Exception):
-    """Raised by an acquire transition to refuse a lease on a closed run.
+    """Raised by an acquire transition to refuse a lease on a closed obligation.
 
-    Carries the closed RunState so callers can report the terminal status
-    without another read.
+    Carries the closed ObligationRecord so callers can report the terminal
+    status without another read.
     """
 
-    def __init__(self, state: RunState):
-        super().__init__(f"run {state.run_id} already closed ({state.status})")
-        self.state = state
+    def __init__(self, record: ObligationRecord):
+        super().__init__(
+            f"obligation {record.obligation.id} already closed "
+            f"({record.obligation.status})"
+        )
+        self.record = record
 
 
 @define(slots=True, kw_only=True)
 class StateView:
-    """A parsed, read-only view of one run's lease document.
+    """A parsed, read-only view of one obligation's lease document.
 
     Attributes:
-        state: The RunState payload (the run's durable record).
+        record: The ObligationRecord payload (the obligation's account).
         holder: Current lease holder, or None when released.
         deadline_at: Lease expiry (holder-written); for a released lease
             this is the release time — useful as a staleness reference.
         epoch: The lease's monotonic fence token.
     """
 
-    state: RunState
+    record: ObligationRecord
     holder: str | None
     deadline_at: Timestamp | None
     epoch: int
+
+    @property
+    def state(self) -> RunState:
+        """The flat RunState projection of the account (read surface)."""
+        return self.record.summary()
 
     def held(self, now: Timestamp | None = None) -> bool:
         """Whether the lease is actively held (has a live, unexpired holder)."""
@@ -100,18 +109,18 @@ class StateView:
 
 @define(kw_only=True)
 class StateLease:
-    """An owned run lease with RunState-typed payload access.
+    """An owned obligation lease with ObligationRecord-typed payload access.
 
     Wraps the engine lease: ``renew``/``write``/``release`` are fenced by
     the epoch — :class:`cairndb.LeaseLost` propagates when ownership was
     stolen, and the holder must discard its outcome.
 
     Attributes:
-        state: The RunState payload as of the last read or write through
-            this lease.
+        record: The ObligationRecord payload as of the last read or write
+            through this lease.
     """
 
-    state: RunState
+    record: ObligationRecord
     _lease: Lease = field(alias="lease")
 
     @property
@@ -128,20 +137,20 @@ class StateLease:
         """Extend the lease deadline by its ttl. Raises LeaseLost if fenced."""
         self._lease.renew_sync()
 
-    def write(self, state: RunState) -> None:
+    def write(self, record: ObligationRecord) -> None:
         """Replace the payload under the ownership guard."""
-        self._lease.write_sync(to_payload(state))
-        self.state = state
+        self._lease.write_sync(to_payload(record))
+        self.record = record
 
-    def release(self, state: RunState | None = None) -> None:
+    def release(self, record: ObligationRecord | None = None) -> None:
         """Release ownership, optionally recording a final payload.
 
         The document remains (holder None) so the epoch stays monotonic;
         terminal payloads stay readable until the sweeper archives them.
         """
-        if state is not None:
-            self._lease.release_sync(to_payload(state))
-            self.state = state
+        if record is not None:
+            self._lease.release_sync(to_payload(record))
+            self.record = record
         else:
             self._lease.release_sync()
 
@@ -168,7 +177,7 @@ class StateRepository:
             return None
         deadline_raw = doc.get("deadline_at")
         return StateView(
-            state=from_payload(RunState)(payload),
+            record=from_payload(ObligationRecord)(payload),
             holder=doc.get("holder"),
             deadline_at=(
                 Timestamp.from_datetime(datetime.fromisoformat(deadline_raw))
@@ -208,11 +217,11 @@ class StateRepository:
         *,
         ttl: float,
         holder: str,
-        state_fn: Callable[[RunState | None], RunState],
+        state_fn: Callable[[ObligationRecord | None], ObligationRecord],
     ) -> StateLease | None:
-        """Take ownership of a run, applying a transition atomically.
+        """Take ownership of an obligation, applying a transition atomically.
 
-        ``state_fn`` receives the current RunState (None when the document
+        ``state_fn`` receives the current ObligationRecord (None when the document
         does not exist yet) and returns the payload to write with the
         acquisition itself — there is never a window where the lease is
         held but its payload is stale.  It must be pure (a lost CAS race
@@ -233,7 +242,11 @@ class StateRepository:
         """
 
         def _payload_fn(payload):
-            current = from_payload(RunState)(payload) if payload is not None else None
+            current = (
+                from_payload(ObligationRecord)(payload)
+                if payload is not None
+                else None
+            )
             return to_payload(state_fn(current))
 
         lease = acquire_sync(
@@ -247,7 +260,7 @@ class StateRepository:
         if lease is None:
             return None
         return StateLease(
-            state=from_payload(RunState)(lease.state), lease=lease
+            record=from_payload(ObligationRecord)(lease.state), lease=lease
         )
 
     def delete(self, flow_name: str, run_id: UUID) -> None:
@@ -268,7 +281,7 @@ class StateRepository:
     def archive(self, flow_name: str, run_id: UUID) -> None:
         """Move a closed run's record into its run folder.
 
-        The RunState payload is written in the ``to_json`` wire format to
+        The account payload is written in the ``to_json`` wire format to
         ``runs/<flow_name>/<date>/<run_id>/state.json`` — colocated with the
         run's span files so the run folder is the complete, self-contained
         durable record — and the lease document is removed.  Keeps the
@@ -322,7 +335,7 @@ class StateRepository:
         return results
 
     def list_states(self, flow_name: str | None = None) -> list[RunState]:
-        """List active run records (payloads only) — see :meth:`list_views`."""
+        """List RunState projections of the active accounts — read surface."""
         return [view.state for view in self.list_views(flow_name)]
 
 # ---

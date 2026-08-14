@@ -189,10 +189,15 @@ class FlowController:
         kwargs = self._parse_kwargs(flow_name, payload)
 
         run_id = uuid7()
-        from attrs import evolve
-
         from .. import tracing
-        from ..models import RunState, RunStatus, Timestamp
+        from ..models import (
+            AttemptOutcome,
+            Obligation,
+            ObligationRecord,
+            Timestamp,
+            Verdict,
+            VerdictDecision,
+        )
         from ..worker import DEFAULT_TIMEOUT
 
         logger.info(
@@ -200,39 +205,63 @@ class FlowController:
             extra={"flow_name": flow_name, "run_id": str(run_id)},
         )
 
-        # Record state like a worker would: acquire the run's lease so the
-        # record follows the same fenced discipline (best-effort — a failed
-        # acquisition never blocks the synchronous call).
+        # Account the run like a worker would: acquire the obligation's
+        # lease so the record follows the same fenced discipline
+        # (best-effort — a failed acquisition never blocks the call).
         lease = None
         if self.state_repo is not None:
-            initial = RunState(
-                run_id=run_id,
-                flow_name=flow_name,
-                status=RunStatus.running,
-                worker_id="sync-worker",
-                started_at=Timestamp.now(),
-                kwargs=kwargs,
-            )
+            def _initial(_existing) -> ObligationRecord:
+                record = ObligationRecord(
+                    obligation=Obligation(
+                        id=run_id,
+                        flow_name=flow_name,
+                        kwargs=kwargs,
+                        max_retries=1,  # synchronous calls are never retried
+                        created_at=Timestamp.now(),
+                    )
+                )
+                record.begin_attempt("sync-worker")
+                return record
+
             try:
                 lease = self.state_repo.acquire(
                     flow_name,
                     run_id,
                     ttl=DEFAULT_TIMEOUT,
                     holder="sync-worker",
-                    state_fn=lambda _existing: initial,
+                    state_fn=_initial,
                 )
             except Exception:
                 logger.exception(
                     "sync_run_state_acquire_failed", extra={"run_id": str(run_id)}
                 )
 
-        def _finalize(status: RunStatus) -> None:
+        def _finalize(exc: Exception | None) -> None:
             if lease is None:
                 return
-            try:
-                lease.release(
-                    evolve(lease.state, status=status, ended_at=Timestamp.now())
+            record = lease.record
+            now = Timestamp.now()
+            if exc is None:
+                record.record_outcome(
+                    AttemptOutcome.returned,
+                    verdict=Verdict(
+                        decision=VerdictDecision.accepted, rendered_at=now
+                    ),
                 )
+                record.discharge()
+            else:
+                record.record_outcome(
+                    AttemptOutcome.raised,
+                    error=type(exc).__name__,
+                    verdict=Verdict(
+                        decision=VerdictDecision.rejected,
+                        rendered_at=now,
+                        reason=type(exc).__name__,
+                    ),
+                )
+                record.abandon("max_retries_exceeded")
+            try:
+                lease.release(record)
             except Exception:
                 logger.exception(
                     "sync_run_state_release_failed", extra={"run_id": str(run_id)}
@@ -245,18 +274,18 @@ class FlowController:
             finally:
                 tracing.force_flush()
 
-            _finalize(RunStatus.completed)
+            _finalize(None)
             logger.info(
                 "flow_run_completed",
                 extra={"flow_name": flow_name, "run_id": str(run_id)},
             )
 
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "flow_run_failed",
                 extra={"flow_name": flow_name, "run_id": str(run_id)},
             )
-            _finalize(RunStatus.failed)
+            _finalize(exc)
             raise
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
@@ -299,11 +328,34 @@ class FlowController:
 
         kwargs = self._parse_kwargs(flow_name, payload)
         options = self.registry.get_flow_options(flow_name)
+
+        parent_id = payload.parent_run_id
+        root_id = None
+        if parent_id is not None:
+            # The child's root is the parent's root, or the parent itself.
+            root_id = parent_id
+            if self.state_repo is not None:
+                parent_view = next(
+                    (
+                        v
+                        for v in self.state_repo.list_views()
+                        if v.record.obligation.id == parent_id
+                    ),
+                    None,
+                )
+                if (
+                    parent_view is not None
+                    and parent_view.record.obligation.root_id is not None
+                ):
+                    root_id = parent_view.record.obligation.root_id
+
         job = FlowJob(
             flow_name=flow_name,
             kwargs=kwargs,
             timeout_seconds=options.timeout_seconds,
             max_retries=options.max_retries,
+            parent_id=parent_id,
+            root_id=root_id,
         )
 
         deduplicated = False
@@ -383,7 +435,11 @@ class FlowController:
             raise HTTPException(status_code=503, detail="Storage not configured")
 
         match = next(
-            (v for v in self.state_repo.list_views() if v.state.run_id == run_id),
+            (
+                v
+                for v in self.state_repo.list_views()
+                if v.record.obligation.id == run_id
+            ),
             None,
         )
         if match is None:
@@ -391,16 +447,20 @@ class FlowController:
                 status_code=404,
                 detail="Run not found among active runs (it may already be archived)",
             )
-        flow_name = match.state.flow_name
+        flow_name = match.record.obligation.flow_name
 
-        from attrs import evolve
-
-        from ..models import RunState, RunStatus
+        from ..models import (
+            AttemptOutcome,
+            ObligationRecord,
+            Verdict,
+            VerdictDecision,
+        )
         from ..repository import AlreadyClosed
         from ..repository.signals import CANCEL
         from ..types import Timestamp
 
-        def _respond(state, event: str | None) -> CancelRunResponse:
+        def _respond(record: ObligationRecord, event: str | None) -> CancelRunResponse:
+            state = record.summary()
             if event is not None and self.events is not None:
                 self.events.append(
                     flow_name=flow_name,
@@ -423,35 +483,42 @@ class FlowController:
         view = self.state_repo.read(flow_name, run_id)
         if view is None:
             raise HTTPException(status_code=404, detail="Run state disappeared")
-        if view.state.status.is_closed():
-            return _respond(view.state, None)
+        if view.record.obligation.status.is_closed():
+            return _respond(view.record, None)
 
         if view.held():
             # Actively owned: set the durable cancel signal; the worker's
             # next heartbeat observes it and finalizes as canceled.
             self.signals.send(flow_name, run_id, CANCEL, actor="api")
-            return _respond(view.state, "cancel_requested")
+            return _respond(view.record, "cancel_requested")
 
-        # Unowned (released pending, or expired running): close it here
-        # through a fenced steal — the same discipline every actor uses.
-        def transition(existing: RunState | None) -> RunState:
+        # Unowned (parked, or crashed in flight): close it here through a
+        # fenced steal — the same discipline every actor uses.  A dead
+        # in-flight attempt gets its crash accounted before the abandon.
+        def transition(existing: ObligationRecord | None) -> ObligationRecord:
             if existing is None:
-                raise LookupError(f"state for run {run_id} disappeared")
-            if existing.status.is_closed():
+                raise LookupError(f"account for run {run_id} disappeared")
+            if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
-            return evolve(
-                existing,
-                status=RunStatus.canceled,
-                cancel_requested=True,
-                ended_at=Timestamp.now(),
-            )
+            if existing.open_attempt is not None:
+                existing.record_outcome(
+                    AttemptOutcome.crashed,
+                    verdict=Verdict(
+                        decision=VerdictDecision.rejected,
+                        rendered_at=Timestamp.now(),
+                        reason="lease_expired",
+                    ),
+                )
+            existing.obligation.cancel_requested = True
+            existing.abandon("canceled")
+            return existing
 
         try:
             lease = self.state_repo.acquire(
                 flow_name, run_id, ttl=60, holder="api", state_fn=transition
             )
         except AlreadyClosed as closed:
-            return _respond(closed.state, None)
+            return _respond(closed.record, None)
         except LookupError:
             raise HTTPException(status_code=404, detail="Run state disappeared")
 
@@ -459,11 +526,11 @@ class FlowController:
             # A worker claimed it between the read and the steal — fall back
             # to the signal so the new owner cancels cooperatively.
             self.signals.send(flow_name, run_id, CANCEL, actor="api")
-            return _respond(view.state, "cancel_requested")
+            return _respond(view.record, "cancel_requested")
 
-        state = lease.state
+        record = lease.record
         lease.release()
-        return _respond(state, "canceled")
+        return _respond(record, "canceled")
 
     # ------------------------------------------------------------------
     # Query endpoints

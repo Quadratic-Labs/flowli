@@ -5,15 +5,15 @@ This module defines attrs dataclasses for representing flow execution data
 in a type-safe, immutable way. These models are used throughout the repository
 layer for data transfer between components.
 """
+from collections.abc import Mapping
 from datetime import timedelta
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID, uuid7
 
 from attrs import Factory, define, field
 
 from .types import JsonData, Timestamp
-
 
 # region @models.run
 # ---
@@ -42,6 +42,12 @@ class RunType(StrEnum):
 
 
 class RunStatus(StrEnum):
+    """Projection statuses for the API/history surface.
+
+    Derived from the account (see :meth:`ObligationRecord.summary`), never
+    stored as authority.  ``retry``/``warning``/``stopped`` survive only so
+    archived pre-account records still parse.
+    """
     pending = "pending"
     running = "running"
     retry = "retry"
@@ -50,26 +56,6 @@ class RunStatus(StrEnum):
     warning = "warning"
     canceled = "canceled"
     stopped = "stopped"
-
-    @classmethod
-    def from_log_level(cls, level: str) -> "RunStatus":
-        """Map a logging level to a RunStatus.
-
-        Args:
-            level: The logging level name (e.g., 'INFO', 'SUCCESS', 'WARNING', 'ERROR')
-
-        Returns:
-            The corresponding RunStatus value
-        """
-        level_upper = level.upper()
-        if level_upper == 'SUCCESS':
-            return cls.completed
-        elif level_upper == 'WARNING':
-            return cls.warning
-        elif level_upper in ('ERROR', 'CRITICAL'):
-            return cls.failed
-        else:
-            return cls.running
 
     def is_closed(self) -> bool:
         return self.value in ("completed", "canceled", "failed", "warning")
@@ -180,35 +166,24 @@ class Run(RunSummary):
 
 @define(slots=True, kw_only=True)
 class RunState:
-    """
-    The run's durable record, carried as the payload of its lease document.
+    """A flat projection of one obligation's account, for the read surface.
 
-    Ownership and liveness live in the surrounding cairndb lease envelope
-    (``{epoch, holder, deadline_at, state}``), never here: a worker owns a
-    run by acquiring the lease, renews it via ``flowlet.heartbeat()``, and
-    every payload write is fenced by the lease epoch.  RunState itself is
-    pure record — what the run is, how far it got, and what it cost in
-    attempts — and is what gets archived into the run folder when the run
-    closes.
+    Derived from :class:`ObligationRecord` via :meth:`ObligationRecord.summary`
+    — never authoritative.  The API, SQLite caches, and the history log keep
+    consuming this stable shape while the durable payload is the full
+    account.
 
     Attributes:
-        run_id: Unique identifier for the run.
-        flow_name: Name of the flow being executed.
-        status: Current execution status.
-        worker_id: Identifier of the worker that executed the recorded
-            attempt (record, not ownership — the lease holder is
-            authoritative while the run is active).
-        started_at: Timestamp when the run was first started.
-        ended_at: Timestamp when the run finished (completed or failed).
-        attempt: Current attempt number (1-based); incremented on each claim
-            of an existing state.
+        run_id: The obligation's id.
+        flow_name: Name of the flow.
+        status: Derived projection status (see RunStatus).
+        worker_id: Executor of the most recent attempt ("" if none).
+        started_at: When the obligation was created.
+        ended_at: When the obligation closed (discharged/abandoned).
+        attempt: Number of attempts recorded so far.
         max_retries: Maximum number of execution attempts allowed.
-        kwargs: Flow keyword arguments, copied from the job at first claim so
-            the sweeper can re-enqueue a crashed run without the original
-            queue message.
-        cancel_requested: Whether cancellation was requested for this run.
-            The live channel is the run's cancel signal object; this field
-            records the fact on the closed state.
+        kwargs: Flow keyword arguments.
+        cancel_requested: Whether cancellation was requested.
     """
     run_id: UUID
     flow_name: str
@@ -220,6 +195,245 @@ class RunState:
     max_retries: int = 3
     kwargs: dict[str, Any] = Factory(dict)
     cancel_requested: bool = False
+
+# ---
+# endregion
+
+
+# region @models.account
+# ---
+# role: datatype
+# intent: the account model — obligation, attempts, verdicts as durable record
+# description: >
+#   An ObligationRecord is the payload of one obligation's lease document:
+#   the obligation (unit of intent — what was promised, including its place
+#   in a parent/root hierarchy for sub-obligations), its attempts (units of
+#   execution, each with an explicit outcome), and per-attempt verdicts
+#   (units of judgment — how the outcome was adjudicated).  Execution only
+#   proposes entries into this account; the account is the system of
+#   record.  Done-ness is a recorded verdict, not a return code: the
+#   auto-verdict (returned ⇒ accepted) is merely the default adjudication
+#   policy, and gates/human adjudication slot into the same fields.
+# rules:
+#   - The account MUST be append-only in spirit: attempts are appended and
+#     their outcome recorded once; never rewritten.
+#   - Every attempt MUST end with an explicit outcome — crash accounting
+#     happens at the fenced steal that discovers the crash.
+#   - Obligation status transitions MUST go through the record methods so
+#     closed_at/cause stay consistent.
+#   - RunState/RunStatus are projections via summary(); they MUST NOT be
+#     stored as authority.
+# dependencies:
+#   - types
+# aliases:
+#   - account
+#   - obligation
+#   - attempt
+#   - verdict
+# triggers:
+#   - what constitutes a workflow
+#   - how is done-ness decided
+#   - how are attempts recorded
+# ---
+
+class ObligationStatus(StrEnum):
+    """Lifecycle of an obligation — the unit of intent."""
+    open = "open"
+    awaiting_adjudication = "awaiting_adjudication"
+    discharged = "discharged"
+    abandoned = "abandoned"
+
+    def is_closed(self) -> bool:
+        return self.value in ("discharged", "abandoned")
+
+
+class AttemptOutcome(StrEnum):
+    """How an attempt's execution ended — fact, prior to judgment."""
+    returned = "returned"        # the callable returned normally
+    raised = "raised"            # the callable raised an exception
+    crashed = "crashed"          # the executor died; lease expired mid-flight
+    interrupted = "interrupted"  # deliberately stopped (cancel)
+
+
+class VerdictDecision(StrEnum):
+    """The adjudication of an attempt's outcome against the contract."""
+    accepted = "accepted"
+    rejected = "rejected"
+
+
+@define(slots=True, kw_only=True)
+class Verdict:
+    """A recorded adjudication of one attempt.
+
+    Attributes:
+        decision: Accepted or rejected.
+        by: Who adjudicated — ``auto`` for the default policy (returned ⇒
+            accepted), a gate name, or a principal for human adjudication.
+        rendered_at: When the verdict was recorded.
+        reason: Optional short machine-readable ground for the decision.
+    """
+    decision: VerdictDecision
+    by: str = "auto"
+    rendered_at: Timestamp
+    reason: str | None = field(default=None)
+
+
+@define(slots=True, kw_only=True)
+class Attempt:
+    """One execution attempt — the unit of execution, failure, and cost.
+
+    Attributes:
+        n: Attempt number, 1-based.
+        executor: Worker that ran (or is running) this attempt.
+        started_at: When the attempt was claimed.
+        ended_at: When its outcome was recorded.
+        outcome: Explicit end of execution; None while in flight.
+        error: Exception type name when the outcome is ``raised``.
+        verdict: The adjudication of this attempt's outcome, when rendered.
+    """
+    n: int
+    executor: str
+    started_at: Timestamp
+    ended_at: Timestamp | None = field(default=None)
+    outcome: AttemptOutcome | None = field(default=None)
+    error: str | None = field(default=None)
+    verdict: Verdict | None = field(default=None)
+
+
+@define(slots=True, kw_only=True)
+class Obligation:
+    """The unit of intent: what was promised, durable and adjudicable.
+
+    Attributes:
+        id: The obligation's stable identity (uuid7; doubles as run_id and
+            OTel trace id on the read surface).
+        flow_name: Name of the flow that discharges the obligation.
+        kwargs: Validated flow arguments — the contract's inputs.
+        parent_id: Parent obligation for sub-obligations; None for roots.
+        root_id: Root of the obligation tree; None for roots.
+        max_retries: Attempt budget.
+        created_at: When the obligation was recorded.
+        closed_at: When it was discharged or abandoned.
+        status: Current lifecycle state.
+        cause: Machine-readable ground for abandonment (e.g. ``canceled``,
+            ``max_retries_exceeded``).
+        cancel_requested: Whether cancellation was requested (record; the
+            live channel is the cancel signal object).
+    """
+    id: UUID
+    flow_name: str
+    kwargs: dict[str, Any] = Factory(dict)
+    parent_id: UUID | None = field(default=None)
+    root_id: UUID | None = field(default=None)
+    max_retries: int = 3
+    created_at: Timestamp
+    closed_at: Timestamp | None = field(default=None)
+    status: ObligationStatus = ObligationStatus.open
+    cause: str | None = field(default=None)
+    cancel_requested: bool = False
+
+
+@define(slots=True, kw_only=True)
+class ObligationRecord:
+    """The account of one obligation: intent plus the record of its discharge.
+
+    Carried as the state payload of the obligation's lease document.
+    Sub-obligations are separate records (own lease document, own failure
+    domain) linked through ``obligation.parent_id``/``root_id``.
+
+    Attributes:
+        obligation: The unit of intent.
+        attempts: Every execution attempt, in order, outcomes explicit.
+    """
+    obligation: Obligation
+    attempts: list[Attempt] = Factory(list)
+
+    # -- reading the account ------------------------------------------------
+
+    @property
+    def last_attempt(self) -> Attempt | None:
+        """The most recent attempt, or None before any claim."""
+        return self.attempts[-1] if self.attempts else None
+
+    @property
+    def open_attempt(self) -> Attempt | None:
+        """The in-flight attempt (no outcome recorded yet), if any."""
+        last = self.last_attempt
+        return last if last is not None and last.outcome is None else None
+
+    def retries_left(self) -> bool:
+        """Whether the attempt budget allows another attempt."""
+        return len(self.attempts) < self.obligation.max_retries
+
+    # -- account transitions -------------------------------------------------
+
+    def begin_attempt(self, executor: str) -> Attempt:
+        """Append a fresh in-flight attempt for *executor*."""
+        attempt = Attempt(
+            n=len(self.attempts) + 1,
+            executor=executor,
+            started_at=Timestamp.now(),
+        )
+        self.attempts.append(attempt)
+        return attempt
+
+    def record_outcome(
+        self,
+        outcome: AttemptOutcome,
+        *,
+        error: str | None = None,
+        verdict: Verdict | None = None,
+    ) -> None:
+        """Record the open attempt's outcome (and optionally its verdict)."""
+        attempt = self.open_attempt
+        if attempt is None:
+            return  # nothing in flight — outcome already accounted
+        attempt.outcome = outcome
+        attempt.ended_at = Timestamp.now()
+        attempt.error = error
+        attempt.verdict = verdict
+
+    def discharge(self) -> None:
+        """Close the obligation as discharged (its contract was met)."""
+        self.obligation.status = ObligationStatus.discharged
+        self.obligation.closed_at = Timestamp.now()
+
+    def abandon(self, cause: str) -> None:
+        """Close the obligation as abandoned, recording why."""
+        self.obligation.status = ObligationStatus.abandoned
+        self.obligation.cause = cause
+        self.obligation.closed_at = Timestamp.now()
+
+    # -- projection -----------------------------------------------------------
+
+    def summary(self) -> RunState:
+        """Project the account onto the flat RunState read surface."""
+        obligation = self.obligation
+        if obligation.status == ObligationStatus.discharged:
+            status = RunStatus.completed
+        elif obligation.status == ObligationStatus.abandoned:
+            status = (
+                RunStatus.canceled
+                if obligation.cause == "canceled"
+                else RunStatus.failed
+            )
+        elif self.open_attempt is not None:
+            status = RunStatus.running
+        else:
+            status = RunStatus.pending
+        last = self.last_attempt
+        return RunState(
+            run_id=obligation.id,
+            flow_name=obligation.flow_name,
+            status=status,
+            worker_id=last.executor if last is not None else "",
+            started_at=obligation.created_at,
+            ended_at=obligation.closed_at,
+            attempt=len(self.attempts),
+            max_retries=obligation.max_retries,
+            kwargs=obligation.kwargs,
+            cancel_requested=obligation.cancel_requested,
+        )
 
 # ---
 # endregion
@@ -254,13 +468,16 @@ class FlowJob:
 
     Attributes:
         job_id: Unique job identifier in the queue (one per message).
-        run_id: Pre-generated run ID for tracking execution.
+        run_id: Pre-generated obligation id for tracking execution.
         flow_name: Name of the flow to execute.
         kwargs: Validated keyword arguments to pass to the flow.
         submitted_at: Timestamp when job was submitted to queue.
         max_retries: Maximum number of execution attempts allowed.
         timeout_seconds: Per-attempt lease duration; None uses the worker's
             default.
+        parent_id: Parent obligation when submitting a sub-obligation.
+        root_id: Root of the obligation tree (parent's root, or the parent
+            itself); None for roots.
 
     Example:
         >>> job = FlowJob(
@@ -279,6 +496,8 @@ class FlowJob:
     submitted_at: Timestamp = Factory(Timestamp.now)
     max_retries: int = 3
     timeout_seconds: int | None = field(default=None)
+    parent_id: UUID | None = field(default=None)
+    root_id: UUID | None = field(default=None)
 
 # ---
 # endregion

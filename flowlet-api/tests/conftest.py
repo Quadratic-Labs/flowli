@@ -65,31 +65,108 @@ def _make_run_state(
     )
 
 
+def _record_from_state(state: RunState) -> "ObligationRecord":
+    """Reconstruct an ObligationRecord account matching a RunState spec.
+
+    Test seeding convenience: builders keep describing runs in the flat
+    RunState vocabulary, and this expands them into a consistent account —
+    ``running`` gets an open in-flight attempt, ``pending`` closed rejected
+    attempts, terminal statuses a closed obligation.  The record's
+    ``summary()`` round-trips back to the given state.
+    """
+    from flowlet.models import (
+        Attempt,
+        AttemptOutcome,
+        Obligation,
+        ObligationRecord,
+        ObligationStatus,
+        Verdict,
+        VerdictDecision,
+    )
+
+    obligation = Obligation(
+        id=state.run_id,
+        flow_name=state.flow_name,
+        kwargs=state.kwargs,
+        max_retries=state.max_retries,
+        created_at=state.started_at,
+        closed_at=state.ended_at,
+        cancel_requested=state.cancel_requested,
+    )
+    record = ObligationRecord(obligation=obligation)
+
+    def _attempt(n: int, outcome, decision) -> Attempt:
+        verdict = None
+        if decision is not None:
+            verdict = Verdict(decision=decision, rendered_at=_make_ts())
+        return Attempt(
+            n=n,
+            executor=state.worker_id,
+            started_at=state.started_at,
+            ended_at=_make_ts() if outcome is not None else None,
+            outcome=outcome,
+            verdict=verdict,
+        )
+
+    rejected = (AttemptOutcome.raised, VerdictDecision.rejected)
+    if state.status == RunStatus.running:
+        finals = [(None, None)]
+    elif state.status == RunStatus.pending:
+        finals = [rejected]
+    elif state.status == RunStatus.completed:
+        finals = [(AttemptOutcome.returned, VerdictDecision.accepted)]
+        obligation.status = ObligationStatus.discharged
+        obligation.closed_at = state.ended_at or _make_ts()
+    elif state.status == RunStatus.canceled:
+        finals = [(AttemptOutcome.interrupted, None)]
+        obligation.status = ObligationStatus.abandoned
+        obligation.cause = "canceled"
+        obligation.cancel_requested = True
+        obligation.closed_at = state.ended_at or _make_ts()
+    else:  # failed and legacy terminal values
+        finals = [rejected]
+        obligation.status = ObligationStatus.abandoned
+        obligation.cause = "max_retries_exceeded"
+        obligation.closed_at = state.ended_at or _make_ts()
+
+    for n in range(1, state.attempt + 1 - len(finals)):
+        record.attempts.append(_attempt(n, *rejected))
+    for offset, (outcome, decision) in enumerate(finals):
+        n = state.attempt - len(finals) + 1 + offset
+        if n >= 1:
+            record.attempts.append(_attempt(n, outcome, decision))
+    return record
+
+
 def _seed_lease(
     store,
-    state: RunState,
+    state,
     *,
     holder: str | None = None,
     deadline: datetime | None = None,
     epoch: int = 1,
 ) -> None:
-    """Write a run's lease document directly — test seeding only.
+    """Write an obligation's lease document directly — test seeding only.
 
-    Defaults model a *released* lease (holder None, deadline = now, the
-    release time).  Pass ``holder`` and a future ``deadline`` for a held
-    lease, or a past deadline for an expired one.
+    Accepts either an ObligationRecord or a RunState spec (expanded via
+    :func:`_record_from_state`).  Defaults model a *released* lease
+    (holder None, deadline = now, the release time).  Pass ``holder`` and a
+    future ``deadline`` for a held lease, or a past deadline for an
+    expired one.
     """
     import json
 
     from flowlet.serdes import to_payload
 
+    record = state if not isinstance(state, RunState) else _record_from_state(state)
     doc = {
         "epoch": epoch,
         "holder": holder,
         "deadline_at": (deadline or datetime.now(UTC)).isoformat(),
-        "state": to_payload(state),
+        "state": to_payload(record),
     }
-    key = f"state/{state.flow_name}/{state.run_id}.json"
+    obligation = record.obligation
+    key = f"state/{obligation.flow_name}/{obligation.id}.json"
     store.put_object_sync(
         key, json.dumps(doc, separators=(",", ":"), sort_keys=True).encode()
     )
@@ -166,6 +243,12 @@ def make_run_state():
 def seed_lease():
     """Return the _seed_lease builder callable (writes a lease document)."""
     return _seed_lease
+
+
+@pytest.fixture
+def make_record():
+    """Build an ObligationRecord from RunState-style keyword arguments."""
+    return lambda **kwargs: _record_from_state(_make_run_state(**kwargs))
 
 
 @pytest.fixture

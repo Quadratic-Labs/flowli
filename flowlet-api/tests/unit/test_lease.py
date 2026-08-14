@@ -46,12 +46,13 @@ def signals(store):
     return SignalRepository(store=store)
 
 
-def _claimed_lease(state_repo, make_run_state, holder="w1", **overrides):
-    """Acquire a running run's lease as a worker claim would."""
-    state = make_run_state(status=RunStatus.running, **overrides)
+def _claimed_lease(state_repo, make_record, holder="w1", **overrides):
+    """Acquire a running obligation's lease as a worker claim would."""
+    record = make_record(status=RunStatus.running, **overrides)
+    obligation = record.obligation
     lease = state_repo.acquire(
-        state.flow_name, state.run_id, ttl=600, holder=holder,
-        state_fn=lambda _: state,
+        obligation.flow_name, obligation.id, ttl=600, holder=holder,
+        state_fn=lambda _: record,
     )
     assert lease is not None
     return lease
@@ -64,24 +65,24 @@ def _claimed_lease(state_repo, make_run_state, holder="w1", **overrides):
 
 class TestRunLeaseBeat:
     def test_beat_renews_envelope_deadline(
-        self, state_repo, signals, make_run_state
+        self, state_repo, signals, make_record
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        before = state_repo.read(state.flow_name, state.run_id).deadline_at
+        lease = _claimed_lease(state_repo, make_record)
+        obligation = lease.record.obligation
+        before = state_repo.read(obligation.flow_name, obligation.id).deadline_at
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
         assert run_lease.beat() is False
 
-        after = state_repo.read(state.flow_name, state.run_id).deadline_at
+        after = state_repo.read(obligation.flow_name, obligation.id).deadline_at
         assert after.value >= before.value
 
     def test_beat_is_throttled_within_min_interval(
-        self, state_repo, signals, make_run_state, store
+        self, state_repo, signals, make_record, store
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        key = f"state/{state.flow_name}/{state.run_id}.json"
+        lease = _claimed_lease(state_repo, make_record)
+        obligation = lease.record.obligation
+        key = f"state/{obligation.flow_name}/{obligation.id}.json"
         etag_before = store.get_object_sync(key).etag
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=3600.0)
@@ -90,27 +91,28 @@ class TestRunLeaseBeat:
         assert store.get_object_sync(key).etag == etag_before  # no write
 
     def test_beat_observes_cancel_signal(
-        self, state_repo, signals, make_run_state
+        self, state_repo, signals, make_record
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+        lease = _claimed_lease(state_repo, make_record)
+        obligation = lease.record.obligation
+        signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
         assert run_lease.beat() is True
 
     def test_beat_raises_lease_lost_when_fenced(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_record, seed_lease, store
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
+        lease = _claimed_lease(state_repo, make_record)
+        record = lease.record
+        obligation = record.obligation
         # The lease expires and another worker steals it (epoch bump).
         seed_lease(
-            store, state, holder="w1",
+            store, record, holder="w1",
             deadline=datetime.now(UTC) - timedelta(seconds=5),
         )
         thief = state_repo.acquire(
-            state.flow_name, state.run_id, ttl=600, holder="other-worker",
+            obligation.flow_name, obligation.id, ttl=600, holder="other-worker",
             state_fn=lambda s: s,
         )
         assert thief is not None
@@ -130,11 +132,11 @@ class TestHeartbeat:
         assert heartbeat() is False
 
     def test_raises_run_cancelled_by_default(
-        self, state_repo, signals, make_run_state
+        self, state_repo, signals, make_record
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+        lease = _claimed_lease(state_repo, make_record)
+        obligation = lease.record.obligation
+        signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
 
         token = bind_lease(run_lease)
@@ -145,11 +147,11 @@ class TestHeartbeat:
             unbind_lease(token)
 
     def test_returns_flag_when_raise_disabled(
-        self, state_repo, signals, make_run_state
+        self, state_repo, signals, make_record
     ):
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+        lease = _claimed_lease(state_repo, make_record)
+        obligation = lease.record.obligation
+        signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
 
         token = bind_lease(run_lease)
@@ -173,8 +175,8 @@ class TestWorkerCancellation:
         def flow(**kw):
             lease = current_lease()
             lease.min_interval = 0.0
-            state = lease.lease.state
-            signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+            obligation = lease.lease.record.obligation
+            signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
             heartbeat()
 
         queue = FakeQueue([job])
@@ -232,43 +234,44 @@ class TestWorkerCancellation:
 
 class TestRelease:
     def test_cancel_signal_never_disturbs_the_release(
-        self, state_repo, signals, make_run_state
+        self, state_repo, signals, make_record
     ):
         """A cancel that lands after the flow finished does not corrupt the
         terminal write — the signal is out-of-band and simply arrives too
         late to be honoured."""
-        from attrs import evolve
+        from flowlet.models import AttemptOutcome
 
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
-        signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+        lease = _claimed_lease(state_repo, make_record)
+        record = lease.record
+        obligation = record.obligation
+        signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
 
-        lease.release(
-            evolve(state, status=RunStatus.completed)
-        )
-        view = state_repo.read(state.flow_name, state.run_id)
+        record.record_outcome(AttemptOutcome.returned)
+        record.discharge()
+        lease.release(record)
+        view = state_repo.read(obligation.flow_name, obligation.id)
         assert view.state.status == RunStatus.completed
         assert view.holder is None
 
     def test_release_after_fencing_raises_lease_lost(
-        self, state_repo, make_run_state, seed_lease, store
+        self, state_repo, make_record, seed_lease, store
     ):
-        from attrs import evolve
-
-        lease = _claimed_lease(state_repo, make_run_state)
-        state = lease.state
+        lease = _claimed_lease(state_repo, make_record)
+        record = lease.record
+        obligation = record.obligation
         seed_lease(
-            store, state, holder="w1",
+            store, record, holder="w1",
             deadline=datetime.now(UTC) - timedelta(seconds=5),
         )
         thief = state_repo.acquire(
-            state.flow_name, state.run_id, ttl=600, holder="other",
+            obligation.flow_name, obligation.id, ttl=600, holder="other",
             state_fn=lambda s: s,
         )
         assert thief is not None
 
         with pytest.raises(LeaseLost):
-            lease.release(evolve(state, status=RunStatus.completed))
+            record.discharge()
+            lease.release(record)
 
 
 # ============================================================================

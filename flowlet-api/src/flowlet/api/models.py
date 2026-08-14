@@ -119,6 +119,14 @@ class FlowArguments(Base):
             "collapse onto one run"
         ),
     )
+    parent_run_id: UUID | None = Field(
+        None,
+        description=(
+            "Submit as a sub-obligation of this run: the child gets its own "
+            "state document and failure domain, linked through "
+            "parent_id/root_id"
+        ),
+    )
 
 
 class FlowSubmissionResponse(Base):

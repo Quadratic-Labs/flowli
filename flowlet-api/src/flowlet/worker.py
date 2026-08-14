@@ -1,55 +1,69 @@
 """
-Worker for executing a single queued flow job under the cairndb lease model.
+Worker for executing one queued job against the obligation account model.
 
-Ownership is a cairndb lease: a worker claims a run by acquiring the lease
-on its state document, and the claim transition (attempt increment, status
-to ``running``) is written atomically with the acquisition itself.  Every
-subsequent write is epoch-fenced — a worker whose lease expired and was
+Ownership is a cairndb lease on the obligation's document: a worker claims
+an obligation by acquiring the lease, and the claim transition — crash
+accounting for a predecessor's in-flight attempt, then appending its own
+attempt — is written atomically with the acquisition itself.  Every
+subsequent write is epoch-fenced: a worker whose lease expired and was
 stolen gets ``LeaseLost`` and discards its outcome.  There are no
-background threads: a run past its lease deadline is simply reclaimable, by
+background threads; a run past its lease deadline is simply reclaimable, by
 another worker dequeuing a duplicate message or by the sweeper (see
 ``flowlet.sweeper``).  Flows renew the lease cooperatively via
 ``flowlet.heartbeat()`` (see ``flowlet.lease``), which also observes the
-run's cancel signal.
+obligation's cancel signal.
 
-The queue is a pure wake-up signal.  Every dequeued message is acked as soon
-as the run's state is resolved; retry accounting lives exclusively in
-``RunState.attempt``.  Duplicate deliveries are harmless by construction.
+The account discipline: execution never *is* the record — it *proposes*
+entries into it.  An attempt is appended at claim, its outcome recorded
+exactly once (``returned``/``raised``/``interrupted`` by its own executor,
+``crashed`` by whoever discovers the corpse), and done-ness is a recorded
+verdict.  The auto-verdict (returned ⇒ accepted ⇒ discharged) is the
+default adjudication policy; gates and human adjudication slot into the
+same fields.
+
+The queue is a pure wake-up signal.  Every dequeued message is acked as
+soon as the obligation's state is resolved; retry accounting lives
+exclusively in the account's attempt list.  Duplicate deliveries are
+harmless by construction.
 
 State Machine
 -------------
 ``existing_state_case()`` maps the current :class:`StateView` (or ``None``)
 to one of the ``JobState`` values:
 
-    JobState  Condition                                       Action
-    --------- ----------------------------------------------- ------------------------
-    new       No state document exists                        Acquire (attempt=1) → execute
-    closed    Payload status is terminal                      Ack, done (idempotent)
-    busy      Lease actively held (unexpired holder)          Ack — another worker owns it
-    expired   Running, lease expired, attempt < max_retries   Acquire (attempt+1) → execute
-    failed    Running, lease expired, attempt ≥ max_retries   Acquire → failed → release
-    ready     Released (pending after a failure)              Acquire (attempt+1) → execute
+    JobState  Condition                                        Action
+    --------- ------------------------------------------------ ------------------------
+    new       No document exists                               Acquire (attempt 1) → execute
+    closed    Obligation discharged or abandoned               Ack, done (idempotent)
+    busy      Lease actively held (unexpired holder)           Ack — another worker owns it
+    expired   In-flight attempt, lease expired, budget left    Acquire (crash + new attempt) → execute
+    failed    In-flight attempt, lease expired, budget spent   Acquire → crash + abandon → release
+    ready     Released open obligation (parked after failure)  Acquire (new attempt) → execute
 
 The classification is advisory (early-outs without churning the lease
 epoch); the acquisition's ``state_fn`` re-derives the transition under CAS,
-so races between the read and the acquire resolve correctly — including a
-run that closed in between, which aborts the acquisition via
+so races between the read and the acquire resolve correctly — including an
+obligation that closed in between, which aborts the acquisition via
 :class:`AlreadyClosed`.
 
-On flow failure with retries left, the worker releases the lease with a
-``pending`` payload and self-enqueues a fresh wake-up message with
-exponential backoff.  kwargs are copied into the state at first claim so
-the sweeper can re-enqueue a crashed run without the original message.
+On flow failure with budget left, the worker releases the lease with the
+rejected attempt recorded and the obligation still open, then self-enqueues
+a fresh wake-up message with exponential backoff.
 """
 import logging
 from enum import StrEnum
 
-from attrs import evolve
-
 from . import tracing
 from .events import RunEventLog
 from .lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
-from .models import FlowJob, RunState, RunStatus
+from .models import (
+    AttemptOutcome,
+    FlowJob,
+    Obligation,
+    ObligationRecord,
+    Verdict,
+    VerdictDecision,
+)
 from .queue import JobQueueProtocol
 from .registry import Registry
 from .repository import AlreadyClosed, SignalRepository, StateRepository, StateView
@@ -64,19 +78,20 @@ DEFAULT_TIMEOUT = 900  # seconds — default lease per execution attempt
 # region @worker.state
 # ---
 # role: computation
-# intent: Define JobState and the lease evaluation that drives the worker
+# intent: Define JobState and the account evaluation that drives the worker
 # description: >
 #   Contains the JobState enum whose values drive the worker state machine
 #   (see module docstring for the full transition table) and
 #   existing_state_case(), which maps a StateView (or None) to a JobState.
-#   Liveness is judged from the lease envelope — holder and deadline — never
-#   from RunState fields.
+#   Liveness is judged from the lease envelope — holder and deadline —
+#   execution progress from the account (open attempt, budget), and
+#   closed-ness from the obligation's status.
 # rules:
 #   - existing_state_case() MUST be a pure function (no side-effects).
 #   - Liveness MUST be judged by the envelope's holder/deadline_at alone; a
 #     released or deadline-less lease is reclaimable, never busy forever.
 # dependencies:
-#   - models.run
+#   - models.account
 #   - state_repository
 # aliases:
 #   - job-state
@@ -99,7 +114,7 @@ class JobState(StrEnum):
 def existing_state_case(
     view: StateView | None, now: Timestamp | None = None
 ) -> JobState:
-    """Determine the job's state from its run's lease document.
+    """Determine the job's state from its obligation's lease document.
 
     Args:
         view: The current StateView, or None when no document exists.
@@ -110,15 +125,16 @@ def existing_state_case(
     """
     if view is None:
         return JobState.new
-    if view.state.status.is_closed():
+    record = view.record
+    if record.obligation.status.is_closed():
         return JobState.closed
     if view.held(now):
         return JobState.busy
-    if view.state.status == RunStatus.running:
-        # Lease expired mid-flight — the attempt was consumed by a crash.
-        if view.state.attempt >= view.state.max_retries:
-            return JobState.failed
-        return JobState.expired
+    if record.open_attempt is not None:
+        # An in-flight attempt whose lease died — the executor crashed.
+        if record.retries_left():
+            return JobState.expired
+        return JobState.failed
     return JobState.ready
 
 
@@ -129,30 +145,33 @@ def existing_state_case(
 # region @worker.execute
 # ---
 # role: computation
-# intent: Execute a single queued job — acquire lease, run, release with outcome
+# intent: Execute one queued job — acquire the obligation, run, account the outcome
 # description: >
 #   Dequeues one job, early-outs on closed/busy via a plain read, then
-#   acquires the run's lease with a state_fn transition that increments the
-#   attempt atomically with the ownership transfer (or refuses via
-#   AlreadyClosed / short-circuits to canceled/failed).  Acks the message,
-#   runs the flow under a bound RunLease, and finalizes by releasing the
-#   lease with the terminal payload.  Every write is epoch-fenced: LeaseLost
-#   means the run was reclaimed and the outcome belongs to the new owner.
+#   acquires the obligation's lease with a state_fn transition that does
+#   crash accounting for any dead in-flight attempt and appends this
+#   worker's attempt — atomically with the ownership transfer (or refuses
+#   via AlreadyClosed / short-circuits to abandoned for cancel and spent
+#   budgets).  Acks the message, runs the flow under a bound RunLease, then
+#   records the attempt's outcome plus its verdict and releases the lease.
+#   Every write is epoch-fenced: LeaseLost means the obligation was
+#   reclaimed and the outcome belongs to the new owner.
 # rules:
 #   - Ownership MUST be taken via state_repo.acquire's atomic transition.
-#   - MUST ack the queue message as soon as the run's state is resolved.
-#   - MUST increment attempt on every claim of an existing run.
-#   - MUST copy job.kwargs into the state at first claim (sweeper re-enqueue).
-#   - On retryable failure MUST release with pending and self-enqueue with
-#     backoff.
-#   - MUST NOT execute when the run is closed, busy, or cancel-signalled.
+#   - MUST ack the queue message as soon as the obligation is resolved.
+#   - Every claim of an existing open obligation MUST append an attempt;
+#     crash accounting for the predecessor happens in the same transition.
+#   - On retryable failure MUST release with the rejected attempt recorded
+#     and self-enqueue with backoff.
+#   - MUST NOT execute when the obligation is closed, busy, or
+#     cancel-signalled.
 #   - MUST NOT write state after LeaseLost — the outcome belongs to the
 #     new owner.
 # dependencies:
 #   - worker.state
 #   - state_repository
 #   - signals_repository
-#   - models.run
+#   - models.account
 #   - registry.registry
 #   - lease
 #   - events.log
@@ -199,21 +218,28 @@ def _retry_backoff(attempt: int) -> int:
 
 def _emit(
     events: RunEventLog | None,
-    state: RunState,
+    record: ObligationRecord,
     event: str,
     actor: str,
     **kwargs,
 ) -> None:
-    """Append a lifecycle event for *state* when an event log is configured."""
+    """Append a lifecycle event for *record* when an event log is configured."""
     if events is None:
         return
     events.append(
-        flow_name=state.flow_name,
-        run_id=state.run_id,
+        flow_name=record.obligation.flow_name,
+        run_id=record.obligation.id,
         event=event,
         actor=actor,
-        attempt=state.attempt,
+        attempt=len(record.attempts),
         **kwargs,
+    )
+
+
+def _auto_verdict(decision: VerdictDecision, reason: str | None = None) -> Verdict:
+    """The default adjudication policy, recorded like any other verdict."""
+    return Verdict(
+        decision=decision, by="auto", rendered_at=Timestamp.now(), reason=reason
     )
 
 
@@ -225,89 +251,78 @@ class _ClaimCase(StrEnum):
 
 
 def _claim_transition(
-    existing: RunState | None,
+    existing: ObligationRecord | None,
     *,
     job: FlowJob,
     worker_id: str,
     cancel_pending: bool,
     decision: dict,
-) -> RunState:
+) -> ObligationRecord:
     """Pure transition applied atomically with the lease acquisition.
 
-    Re-derives the claim decision from the payload the CAS actually
-    observed (the advisory pre-read may be stale).  Records which branch it
-    took in *decision* so the caller can act on the outcome; a re-run after
-    a lost CAS race simply overwrites it.
+    Re-derives the claim decision from the account the CAS actually
+    observed (the advisory pre-read may be stale): creates the obligation
+    on first claim, does crash accounting for a dead in-flight attempt,
+    honours a pending cancel, closes a spent budget, or appends this
+    worker's attempt.  Records which branch it took in *decision*; a re-run
+    after a lost CAS race simply overwrites it.
 
     Args:
-        existing: Payload currently in the lease document (None when the
+        existing: Account currently in the lease document (None when the
             document is being created).
         job: The wake-up message being processed.
         worker_id: The acquiring worker.
-        cancel_pending: Whether the run's cancel signal was observed.
+        cancel_pending: Whether the obligation's cancel signal was observed.
         decision: Out-parameter receiving {"case": _ClaimCase}.
 
     Returns:
-        The payload to write with the acquisition.
+        The account to write with the acquisition.
 
     Raises:
-        AlreadyClosed: The run closed between the pre-read and the acquire.
+        AlreadyClosed: The obligation closed between the pre-read and the
+            acquire.
     """
-    now = Timestamp.now()
     if existing is None:
-        if cancel_pending:
-            # A cancel signal with no state cannot occur through the API
-            # (it requires an active run), but honour it defensively.
-            decision["case"] = _ClaimCase.canceled
-            return RunState(
-                run_id=job.run_id,
+        record = ObligationRecord(
+            obligation=Obligation(
+                id=job.run_id,
                 flow_name=job.flow_name,
-                status=RunStatus.canceled,
-                worker_id=worker_id,
-                started_at=now,
-                ended_at=now,
-                attempt=1,
-                max_retries=job.max_retries,
                 kwargs=job.kwargs,
-                cancel_requested=True,
+                parent_id=job.parent_id,
+                root_id=job.root_id,
+                max_retries=job.max_retries,
+                created_at=Timestamp.now(),
             )
-        decision["case"] = _ClaimCase.execute
-        return RunState(
-            run_id=job.run_id,
-            flow_name=job.flow_name,
-            status=RunStatus.running,
-            worker_id=worker_id,
-            started_at=now,
-            attempt=1,
-            max_retries=job.max_retries,
-            kwargs=job.kwargs,
         )
+    else:
+        record = existing
 
-    if existing.status.is_closed():
-        raise AlreadyClosed(existing)
+    if record.obligation.status.is_closed():
+        raise AlreadyClosed(record)
+
+    # Crash accounting: a dead holder's in-flight attempt ends here, judged
+    # by whoever discovers it — never silently overwritten.
+    if existing is not None and record.open_attempt is not None:
+        record.record_outcome(
+            AttemptOutcome.crashed,
+            verdict=_auto_verdict(VerdictDecision.rejected, reason="lease_expired"),
+        )
 
     if cancel_pending:
+        record.obligation.cancel_requested = True
+        record.record_outcome(AttemptOutcome.interrupted)  # no-op if none open
+        record.abandon("canceled")
         decision["case"] = _ClaimCase.canceled
-        return evolve(
-            existing,
-            status=RunStatus.canceled,
-            ended_at=now,
-            cancel_requested=True,
-        )
+        return record
 
-    if existing.status == RunStatus.running and existing.attempt >= existing.max_retries:
-        # Crashed final attempt: the lease expired with no retries left.
+    if not record.retries_left():
+        record.abandon("max_retries_exceeded")
         decision["case"] = _ClaimCase.exhausted
-        return evolve(existing, status=RunStatus.failed, ended_at=now)
+        return record
 
+    record.begin_attempt(worker_id)
     decision["case"] = _ClaimCase.execute
-    return evolve(
-        existing,
-        status=RunStatus.running,
-        worker_id=worker_id,
-        attempt=existing.attempt + 1,
-        kwargs=existing.kwargs or job.kwargs,
-    )
+    return record
 
 
 def execute_job(
@@ -319,22 +334,23 @@ def execute_job(
     default_timeout: int = DEFAULT_TIMEOUT,
     events: RunEventLog | None = None,
 ) -> int:
-    """Execute a single job from the queue under the lease state machine.
+    """Execute a single job from the queue under the account state machine.
 
-    Dequeues one message, resolves the ``JobState``, acquires the run's
-    lease with an atomic claim transition, acks the message, runs the flow,
-    then releases the lease with the terminal payload.  See the module
-    docstring for the full transition table.
+    Dequeues one message, resolves the ``JobState``, acquires the
+    obligation's lease with an atomic claim transition, acks the message,
+    runs the flow, then records the attempt's outcome and verdict and
+    releases the lease.  See the module docstring for the full transition
+    table.
 
     While the flow runs, a :class:`~flowlet.lease.RunLease` is bound to the
     context so ``flowlet.heartbeat()`` can renew the lease and observe the
-    cancel signal.  A cancel finalizes the run as ``canceled``; a lost
-    lease discards the outcome without writing.
+    cancel signal.  A cancel finalizes the obligation as abandoned
+    (``canceled``); a lost lease discards the outcome without writing.
 
     Args:
         queue: Job queue to dequeue from.
         registry: Flow registry for retrieving flow functions.
-        state_repo: State repository owning the run lease documents.
+        state_repo: State repository owning the obligation lease documents.
         signals: Signal repository the cancel signal is read from.
         worker_id: Unique identifier for this worker instance.
         default_timeout: Lease seconds used when the job carries no
@@ -367,7 +383,10 @@ def execute_job(
         _ack_safely(queue, job)
         logger.info(
             "job_already_finished",
-            extra={"run_id": str(job.run_id), "status": view.state.status},
+            extra={
+                "run_id": str(job.run_id),
+                "status": view.record.obligation.status,
+            },
         )
         return 0
     if job_state == JobState.busy:
@@ -402,7 +421,10 @@ def execute_job(
         _ack_safely(queue, job)
         logger.info(
             "job_already_finished",
-            extra={"run_id": str(job.run_id), "status": closed.state.status},
+            extra={
+                "run_id": str(job.run_id),
+                "status": closed.record.obligation.status,
+            },
         )
         return 0
     if lease is None:
@@ -411,7 +433,7 @@ def execute_job(
         logger.info("job_claim_lost", extra={"run_id": str(job.run_id)})
         return 2
 
-    state = lease.state
+    record = lease.record
     case = decision["case"]
 
     # Message is spent the moment the claim lands — crash recovery is the
@@ -419,24 +441,24 @@ def execute_job(
     _ack_safely(queue, job)
 
     if case == _ClaimCase.canceled:
-        _release_terminal(lease, events, state, "canceled", worker_id,
+        _release_terminal(lease, events, record, "canceled", worker_id,
                           cause="cancel_requested_before_claim")
         logger.info("job_canceled_before_claim", extra={"run_id": str(job.run_id)})
         return 0
 
     if case == _ClaimCase.exhausted:
-        _release_terminal(lease, events, state, "failed", worker_id,
+        _release_terminal(lease, events, record, "failed", worker_id,
                           cause="max_retries_exceeded")
         logger.warning(
             "job_max_retries_exceeded",
-            extra={"run_id": str(job.run_id), "attempt": state.attempt},
+            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
         )
         return 1
 
     _emit(
-        events, state, "claimed", worker_id,
+        events, record, "claimed", worker_id,
         from_status=str(view.state.status) if view is not None else None,
-        to_status=str(RunStatus.running),
+        to_status="running",
         details={"case": str(job_state)},
     )
 
@@ -447,8 +469,12 @@ def execute_job(
     lease_token = bind_lease(run_lease)
     try:
         fn = registry.get_flow(job.flow_name)
-        with tracing.run_root(state.run_id, state.flow_name, attempt=state.attempt):
-            fn(**state.kwargs)
+        with tracing.run_root(
+            record.obligation.id,
+            record.obligation.flow_name,
+            attempt=len(record.attempts),
+        ):
+            fn(**record.obligation.kwargs)
     except RunCancelled:
         cancelled = True
         logger.info("job_cancelled", extra={"run_id": str(job.run_id)})
@@ -469,14 +495,11 @@ def execute_job(
         return 2
 
     if cancelled:
-        final = evolve(
-            state,
-            status=RunStatus.canceled,
-            ended_at=Timestamp.now(),
-            cancel_requested=True,
-        )
-        if _release_terminal(lease, events, final, "canceled", worker_id,
-                             from_status=str(RunStatus.running)):
+        record.obligation.cancel_requested = True
+        record.record_outcome(AttemptOutcome.interrupted)
+        record.abandon("canceled")
+        if _release_terminal(lease, events, record, "canceled", worker_id,
+                             from_status="running"):
             logger.info("job_canceled", extra={"run_id": str(job.run_id)})
             return 0
         logger.warning(
@@ -485,9 +508,13 @@ def execute_job(
         return 2
 
     if flow_exc is None:
-        final = evolve(state, status=RunStatus.completed, ended_at=Timestamp.now())
-        if _release_terminal(lease, events, final, "completed", worker_id,
-                             from_status=str(RunStatus.running)):
+        record.record_outcome(
+            AttemptOutcome.returned,
+            verdict=_auto_verdict(VerdictDecision.accepted),
+        )
+        record.discharge()
+        if _release_terminal(lease, events, record, "completed", worker_id,
+                             from_status="running"):
             logger.info("job_completed", extra={"run_id": str(job.run_id)})
             return 0
         # Lease expired mid-run and someone reclaimed: they own the outcome.
@@ -497,11 +524,17 @@ def execute_job(
         )
         return 2
 
-    # Failure path — retry accounting lives here, never in the queue.
-    if state.attempt < state.max_retries:
-        final = evolve(state, status=RunStatus.pending)
+    # Failure path — retry accounting lives in the account, never the queue.
+    record.record_outcome(
+        AttemptOutcome.raised,
+        error=type(flow_exc).__name__,
+        verdict=_auto_verdict(
+            VerdictDecision.rejected, reason=type(flow_exc).__name__
+        ),
+    )
+    if record.retries_left():
         try:
-            lease.release(final)
+            lease.release(record)
         except LeaseLost:
             logger.warning(
                 "job_requeue_ownership_lost",
@@ -509,22 +542,24 @@ def execute_job(
             )
             return 1
         _emit(
-            events, final, "retry_scheduled", worker_id,
-            from_status=str(RunStatus.running), to_status=str(RunStatus.pending),
+            events, record, "retry_scheduled", worker_id,
+            from_status="running", to_status="pending",
             cause=type(flow_exc).__name__,
         )
         retry_job = FlowJob(
-            run_id=final.run_id,
-            flow_name=final.flow_name,
-            kwargs=final.kwargs,
-            max_retries=final.max_retries,
+            run_id=record.obligation.id,
+            flow_name=record.obligation.flow_name,
+            kwargs=record.obligation.kwargs,
+            max_retries=record.obligation.max_retries,
             timeout_seconds=job.timeout_seconds,
+            parent_id=record.obligation.parent_id,
+            root_id=record.obligation.root_id,
         )
         try:
-            queue.enqueue(retry_job, delay=_retry_backoff(final.attempt))
+            queue.enqueue(retry_job, delay=_retry_backoff(len(record.attempts)))
         except Exception:
-            # State is already pending; the sweeper will notice the run
-            # is neither running nor closed and re-enqueue it.
+            # The account already shows a rejected attempt with budget left;
+            # the sweeper will notice the parked obligation and re-enqueue.
             logger.warning(
                 "job_retry_enqueue_failed",
                 extra={"run_id": str(job.run_id)},
@@ -532,16 +567,16 @@ def execute_job(
             )
         logger.info(
             "job_requeued",
-            extra={"run_id": str(job.run_id), "attempt": final.attempt},
+            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
         )
     else:
-        final = evolve(state, status=RunStatus.failed, ended_at=Timestamp.now())
-        if _release_terminal(lease, events, final, "failed", worker_id,
-                             from_status=str(RunStatus.running),
+        record.abandon("max_retries_exceeded")
+        if _release_terminal(lease, events, record, "failed", worker_id,
+                             from_status="running",
                              cause=type(flow_exc).__name__):
             logger.warning(
                 "job_failed_permanently",
-                extra={"run_id": str(job.run_id), "attempt": final.attempt},
+                extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
             )
         else:
             logger.warning(
@@ -555,22 +590,25 @@ def execute_job(
 def _release_terminal(
     lease,
     events: RunEventLog | None,
-    state: RunState,
+    record: ObligationRecord,
     event: str,
     actor: str,
     **event_kwargs,
 ) -> bool:
-    """Release the lease with a terminal payload and emit the event.
+    """Release the lease with a closed account and emit the event.
 
     Returns:
         True when the release landed; False when the lease was fenced (the
         outcome belongs to the new owner and nothing is emitted).
     """
     try:
-        lease.release(state)
+        lease.release(record)
     except LeaseLost:
         return False
-    _emit(events, state, event, actor, to_status=str(state.status), **event_kwargs)
+    _emit(
+        events, record, event, actor,
+        to_status=str(record.summary().status), **event_kwargs,
+    )
     return True
 
 # ---

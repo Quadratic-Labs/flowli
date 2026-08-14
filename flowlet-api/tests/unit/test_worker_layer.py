@@ -80,10 +80,10 @@ def _ts_in(seconds: float) -> Timestamp:
     return Timestamp(datetime.now(UTC) + timedelta(seconds=seconds))
 
 
-def _view(state, *, holder=None, deadline: Timestamp | None = None, epoch=1) -> StateView:
+def _view(record, *, holder=None, deadline: Timestamp | None = None, epoch=1) -> StateView:
     """Build a StateView with an explicit envelope for classification tests."""
     return StateView(
-        state=state,
+        record=record,
         holder=holder,
         deadline_at=deadline if deadline is not None else Timestamp.now(),
         epoch=epoch,
@@ -99,32 +99,32 @@ class TestExistingStateCase:
     def test_no_state_is_new(self):
         assert existing_state_case(None) == JobState.new
 
-    def test_closed_statuses_are_closed(self, make_run_state):
+    def test_closed_statuses_are_closed(self, make_record):
         for status in (RunStatus.completed, RunStatus.failed, RunStatus.canceled):
-            view = _view(make_run_state(status=status))
+            view = _view(make_record(status=status))
             assert existing_state_case(view) == JobState.closed
 
-    def test_running_with_live_lease_is_busy(self, make_run_state):
+    def test_running_with_live_lease_is_busy(self, make_record):
         view = _view(
-            make_run_state(status=RunStatus.running),
+            make_record(status=RunStatus.running),
             holder="other-worker", deadline=_ts_in(300),
         )
         assert existing_state_case(view) == JobState.busy
 
-    def test_released_pending_is_ready(self, make_run_state):
-        view = _view(make_run_state(status=RunStatus.pending))
+    def test_released_pending_is_ready(self, make_record):
+        view = _view(make_record(status=RunStatus.pending))
         assert existing_state_case(view) == JobState.ready
 
-    def test_running_past_deadline_is_expired(self, make_run_state):
+    def test_running_past_deadline_is_expired(self, make_record):
         view = _view(
-            make_run_state(status=RunStatus.running),
+            make_record(status=RunStatus.running),
             holder="dead-worker", deadline=_ts_in(-1),
         )
         assert existing_state_case(view) == JobState.expired
 
-    def test_expired_with_exhausted_retries_is_failed(self, make_run_state):
+    def test_expired_with_exhausted_retries_is_failed(self, make_record):
         view = _view(
-            make_run_state(status=RunStatus.running, attempt=3, max_retries=3),
+            make_record(status=RunStatus.running, attempt=3, max_retries=3),
             holder="dead-worker", deadline=_ts_in(-1),
         )
         assert existing_state_case(view) == JobState.failed
@@ -391,17 +391,18 @@ class TestExecuteJobTakeover:
 
 class TestStateRepositoryFiles:
     def test_claim_lists_exactly_the_state_object(
-        self, state_repo, make_run_state
+        self, state_repo, make_record
     ):
-        state = make_run_state()
+        record = make_record()
+        obligation = record.obligation
         state_repo.acquire(
-            state.flow_name, state.run_id, ttl=60, holder="w1",
-            state_fn=lambda _: state,
+            obligation.flow_name, obligation.id, ttl=60, holder="w1",
+            state_fn=lambda _: record,
         )
 
         # The store's lock/temp machinery never leaks into listings.
         keys = state_repo.store.list_objects_sync("state/")
-        assert keys == [f"state/{state.flow_name}/{state.run_id}.json"]
+        assert keys == [f"state/{obligation.flow_name}/{obligation.id}.json"]
 
     def test_delete_removes_state_object(
         self, state_repo, make_run_state, seed_lease, store

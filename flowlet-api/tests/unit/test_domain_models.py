@@ -19,23 +19,7 @@ from flowlet.types import Timestamp
 
 @pytest.mark.unit
 class TestRunStatus:
-    """from_log_level maps logging levels; is_closed gates terminal states."""
-
-    @pytest.mark.parametrize(
-        "level, expected",
-        [
-            ("SUCCESS", RunStatus.completed),
-            ("success", RunStatus.completed),
-            ("WARNING", RunStatus.warning),
-            ("warning", RunStatus.warning),
-            ("ERROR", RunStatus.failed),
-            ("CRITICAL", RunStatus.failed),
-            ("INFO", RunStatus.running),
-            ("DEBUG", RunStatus.running),
-        ],
-    )
-    def test_from_log_level(self, level: str, expected: RunStatus):
-        assert RunStatus.from_log_level(level) == expected
+    """is_closed gates terminal states; RunStatus is a projection only."""
 
     @pytest.mark.parametrize(
         "status, closed",

@@ -18,7 +18,12 @@ from uuid import UUID
 
 from attrs import Factory, define, field
 from cairndb.storage.base import BlobStorage
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from ..models import RunState
 from ..repository.state import StateRepository
@@ -147,12 +152,27 @@ class CacheRepository:
             if obj is None:
                 continue
             try:
-                states.append(from_json(RunState)(obj.data.decode("utf-8")))
+                states.append(_parse_archived_state(obj.data.decode("utf-8")))
             except Exception:
                 logger.warning(
                     "cache_archived_state_unreadable", extra={"key": key}
                 )
         return states
+
+
+def _parse_archived_state(raw: str) -> RunState:
+    """Parse an archived state.json into the RunState read shape.
+
+    Current archives hold the full ObligationRecord account; archives from
+    before the account model hold a bare RunState — both remain readable.
+    """
+    import json
+
+    from ..models import ObligationRecord
+
+    if "obligation" in json.loads(raw):
+        return from_json(ObligationRecord)(raw).summary()
+    return from_json(RunState)(raw)
 
 # ---
 # endregion
