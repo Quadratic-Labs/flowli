@@ -61,12 +61,20 @@ from .models import (
     FlowJob,
     Obligation,
     ObligationRecord,
+    ObligationStatus,
     Verdict,
     VerdictDecision,
 )
 from .queue import JobQueueProtocol
 from .registry import Registry
-from .repository import AlreadyClosed, SignalRepository, StateRepository, StateView
+from .repository import (
+    AlreadyClosed,
+    EffectRepository,
+    SignalRepository,
+    StateRepository,
+    StateView,
+    Unclaimable,
+)
 from .repository.signals import CANCEL
 from .types import Timestamp
 
@@ -109,6 +117,7 @@ class JobState(StrEnum):
     failed = "failed"
     expired = "expired"
     closed = "closed"
+    gated = "gated"
 
 
 def existing_state_case(
@@ -128,6 +137,8 @@ def existing_state_case(
     record = view.record
     if record.obligation.status.is_closed():
         return JobState.closed
+    if record.obligation.status == ObligationStatus.awaiting_adjudication:
+        return JobState.gated
     if view.held(now):
         return JobState.busy
     if record.open_attempt is not None:
@@ -256,6 +267,7 @@ def _claim_transition(
     job: FlowJob,
     worker_id: str,
     cancel_pending: bool,
+    gated: bool,
     decision: dict,
 ) -> ObligationRecord:
     """Pure transition applied atomically with the lease acquisition.
@@ -291,6 +303,8 @@ def _claim_transition(
                 parent_id=job.parent_id,
                 root_id=job.root_id,
                 max_retries=job.max_retries,
+                adjudication="gated" if gated else "auto",
+                caused_by=job.caused_by,
                 created_at=Timestamp.now(),
             )
         )
@@ -299,6 +313,9 @@ def _claim_transition(
 
     if record.obligation.status.is_closed():
         raise AlreadyClosed(record)
+    if record.obligation.status == ObligationStatus.awaiting_adjudication:
+        # Nothing to execute — the obligation waits on a verdict, not a worker.
+        raise Unclaimable(record)
 
     # Crash accounting: a dead holder's in-flight attempt ends here, judged
     # by whoever discovers it — never silently overwritten.
@@ -389,18 +406,26 @@ def execute_job(
             },
         )
         return 0
-    if job_state == JobState.busy:
+    if job_state in (JobState.busy, JobState.gated):
         assert view is not None
-        # Duplicate wake-up for an actively-owned run: drop it.  If the owner
-        # crashes, the sweeper re-enqueues after the lease expires.
+        # Duplicate wake-up for an actively-owned or adjudication-parked
+        # run: drop it.  Crashed owners are the sweeper's job; gated runs
+        # resume through the adjudication endpoint, never a wake-up.
         _ack_safely(queue, job)
         logger.info(
-            "job_active_elsewhere",
-            extra={"run_id": str(job.run_id), "holder": view.holder},
+            "job_not_claimable",
+            extra={
+                "run_id": str(job.run_id),
+                "case": str(job_state),
+                "holder": view.holder,
+            },
         )
         return 2
 
     cancel_pending = signals.get(job.flow_name, job.run_id, CANCEL) is not None
+    get_options = getattr(registry, "get_flow_options", None)
+    options = get_options(job.flow_name) if get_options is not None else None
+    gated = bool(options is not None and getattr(options, "gated", False))
     timeout = job.timeout_seconds or default_timeout
     decision: dict = {}
     try:
@@ -414,9 +439,14 @@ def execute_job(
                 job=job,
                 worker_id=worker_id,
                 cancel_pending=cancel_pending,
+                gated=gated,
                 decision=decision,
             ),
         )
+    except Unclaimable:
+        _ack_safely(queue, job)
+        logger.info("job_awaiting_adjudication", extra={"run_id": str(job.run_id)})
+        return 2
     except AlreadyClosed as closed:
         _ack_safely(queue, job)
         logger.info(
@@ -462,7 +492,11 @@ def execute_job(
         details={"case": str(job_state)},
     )
 
-    run_lease = RunLease(lease=lease, signals=signals)
+    run_lease = RunLease(
+        lease=lease,
+        signals=signals,
+        effects=EffectRepository(store=state_repo.store),
+    )
     flow_exc: Exception | None = None
     cancelled = False
     lease_lost = False
@@ -508,6 +542,26 @@ def execute_job(
         return 2
 
     if flow_exc is None:
+        if record.obligation.adjudication == "gated":
+            # No auto-verdict: the outcome is a fact, judgment is pending.
+            record.record_outcome(AttemptOutcome.returned)
+            record.suspend_for_adjudication()
+            try:
+                lease.release(record)
+            except LeaseLost:
+                logger.warning(
+                    "job_completion_ownership_lost",
+                    extra={"run_id": str(job.run_id)},
+                )
+                return 2
+            _emit(
+                events, record, "awaiting_adjudication", worker_id,
+                from_status="running", to_status="gated",
+            )
+            logger.info(
+                "job_awaiting_adjudication", extra={"run_id": str(job.run_id)}
+            )
+            return 0
         record.record_outcome(
             AttemptOutcome.returned,
             verdict=_auto_verdict(VerdictDecision.accepted),
@@ -554,6 +608,7 @@ def execute_job(
             timeout_seconds=job.timeout_seconds,
             parent_id=record.obligation.parent_id,
             root_id=record.obligation.root_id,
+            caused_by=f"retry_of_attempt:{len(record.attempts)}",
         )
         try:
             queue.enqueue(retry_job, delay=_retry_backoff(len(record.attempts)))

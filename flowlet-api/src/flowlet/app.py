@@ -310,6 +310,8 @@ class Flowlet:
         *,
         timeout: int | None = None,
         max_retries: int = 3,
+        gated: bool = False,
+        gate: Callable | None = None,
     ) -> Callable:
         """Decorator that registers a function as a flow.
 
@@ -323,6 +325,12 @@ class Flowlet:
                 a run past its deadline is reclaimable by the sweeper or
                 another worker.  None uses the worker default.
             max_retries: Maximum number of execution attempts.
+            gated: Suspend the obligation as awaiting_adjudication when an
+                attempt returns, instead of applying the auto-verdict; an
+                authorized actor resolves it through the adjudication
+                endpoint.
+            gate: Optional adjudication eligibility policy
+                ``(actor, record) -> bool``; None allows any actor.
 
         Returns:
             Decorator callable.
@@ -334,7 +342,8 @@ class Flowlet:
         """
         def _decorator(fn: Callable) -> Callable:
             return self.registry.register_flow(
-                fn, name or fn.__name__, timeout=timeout, max_retries=max_retries
+                fn, name or fn.__name__, timeout=timeout,
+                max_retries=max_retries, gated=gated, gate=gate,
             )
         return _decorator
 

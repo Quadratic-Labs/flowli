@@ -60,6 +60,19 @@ logger = logging.getLogger(__name__)
 #   - how is a run claimed
 # ---
 
+class Unclaimable(Exception):
+    """Raised by an acquire transition to refuse a lease on an obligation
+    that is not executable — e.g. awaiting adjudication.  Carries the
+    ObligationRecord for reporting."""
+
+    def __init__(self, record: ObligationRecord):
+        super().__init__(
+            f"obligation {record.obligation.id} is not claimable "
+            f"({record.obligation.status})"
+        )
+        self.record = record
+
+
 class AlreadyClosed(Exception):
     """Raised by an acquire transition to refuse a lease on a closed obligation.
 

@@ -11,7 +11,13 @@ from attrs import Factory, define
 from fastapi import APIRouter
 
 from .controller import FlowController
-from .models import CancelRunResponse, FlowSubmissionResponse, RunDTO, RunStateDTO
+from .models import (
+    AdjudicationResponse,
+    CancelRunResponse,
+    FlowSubmissionResponse,
+    RunDTO,
+    RunStateDTO,
+)
 
 
 # region @router.contracts
@@ -117,6 +123,29 @@ _CANCEL_RUN = RouteSpec(
         200: {"description": "Cancellation applied or already effective"},
         404: {"description": "Run not found among active runs"},
         409: {"description": "Concurrent writes prevented cancellation"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_ADJUDICATE_RUN = RouteSpec(
+    path="/runs/{run_id}/adjudicate",
+    method="POST",
+    summary="Resolve a gated obligation with a verdict",
+    description=(
+        "Record an authorized verdict on a run awaiting adjudication: "
+        "'accepted' discharges the obligation, 'rejected' reopens it for "
+        "another attempt (or abandons it when the budget is spent).  The "
+        "flow's gate policy decides actor eligibility; actor and decision "
+        "are recorded in the account."
+    ),
+    tags=["Execution"],
+    response_model=AdjudicationResponse,
+    responses={
+        200: {"description": "Verdict recorded"},
+        403: {"description": "Actor not eligible under the gate policy"},
+        404: {"description": "Run not found among active runs"},
+        409: {"description": "Run is not awaiting adjudication"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
@@ -261,6 +290,7 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
     if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
         _wire(router, _CANCEL_RUN, controller.cancel_run)
+        _wire(router, _ADJUDICATE_RUN, controller.adjudicate_run)
     if not _RUNS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _RUNS_QUERY, controller.query_runs)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:

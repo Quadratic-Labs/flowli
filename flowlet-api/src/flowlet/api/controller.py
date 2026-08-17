@@ -18,6 +18,8 @@ from pydantic import ValidationError
 from ..models import FlowJob
 from ..queue import JobQueueProtocol
 from .models import (
+    AdjudicationRequest,
+    AdjudicationResponse,
     CancelRunResponse,
     FlowArguments,
     FlowSubmissionResponse,
@@ -531,6 +533,166 @@ class FlowController:
         record = lease.record
         lease.release()
         return _respond(record, "canceled")
+
+    def adjudicate_run(
+        self, run_id: UUID, payload: AdjudicationRequest
+    ) -> AdjudicationResponse:
+        """Resolve a gated obligation with an authorized verdict.
+
+        The obligation must be ``awaiting_adjudication``.  The flow's gate
+        policy (if declared) decides whether the actor may adjudicate; only
+        the actor and decision are recorded in the account, never the
+        policy.  ``accepted`` discharges the obligation; ``rejected``
+        reopens it (with a wake-up message when a queue is configured, else
+        the sweeper re-enqueues the parked obligation) or abandons it when
+        the attempt budget is spent.
+
+        Args:
+            run_id: UUID of the gated obligation.
+            payload: Decision, actor, and optional reason.
+
+        Returns:
+            AdjudicationResponse with the resulting projection status.
+
+        Raises:
+            HTTPException: 503 when storage is not configured; 404 when the
+                run is unknown; 409 when it is not awaiting adjudication;
+                403 when the gate policy refuses the actor.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+
+        match = next(
+            (
+                v
+                for v in self.state_repo.list_views()
+                if v.record.obligation.id == run_id
+            ),
+            None,
+        )
+        if match is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Run not found among active runs (it may already be archived)",
+            )
+        record = match.record
+        flow_name = record.obligation.flow_name
+
+        from ..models import (
+            ObligationRecord,
+            ObligationStatus,
+            Verdict,
+            VerdictDecision,
+        )
+        from ..repository import AlreadyClosed
+        from ..types import Timestamp
+
+        if record.obligation.status != ObligationStatus.awaiting_adjudication:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Run is not awaiting adjudication "
+                    f"(status: {record.obligation.status})"
+                ),
+            )
+
+        options = self.registry.get_flow_options(flow_name)
+        gate = getattr(options, "gate", None)
+        if gate is not None and not gate(payload.actor, record):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Actor {payload.actor!r} is not eligible to adjudicate",
+            )
+
+        verdict = Verdict(
+            decision=VerdictDecision(payload.decision),
+            by=payload.actor,
+            rendered_at=Timestamp.now(),
+            reason=payload.reason,
+        )
+
+        def transition(existing: ObligationRecord | None) -> ObligationRecord:
+            if existing is None:
+                raise LookupError(f"account for run {run_id} disappeared")
+            if existing.obligation.status.is_closed():
+                raise AlreadyClosed(existing)
+            existing.adjudicate(verdict)
+            return existing
+
+        try:
+            lease = self.state_repo.acquire(
+                flow_name, run_id, ttl=60, holder="api", state_fn=transition
+            )
+        except AlreadyClosed as closed:
+            return AdjudicationResponse(
+                run_id=run_id,
+                status=str(closed.record.summary().status),
+                decision=payload.decision,
+            )
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Run state disappeared")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if lease is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Run is actively owned; retry the adjudication",
+            )
+
+        resolved = lease.record
+        lease.release()
+
+        if self.events is not None:
+            self.events.append(
+                flow_name=flow_name,
+                run_id=run_id,
+                event="adjudicated",
+                actor=payload.actor,
+                attempt=len(resolved.attempts),
+                to_status=str(resolved.summary().status),
+                details={"decision": payload.decision, "reason": payload.reason},
+            )
+
+        # A rejected verdict with budget left reopens the obligation — wake
+        # a worker when we can; the sweeper's parked-requeue is the fallback.
+        if (
+            resolved.obligation.status == ObligationStatus.open
+            and self.queue is not None
+        ):
+            from ..models import FlowJob
+
+            try:
+                self.queue.enqueue(
+                    FlowJob(
+                        run_id=run_id,
+                        flow_name=flow_name,
+                        kwargs=resolved.obligation.kwargs,
+                        max_retries=resolved.obligation.max_retries,
+                        parent_id=resolved.obligation.parent_id,
+                        root_id=resolved.obligation.root_id,
+                        caused_by=f"adjudication:rejected_by:{payload.actor}",
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "adjudication_requeue_failed",
+                    extra={"run_id": str(run_id)},
+                    exc_info=True,
+                )
+
+        logger.info(
+            "run_adjudicated",
+            extra={
+                "run_id": str(run_id),
+                "decision": payload.decision,
+                "actor": payload.actor,
+            },
+        )
+        return AdjudicationResponse(
+            run_id=run_id,
+            status=str(resolved.summary().status),
+            decision=payload.decision,
+        )
 
     # ------------------------------------------------------------------
     # Query endpoints

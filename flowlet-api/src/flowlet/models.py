@@ -50,6 +50,7 @@ class RunStatus(StrEnum):
     """
     pending = "pending"
     running = "running"
+    gated = "gated"
     retry = "retry"
     failed = "failed"
     completed = "completed"
@@ -312,11 +313,18 @@ class Obligation:
         parent_id: Parent obligation for sub-obligations; None for roots.
         root_id: Root of the obligation tree; None for roots.
         max_retries: Attempt budget.
+        adjudication: How done-ness is decided — ``auto`` applies the
+            default policy (returned ⇒ accepted) at the end of each attempt;
+            ``gated`` suspends the obligation as awaiting_adjudication until
+            an authorized verdict arrives through the adjudication API.
+        caused_by: Provenance of this obligation — what event or decision
+            spawned it (e.g. ``dispatch:<key>``, ``plan:<delta>``); account
+            data, never scheduling data.
         created_at: When the obligation was recorded.
         closed_at: When it was discharged or abandoned.
         status: Current lifecycle state.
         cause: Machine-readable ground for abandonment (e.g. ``canceled``,
-            ``max_retries_exceeded``).
+            ``max_retries_exceeded``, ``rejected``).
         cancel_requested: Whether cancellation was requested (record; the
             live channel is the cancel signal object).
     """
@@ -326,11 +334,38 @@ class Obligation:
     parent_id: UUID | None = field(default=None)
     root_id: UUID | None = field(default=None)
     max_retries: int = 3
+    adjudication: str = "auto"
+    caused_by: str | None = field(default=None)
     created_at: Timestamp
     closed_at: Timestamp | None = field(default=None)
     status: ObligationStatus = ObligationStatus.open
     cause: str | None = field(default=None)
     cancel_requested: bool = False
+
+
+@define(slots=True, kw_only=True)
+class Effect:
+    """A recorded side-effect — the unit of value, idempotent by occurrence.
+
+    The effect's *occurrence* identity is derived from the obligation and
+    the effect's name, never from the attempt that happened to execute it —
+    so retries converge on the recorded effect instead of re-firing it.
+    The exactly-once guarantee is the claim on the effect's key; this entry
+    is the account's reference to it.
+
+    Attributes:
+        name: What the effect is (e.g. ``send_email``).
+        occurrence: Distinguishes deliberate repetitions of the same effect
+            (a manual re-send mints a new occurrence); defaults to "1".
+        attempt_n: Which attempt executed (or resolved) the effect.
+        produced_at: When the effect was recorded.
+        result_ref: JSON-safe result or content-addressed reference to it.
+    """
+    name: str
+    occurrence: str = "1"
+    attempt_n: int
+    produced_at: Timestamp
+    result_ref: Any = field(default=None)
 
 
 @define(slots=True, kw_only=True)
@@ -344,9 +379,11 @@ class ObligationRecord:
     Attributes:
         obligation: The unit of intent.
         attempts: Every execution attempt, in order, outcomes explicit.
+        effects: Recorded side-effects, idempotent by occurrence key.
     """
     obligation: Obligation
     attempts: list[Attempt] = Factory(list)
+    effects: list[Effect] = Factory(list)
 
     # -- reading the account ------------------------------------------------
 
@@ -393,6 +430,44 @@ class ObligationRecord:
         attempt.error = error
         attempt.verdict = verdict
 
+    @property
+    def pending_verdict_attempt(self) -> Attempt | None:
+        """The attempt awaiting adjudication (outcome recorded, no verdict)."""
+        last = self.last_attempt
+        if last is not None and last.outcome is not None and last.verdict is None:
+            return last
+        return None
+
+    def suspend_for_adjudication(self) -> None:
+        """Park the obligation until an authorized verdict arrives.
+
+        The attempt's outcome is already recorded; its verdict stays pending
+        — waiting is an obligation state, never an attempt outcome.
+        """
+        self.obligation.status = ObligationStatus.awaiting_adjudication
+
+    def adjudicate(self, verdict: Verdict) -> None:
+        """Record an external verdict on the pending attempt and route it.
+
+        Accepted discharges the obligation.  Rejected reopens it when the
+        attempt budget allows another attempt, and abandons it (cause
+        ``rejected``) otherwise.
+        """
+        attempt = self.pending_verdict_attempt
+        if attempt is None:
+            raise ValueError("no attempt is awaiting adjudication")
+        attempt.verdict = verdict
+        if verdict.decision == VerdictDecision.accepted:
+            self.discharge()
+        elif self.retries_left():
+            self.obligation.status = ObligationStatus.open
+        else:
+            self.abandon("rejected")
+
+    def record_effect(self, effect: Effect) -> None:
+        """Append a recorded side-effect to the account."""
+        self.effects.append(effect)
+
     def discharge(self) -> None:
         """Close the obligation as discharged (its contract was met)."""
         self.obligation.status = ObligationStatus.discharged
@@ -417,6 +492,8 @@ class ObligationRecord:
                 if obligation.cause == "canceled"
                 else RunStatus.failed
             )
+        elif obligation.status == ObligationStatus.awaiting_adjudication:
+            status = RunStatus.gated
         elif self.open_attempt is not None:
             status = RunStatus.running
         else:
@@ -498,6 +575,7 @@ class FlowJob:
     timeout_seconds: int | None = field(default=None)
     parent_id: UUID | None = field(default=None)
     root_id: UUID | None = field(default=None)
+    caused_by: str | None = field(default=None)
 
 # ---
 # endregion

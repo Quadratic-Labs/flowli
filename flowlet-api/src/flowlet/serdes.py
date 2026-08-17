@@ -7,6 +7,7 @@ from uuid import UUID
 from .models import (
     Attempt,
     AttemptOutcome,
+    Effect,
     FlowJob,
     Obligation,
     ObligationRecord,
@@ -175,6 +176,7 @@ def _(data: FlowJob) -> dict:
         "timeout_seconds": data.timeout_seconds,
         "parent_id": data.parent_id,
         "root_id": data.root_id,
+        "caused_by": data.caused_by,
     }
 
 
@@ -210,6 +212,8 @@ def _(data: Obligation) -> dict:
         "parent_id": data.parent_id,
         "root_id": data.root_id,
         "max_retries": data.max_retries,
+        "adjudication": data.adjudication,
+        "caused_by": data.caused_by,
         "created_at": data.created_at,
         "closed_at": data.closed_at,
         "status": data.status,
@@ -218,11 +222,23 @@ def _(data: Obligation) -> dict:
     }
 
 
+@destructure.register(Effect)
+def _(data: Effect) -> dict:
+    return {
+        "name": data.name,
+        "occurrence": data.occurrence,
+        "attempt_n": data.attempt_n,
+        "produced_at": data.produced_at,
+        "result_ref": data.result_ref,
+    }
+
+
 @destructure.register(ObligationRecord)
 def _(data: ObligationRecord) -> dict:
     return {
         "obligation": destructure(data.obligation),
         "attempts": [destructure(a) for a in data.attempts],
+        "effects": [destructure(e) for e in data.effects],
     }
 
 
@@ -406,6 +422,7 @@ def _(data: str) -> FlowJob:
         timeout_seconds=raw.get("timeout_seconds"),
         parent_id=UUID(raw["parent_id"]) if raw.get("parent_id") else None,
         root_id=UUID(raw["root_id"]) if raw.get("root_id") else None,
+        caused_by=raw.get("caused_by"),
     )
 
 
@@ -440,11 +457,23 @@ def _obligation_from_raw(raw: dict) -> Obligation:
         parent_id=UUID(raw["parent_id"]) if raw.get("parent_id") else None,
         root_id=UUID(raw["root_id"]) if raw.get("root_id") else None,
         max_retries=raw.get("max_retries", 3),
+        adjudication=raw.get("adjudication", "auto"),
+        caused_by=raw.get("caused_by"),
         created_at=Timestamp.from_iso(raw["created_at"]),
         closed_at=Timestamp.from_iso(raw["closed_at"]) if raw.get("closed_at") else None,
         status=ObligationStatus(raw.get("status", "open")),
         cause=raw.get("cause"),
         cancel_requested=raw.get("cancel_requested", False),
+    )
+
+
+def _effect_from_raw(raw: dict) -> Effect:
+    return Effect(
+        name=raw["name"],
+        occurrence=raw.get("occurrence", "1"),
+        attempt_n=raw["attempt_n"],
+        produced_at=Timestamp.from_iso(raw["produced_at"]),
+        result_ref=raw.get("result_ref"),
     )
 
 
@@ -454,6 +483,7 @@ def _(data: str) -> ObligationRecord:
     return ObligationRecord(
         obligation=_obligation_from_raw(raw["obligation"]),
         attempts=[_attempt_from_raw(a) for a in raw.get("attempts") or []],
+        effects=[_effect_from_raw(e) for e in raw.get("effects") or []],
     )
 
 # ---

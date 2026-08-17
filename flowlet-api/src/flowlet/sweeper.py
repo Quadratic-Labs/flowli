@@ -39,6 +39,7 @@ from .models import (
     AttemptOutcome,
     FlowJob,
     ObligationRecord,
+    ObligationStatus,
     Verdict,
     VerdictDecision,
 )
@@ -161,10 +162,12 @@ def sweep(
                 continue  # lease still live — owner is (presumed) working
             elif record.open_attempt is not None:
                 _recover_crashed(state_repo, queue, view, stats, events)
-            else:
+            elif record.obligation.status == ObligationStatus.open:
                 _maybe_requeue_parked(
                     queue, view, now, pending_grace, stats, events
                 )
+            # awaiting_adjudication: waits passively for a verdict signal —
+            # never re-enqueued; a wake-up could not execute anything.
         except Exception:
             stats.errors += 1
             logger.exception(
@@ -374,6 +377,7 @@ def _enqueue_wakeup(queue: JobQueueProtocol, record: ObligationRecord) -> None:
             max_retries=obligation.max_retries,
             parent_id=obligation.parent_id,
             root_id=obligation.root_id,
+            caused_by="sweeper_recovery",
         )
     )
 

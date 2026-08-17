@@ -1,7 +1,7 @@
 """
 FastAPI DTO models for API boundary.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -54,7 +54,7 @@ def _coerce_timestamp(v: object) -> datetime:
         v = v.value  # type: ignore[assignment]
     if not isinstance(v, datetime):
         raise ValueError(f"Expected Timestamp or datetime, got {type(v).__name__!r}")
-    return v if v.tzinfo is not None else v.replace(tzinfo=timezone.utc)
+    return v if v.tzinfo is not None else v.replace(tzinfo=UTC)
 
 
 TimestampDTO = Annotated[datetime, BeforeValidator(_coerce_timestamp)]
@@ -127,6 +127,34 @@ class FlowArguments(Base):
             "parent_id/root_id"
         ),
     )
+
+
+class AdjudicationRequest(Base):
+    """API model for resolving a gated obligation.
+
+    Attributes:
+        decision: ``accepted`` discharges the obligation; ``rejected``
+            reopens it when the attempt budget allows, else abandons it.
+        actor: Principal rendering the verdict — recorded in the account
+            and checked against the flow's gate policy.
+        reason: Optional short ground for the decision.
+    """
+    decision: str = Field(pattern="^(accepted|rejected)$")
+    actor: str = Field(min_length=1, max_length=256)
+    reason: str | None = Field(None, max_length=1024)
+
+
+class AdjudicationResponse(Base):
+    """API model for the adjudication outcome.
+
+    Attributes:
+        run_id: The adjudicated obligation.
+        status: Projection status after the verdict was applied.
+        decision: The recorded decision.
+    """
+    run_id: UUID
+    status: str
+    decision: str
 
 
 class FlowSubmissionResponse(Base):

@@ -44,16 +44,22 @@ class FakeQueue:
 
 
 class FakeRegistry:
-    """Maps flow names to callables."""
+    """Maps flow names to callables, with optional per-flow options."""
 
-    def __init__(self, flows):
+    def __init__(self, flows, options=None):
         self.flows = flows
+        self.options = options or {}
 
     def get_flow(self, name):
         return self.flows[name]
 
     def list_flows(self):
         return list(self.flows)
+
+    def get_flow_options(self, name):
+        from flowlet.registry import FlowOptions
+
+        return self.options.get(name, FlowOptions())
 
 
 # ============================================================================

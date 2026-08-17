@@ -240,9 +240,20 @@ class FlowOptions:
         timeout_seconds: Lease duration per execution attempt; None means the
             worker's default applies.
         max_retries: Maximum number of execution attempts.
+        gated: When True, a returned attempt does not receive the
+            auto-verdict — the obligation suspends as awaiting_adjudication
+            until an authorized verdict arrives through the adjudication
+            endpoint.
+        gate: Optional eligibility policy for adjudication — a callable
+            ``(actor: str, record: ObligationRecord) -> bool``.  Domain
+            logic: evaluated by the controller, never stored in the account
+            (only the actor and decision are recorded).  None allows any
+            actor.
     """
     timeout_seconds: int | None = None
     max_retries: int = 3
+    gated: bool = False
+    gate: Callable | None = None
 
 
 @define
@@ -381,6 +392,8 @@ class Registry:
         *,
         timeout: int | None = None,
         max_retries: int = 3,
+        gated: bool = False,
+        gate: Callable | None = None,
     ) -> Callable:
         """Register a flow and extract its schema from type hints.
 
@@ -391,6 +404,10 @@ class Registry:
             timeout: Lease duration in seconds per execution attempt; None
                 uses the worker default.
             max_retries: Maximum number of execution attempts.
+            gated: Suspend for external adjudication instead of applying the
+                auto-verdict when an attempt returns.
+            gate: Optional adjudication eligibility policy
+                ``(actor, record) -> bool``.
 
         Returns:
             Callable: The instrumented flow callable.
@@ -428,7 +445,8 @@ class Registry:
             setattr(wrapper, "__flow_schema__", schema)
         self.flows[flow_name] = wrapper
         self.flow_options[flow_name] = FlowOptions(
-            timeout_seconds=timeout, max_retries=max_retries
+            timeout_seconds=timeout, max_retries=max_retries,
+            gated=gated, gate=gate,
         )
         return wrapper
 

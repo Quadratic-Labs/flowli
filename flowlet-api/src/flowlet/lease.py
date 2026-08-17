@@ -18,8 +18,11 @@ import time
 from attrs import define, field
 from cairndb.core.exceptions import LeaseLost as LeaseLost  # re-export
 
+from .models import Effect
+from .repository.effects import EffectRepository
 from .repository.signals import CANCEL, SignalRepository
 from .repository.state import StateLease
+from .types import Timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +77,15 @@ class RunLease:
         lease: The owned StateLease; renewals and the terminal release go
             through it and are epoch-fenced.
         signals: Signal repository the cancel signal is read from.
+        effects: Effect repository for exactly-once side-effect claims
+            (``flowlet.effect``); optional outside worker-managed runs.
         min_interval: Seconds below which heartbeat() calls are free no-ops,
             bounding state-store I/O regardless of call frequency.
     """
 
     lease: StateLease
     signals: SignalRepository
+    effects: EffectRepository | None = None
     min_interval: float = DEFAULT_MIN_BEAT_INTERVAL
     _last_beat: float = field(factory=time.monotonic, init=False)
 
@@ -163,6 +169,60 @@ def heartbeat(*, raise_on_cancel: bool = True) -> bool:
             f"obligation {lease.lease.record.obligation.id} cancelled"
         )
     return cancelled
+
+
+def effect(name: str, body, *, occurrence: str = "1"):
+    """Run a side-effect exactly once per occurrence, recorded in the account.
+
+    The occurrence key is derived from the obligation and the effect's
+    identity — never the attempt — so a retried attempt *converges* on the
+    recorded result instead of re-firing the side effect.  A deliberate
+    repetition (authorized re-send) passes a new ``occurrence``.
+
+    Semantics are at-least-once execution, exactly-once recording (the DBOS
+    step contract): in a crash window the body may run twice, so keep effect
+    bodies idempotent where possible.
+
+    Outside a worker-managed run this degrades to a plain call.
+
+    Args:
+        name: Stable effect name (e.g. ``"send_email"``).
+        body: Zero-argument callable producing a JSON-safe result.
+        occurrence: Occurrence discriminator; default "1".
+
+    Returns:
+        The recorded result — this execution's, or a previous one's.
+
+    Example:
+        >>> def my_flow(user_id: int):
+        ...     flowlet.effect("welcome_email", lambda: send_mail(user_id))
+    """
+    lease = _current_lease.get()
+    if lease is None or lease.effects is None:
+        return body()
+
+    record = lease.lease.record
+    obligation = record.obligation
+    result, produced = lease.effects.memoize(
+        obligation.flow_name,
+        obligation.id,
+        name,
+        body,
+        occurrence=occurrence,
+        executor=lease.lease.holder,
+    )
+    if produced:
+        record.record_effect(
+            Effect(
+                name=name,
+                occurrence=occurrence,
+                attempt_n=len(record.attempts),
+                produced_at=Timestamp.now(),
+                result_ref=result,
+            )
+        )
+        lease.lease.write(record)  # fenced account update
+    return result
 
 # ---
 # endregion
