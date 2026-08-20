@@ -21,6 +21,14 @@ from .models import (
     AdjudicationRequest,
     AdjudicationResponse,
     CancelRunResponse,
+    ExecutorClaimRequest,
+    ExecutorClaimResponse,
+    ExecutorEffectRequest,
+    ExecutorEffectResponse,
+    ExecutorOutcomeRequest,
+    ExecutorOutcomeResponse,
+    ExecutorRenewRequest,
+    ExecutorRenewResponse,
     FlowArguments,
     FlowSubmissionResponse,
     LogQueryRequest,
@@ -693,6 +701,278 @@ class FlowController:
             status=str(resolved.summary().status),
             decision=payload.decision,
         )
+
+    # ------------------------------------------------------------------
+    # External-executor surface — the claim lifecycle over HTTP
+    # ------------------------------------------------------------------
+
+    def _resume_or_409(self, flow_name, run_id, *, executor, epoch, ttl):
+        """Reattach to a held lease or raise the fencing 409."""
+        assert self.state_repo is not None
+        lease = self.state_repo.resume(
+            flow_name, run_id, holder=executor, epoch=epoch, ttl=ttl
+        )
+        if lease is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Lease not held under this (executor, epoch) — it was "
+                    "released, stolen after expiry, or never claimed. "
+                    "Discard the outcome."
+                ),
+            )
+        return lease
+
+    def claim_run(
+        self, run_id: UUID, payload: ExecutorClaimRequest
+    ) -> ExecutorClaimResponse:
+        """Claim an existing obligation for a detached executor.
+
+        The claim transition (crash accounting for a dead predecessor,
+        appending this executor's attempt) is written atomically with the
+        fenced acquisition — identical semantics to the in-process worker.
+        Obligations are created by submission, never by claim: an unknown
+        run is 404.
+
+        Raises:
+            HTTPException: 503 without storage; 404 unknown run; 409 when
+                the obligation is closed, gated, busy, cancel-pending, or
+                its attempt budget is spent.
+        """
+        if self.state_repo is None or self.signals is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+
+        from ..models import FlowJob
+        from ..repository import AlreadyClosed, Unclaimable
+        from ..repository.signals import CANCEL
+        from ..worker import DEFAULT_TIMEOUT, _claim_transition
+
+        flow_name = payload.flow_name
+        view = self.state_repo.read(flow_name, run_id)
+        if view is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Unknown run — obligations are created by submission",
+            )
+
+        paused = self.signals.paused_scopes(
+            flow_name=flow_name,
+            run_id=run_id,
+            parent_id=view.record.obligation.parent_id,
+            root_id=view.record.obligation.root_id,
+        )
+        if paused:
+            raise HTTPException(
+                status_code=409, detail=f"Admission paused at scopes {paused}"
+            )
+
+        cancel_pending = (
+            self.signals.get(flow_name, run_id, CANCEL) is not None
+        )
+        options = self.registry.get_flow_options(flow_name)
+        ttl = payload.ttl_seconds or DEFAULT_TIMEOUT
+        decision: dict = {}
+        synthetic = FlowJob(
+            run_id=run_id,
+            flow_name=flow_name,
+            kwargs=view.record.obligation.kwargs,
+            max_retries=view.record.obligation.max_retries,
+        )
+        try:
+            lease = self.state_repo.acquire(
+                flow_name,
+                run_id,
+                ttl=ttl,
+                holder=payload.executor,
+                state_fn=lambda existing: _claim_transition(
+                    existing,
+                    job=synthetic,
+                    worker_id=payload.executor,
+                    cancel_pending=cancel_pending,
+                    gated=bool(getattr(options, "gated", False)),
+                    decision=decision,
+                ),
+            )
+        except (AlreadyClosed, Unclaimable) as refused:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Run is not claimable "
+                    f"(status: {refused.record.obligation.status})"
+                ),
+            )
+        if lease is None:
+            raise HTTPException(
+                status_code=409, detail="Run is actively owned by another executor"
+            )
+
+        from ..worker import _ClaimCase, _release_terminal
+
+        if decision["case"] != _ClaimCase.execute:
+            # Cancel honoured or budget spent at claim: close and refuse.
+            record = lease.record
+            _release_terminal(
+                lease, self.events, record,
+                "canceled" if decision["case"] == _ClaimCase.canceled else "failed",
+                payload.executor,
+                cause=(
+                    "cancel_requested_before_claim"
+                    if decision["case"] == _ClaimCase.canceled
+                    else "max_retries_exceeded"
+                ),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run closed at claim ({record.summary().status})",
+            )
+
+        record = lease.record
+        logger.info(
+            "run_claimed_externally",
+            extra={"run_id": str(run_id), "executor": payload.executor},
+        )
+        return ExecutorClaimResponse(
+            run_id=run_id,
+            epoch=lease.epoch,
+            deadline_at=lease.deadline_at.to_iso(),
+            attempt=len(record.attempts),
+            kwargs=record.obligation.kwargs,
+            adjudication=record.obligation.adjudication,
+            signals=self.signals.list(flow_name, run_id),
+        )
+
+    def renew_run(
+        self, run_id: UUID, payload: ExecutorRenewRequest
+    ) -> ExecutorRenewResponse:
+        """Heartbeat: renew the fenced lease and observe pending signals.
+
+        Raises:
+            HTTPException: 503 without storage; 409 when fenced.
+        """
+        if self.state_repo is None or self.signals is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        from ..lease import LeaseLost
+        from ..worker import DEFAULT_TIMEOUT
+
+        lease = self._resume_or_409(
+            payload.flow_name, run_id,
+            executor=payload.executor, epoch=payload.epoch,
+            ttl=payload.ttl_seconds or DEFAULT_TIMEOUT,
+        )
+        try:
+            lease.renew()
+        except LeaseLost:
+            raise HTTPException(status_code=409, detail="Lease fenced during renewal")
+        return ExecutorRenewResponse(
+            run_id=run_id,
+            deadline_at=lease.deadline_at.to_iso(),
+            signals=self.signals.list(payload.flow_name, run_id),
+        )
+
+    def record_run_effect(
+        self, run_id: UUID, payload: ExecutorEffectRequest
+    ) -> ExecutorEffectResponse:
+        """Record a side-effect exactly once per occurrence, fenced.
+
+        The executor performs the side-effect and reports its result; the
+        occurrence claim makes duplicate reports (retries, races) converge
+        on the first recorded result.
+
+        Raises:
+            HTTPException: 503 without storage; 409 when fenced.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        from ..lease import LeaseLost
+        from ..models import Effect
+        from ..repository import EffectRepository
+        from ..types import Timestamp
+        from ..worker import DEFAULT_TIMEOUT
+
+        lease = self._resume_or_409(
+            payload.flow_name, run_id,
+            executor=payload.executor, epoch=payload.epoch,
+            ttl=DEFAULT_TIMEOUT,
+        )
+        effects = EffectRepository(store=self.state_repo.store)
+        result, produced = effects.memoize(
+            payload.flow_name,
+            run_id,
+            payload.name,
+            lambda: payload.result,
+            occurrence=payload.occurrence,
+            executor=payload.executor,
+        )
+        if produced:
+            record = lease.record
+            record.record_effect(
+                Effect(
+                    name=payload.name,
+                    occurrence=payload.occurrence,
+                    attempt_n=len(record.attempts),
+                    produced_at=Timestamp.now(),
+                    result_ref=result,
+                )
+            )
+            try:
+                lease.write(record)
+            except LeaseLost:
+                raise HTTPException(
+                    status_code=409, detail="Lease fenced while recording the effect"
+                )
+        return ExecutorEffectResponse(
+            run_id=run_id,
+            name=payload.name,
+            occurrence=payload.occurrence,
+            result=result,
+            produced=produced,
+        )
+
+    def record_run_outcome(
+        self, run_id: UUID, payload: ExecutorOutcomeRequest
+    ) -> ExecutorOutcomeResponse:
+        """Conclude the attempt: record the outcome and route the obligation.
+
+        Applies the same shared epilogue as the in-process worker —
+        auto-verdict or gated suspension on ``returned``, retry budget on
+        ``raised`` (with a wake-up when a queue is configured), abandonment
+        on ``interrupted``.
+
+        Raises:
+            HTTPException: 503 without storage; 409 when fenced.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        from ..models import AttemptOutcome
+        from ..worker import DEFAULT_TIMEOUT, conclude_attempt
+
+        lease = self._resume_or_409(
+            payload.flow_name, run_id,
+            executor=payload.executor, epoch=payload.epoch,
+            ttl=DEFAULT_TIMEOUT,
+        )
+        route = conclude_attempt(
+            lease,
+            outcome=AttemptOutcome(payload.outcome),
+            error=payload.error,
+            queue=self.queue,
+            events=self.events,
+            actor=payload.executor,
+        )
+        if route == "lost":
+            raise HTTPException(
+                status_code=409,
+                detail="Lease fenced at conclusion — the outcome was discarded",
+            )
+        logger.info(
+            "run_concluded_externally",
+            extra={
+                "run_id": str(run_id),
+                "executor": payload.executor,
+                "route": route,
+            },
+        )
+        return ExecutorOutcomeResponse(run_id=run_id, status=route)
 
     # ------------------------------------------------------------------
     # Query endpoints

@@ -24,6 +24,14 @@ from ..types import Timestamp
 logger = logging.getLogger(__name__)
 
 CANCEL = "cancel"
+INTERRUPT = "interrupt"
+PAUSE = "pause"
+
+# Scoped control signals: unlike run-scoped signals (immutable facts),
+# scope signals are *modes* — revocable by design (RESUME revokes a pause).
+SCOPE_GLOBAL = "signals/_scopes/global/"
+SCOPE_FLOW = "signals/_scopes/flow/"
+SCOPE_RUN = "signals/_scopes/run/"
 
 
 # region @signals_repository
@@ -33,13 +41,20 @@ CANCEL = "cancel"
 # description: >
 #   SignalRepository.send() claims the signal object put-if-absent (first
 #   sender wins, duplicates converge — sending is idempotent); get() reads
-#   it; clear() removes a run's signal prefix when the run is archived.
+#   it; list() reads all of a run's pending signals (the heartbeat
+#   observation); clear() removes a run's signal prefix at archive time.
+#   Scoped *control* signals (pause at global / flow / obligation scope)
+#   live under signals/_scopes/ and are revocable modes: send_scoped /
+#   get_scoped / revoke_scoped; admission checks read them at dispatch.
 #   The cancel signal replaces the old cancel_requested CAS-conflict
 #   channel: the API sends it, the worker's heartbeat observes it, and the
 #   lease document stays single-writer.
 # rules:
-#   - Signals MUST be immutable once set — send never overwrites.
+#   - Run-scoped signals MUST be immutable once set — send never
+#     overwrites; only archive-time clear removes them.
 #   - send MUST be idempotent: a duplicate send is a success, not an error.
+#   - Scope signals are modes: revocable, and MUST only be consulted for
+#     admission / delivery decisions, never stored as account facts.
 #   - Signals MUST NOT be written under the run's state/ key — the lease
 #     document is single-writer by design.
 # dependencies:
@@ -122,6 +137,119 @@ class SignalRepository:
             )
             return None
 
+    def list(self, flow_name: str, run_id: UUID) -> dict[str, dict[str, Any]]:
+        """Read all pending signals for a run, name → payload.
+
+        This is the heartbeat's observation: one LIST plus one GET per
+        pending signal (normally zero).
+
+        Args:
+            flow_name: Flow the run belongs to.
+            run_id: The run's UUID.
+        """
+        prefix = self._prefix(flow_name, run_id)
+        pending: dict[str, dict[str, Any]] = {}
+        for key in self.store.list_objects_sync(prefix):
+            name = key.removeprefix(prefix).removesuffix(".json")
+            obj = self.store.get_object_sync(key)
+            if obj is None:
+                continue
+            try:
+                pending[name] = json.loads(obj.data)
+            except Exception:
+                logger.exception("signal_parse_error", extra={"key": key})
+        return pending
+
+    # -- scoped control signals (revocable modes) ------------------------
+
+    @staticmethod
+    def _scope_key(scope: str, name: str) -> str:
+        """Key for a scoped control signal.
+
+        Scopes: ``"global"``, ``"flow:<flow_name>"``, ``"run:<run_id>"``.
+        Run scopes are keyed by obligation id alone (flow-agnostic) so an
+        ancestor's scope can be checked from a child's parent/root refs
+        without knowing the ancestor's flow.
+        """
+        if scope == "global":
+            return f"{SCOPE_GLOBAL}{name}.json"
+        kind, _, ident = scope.partition(":")
+        if kind == "flow" and ident:
+            return f"{SCOPE_FLOW}{ident}/{name}.json"
+        if kind == "run" and ident:
+            return f"{SCOPE_RUN}{ident}/{name}.json"
+        raise ValueError(f"invalid scope {scope!r}")
+
+    def send_scoped(
+        self,
+        scope: str,
+        name: str,
+        *,
+        actor: str,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Set a scoped control signal (idempotent put-if-absent).
+
+        Args:
+            scope: ``"global"``, ``"flow:<flow_name>"``, or ``"run:<id>"``.
+            name: Signal name (e.g. ``pause``).
+            actor: Who set the mode — recorded in the payload.
+            details: Optional structured context.
+        """
+        payload: dict[str, Any] = {
+            "sent_at": Timestamp.now().to_iso(),
+            "actor": actor,
+            "scope": scope,
+        }
+        if details:
+            payload["details"] = details
+        return claim_sync(self.store, self._scope_key(scope, name), payload).won
+
+    def get_scoped(self, scope: str, name: str) -> dict[str, Any] | None:
+        """Read a scoped control signal, or None when the mode is not set."""
+        obj = self.store.get_object_sync(self._scope_key(scope, name))
+        if obj is None:
+            return None
+        try:
+            return json.loads(obj.data)
+        except Exception:
+            logger.exception(
+                "signal_parse_error", extra={"scope": scope, "signal": name}
+            )
+            return None
+
+    def revoke_scoped(self, scope: str, name: str) -> None:
+        """Clear a scoped control signal (e.g. RESUME revoking a pause)."""
+        try:
+            self.store.delete_object_sync(self._scope_key(scope, name))
+        except Exception:
+            logger.exception(
+                "signal_revoke_error", extra={"scope": scope, "signal": name}
+            )
+
+    def paused_scopes(
+        self,
+        *,
+        flow_name: str,
+        run_id: UUID,
+        parent_id: UUID | None = None,
+        root_id: UUID | None = None,
+    ) -> list[str]:
+        """The scopes holding a pause over this obligation, if any.
+
+        Admission checks the effective mode over: global, the flow, the
+        obligation itself, its parent, and its root.  Intermediate
+        ancestors beyond parent/root are a controller concern (fan-out) —
+        sufficient for trees of depth ≤ 3, which covers CodeFlow's
+        milestone/feature/task.
+        """
+        scopes = ["global", f"flow:{flow_name}", f"run:{run_id}"]
+        if parent_id is not None:
+            scopes.append(f"run:{parent_id}")
+        if root_id is not None and root_id != parent_id:
+            scopes.append(f"run:{root_id}")
+        return [s for s in scopes if self.get_scoped(s, PAUSE) is not None]
+
     def clear(self, flow_name: str, run_id: UUID) -> None:
         """Remove all of a run's signals (archive-time cleanup).
 
@@ -134,6 +262,7 @@ class SignalRepository:
                 self.store.delete_object_sync(key)
             except Exception:
                 logger.exception("signal_delete_error", extra={"key": key})
+        self.revoke_scoped(f"run:{run_id}", PAUSE)
 
 # ---
 # endregion

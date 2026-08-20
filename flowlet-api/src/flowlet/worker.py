@@ -342,6 +342,124 @@ def _claim_transition(
     return record
 
 
+def conclude_attempt(
+    lease,
+    *,
+    outcome: AttemptOutcome,
+    error: str | None = None,
+    queue: JobQueueProtocol | None = None,
+    events: RunEventLog | None = None,
+    actor: str,
+    timeout_seconds: int | None = None,
+) -> str:
+    """Record an attempt's end and route the obligation — the shared epilogue.
+
+    Used by the in-process worker after the flow call and by the
+    external-executor surface when a detached harness reports its outcome.
+    Applies the account discipline: record the outcome (with the
+    auto-verdict where the adjudication policy allows), then discharge,
+    suspend for adjudication, park for retry (self-enqueueing a wake-up
+    when a queue is available — the sweeper is the fallback), or abandon.
+
+    Args:
+        lease: The held StateLease for the obligation.
+        outcome: How execution ended — ``returned``, ``raised``, or
+            ``interrupted`` (a honoured cancel).
+        error: Exception type name when the outcome is ``raised``.
+        queue: Optional queue for the retry wake-up.
+        events: Optional run event log.
+        actor: The executor concluding the attempt.
+        timeout_seconds: Per-attempt lease override forwarded to the retry
+            wake-up message.
+
+    Returns:
+        The resulting route — ``"canceled"``, ``"gated"``, ``"completed"``,
+        ``"pending"``, ``"failed"`` — or ``"lost"`` when the lease was
+        fenced and the outcome belongs to the new owner.
+    """
+    record = lease.record
+
+    if outcome == AttemptOutcome.interrupted:
+        record.obligation.cancel_requested = True
+        record.record_outcome(AttemptOutcome.interrupted)
+        record.abandon("canceled")
+        if _release_terminal(lease, events, record, "canceled", actor,
+                             from_status="running"):
+            return "canceled"
+        return "lost"
+
+    if outcome == AttemptOutcome.returned:
+        if record.obligation.adjudication == "gated":
+            # No auto-verdict: the outcome is a fact, judgment is pending.
+            record.record_outcome(AttemptOutcome.returned)
+            record.suspend_for_adjudication()
+            try:
+                lease.release(record)
+            except LeaseLost:
+                return "lost"
+            _emit(
+                events, record, "awaiting_adjudication", actor,
+                from_status="running", to_status="gated",
+            )
+            return "gated"
+        record.record_outcome(
+            AttemptOutcome.returned,
+            verdict=_auto_verdict(VerdictDecision.accepted),
+        )
+        record.discharge()
+        if _release_terminal(lease, events, record, "completed", actor,
+                             from_status="running"):
+            return "completed"
+        return "lost"
+
+    # raised — retry accounting lives in the account, never the queue.
+    record.record_outcome(
+        AttemptOutcome.raised,
+        error=error,
+        verdict=_auto_verdict(VerdictDecision.rejected, reason=error),
+    )
+    if record.retries_left():
+        try:
+            lease.release(record)
+        except LeaseLost:
+            return "lost"
+        _emit(
+            events, record, "retry_scheduled", actor,
+            from_status="running", to_status="pending",
+            cause=error,
+        )
+        if queue is not None:
+            retry_job = FlowJob(
+                run_id=record.obligation.id,
+                flow_name=record.obligation.flow_name,
+                kwargs=record.obligation.kwargs,
+                max_retries=record.obligation.max_retries,
+                timeout_seconds=timeout_seconds,
+                parent_id=record.obligation.parent_id,
+                root_id=record.obligation.root_id,
+                caused_by=f"retry_of_attempt:{len(record.attempts)}",
+            )
+            try:
+                queue.enqueue(
+                    retry_job, delay=_retry_backoff(len(record.attempts))
+                )
+            except Exception:
+                # The account already shows a rejected attempt with budget
+                # left; the sweeper re-enqueues the parked obligation.
+                logger.warning(
+                    "job_retry_enqueue_failed",
+                    extra={"run_id": str(record.obligation.id)},
+                    exc_info=True,
+                )
+        return "pending"
+
+    record.abandon("max_retries_exceeded")
+    if _release_terminal(lease, events, record, "failed", actor,
+                         from_status="running", cause=error):
+        return "failed"
+    return "lost"
+
+
 def execute_job(
     queue: JobQueueProtocol,
     registry: Registry,
@@ -391,6 +509,23 @@ def execute_job(
             "run_id": str(job.run_id),
         },
     )
+
+    # Admission: a pause at any covering scope blocks new claims; in-flight
+    # attempts run to completion.  The parked obligation is re-enqueued by
+    # the sweeper once the pause is revoked.
+    paused = signals.paused_scopes(
+        flow_name=job.flow_name,
+        run_id=job.run_id,
+        parent_id=job.parent_id,
+        root_id=job.root_id,
+    )
+    if paused:
+        _ack_safely(queue, job)
+        logger.info(
+            "job_admission_paused",
+            extra={"run_id": str(job.run_id), "scopes": paused},
+        )
+        return 2
 
     # Advisory early-outs: skip closed/busy runs without bumping the epoch.
     view = state_repo.read(job.flow_name, job.run_id)
@@ -529,11 +664,11 @@ def execute_job(
         return 2
 
     if cancelled:
-        record.obligation.cancel_requested = True
-        record.record_outcome(AttemptOutcome.interrupted)
-        record.abandon("canceled")
-        if _release_terminal(lease, events, record, "canceled", worker_id,
-                             from_status="running"):
+        route = conclude_attempt(
+            lease, outcome=AttemptOutcome.interrupted,
+            events=events, actor=worker_id,
+        )
+        if route == "canceled":
             logger.info("job_canceled", extra={"run_id": str(job.run_id)})
             return 0
         logger.warning(
@@ -542,33 +677,16 @@ def execute_job(
         return 2
 
     if flow_exc is None:
-        if record.obligation.adjudication == "gated":
-            # No auto-verdict: the outcome is a fact, judgment is pending.
-            record.record_outcome(AttemptOutcome.returned)
-            record.suspend_for_adjudication()
-            try:
-                lease.release(record)
-            except LeaseLost:
-                logger.warning(
-                    "job_completion_ownership_lost",
-                    extra={"run_id": str(job.run_id)},
-                )
-                return 2
-            _emit(
-                events, record, "awaiting_adjudication", worker_id,
-                from_status="running", to_status="gated",
-            )
+        route = conclude_attempt(
+            lease, outcome=AttemptOutcome.returned,
+            events=events, actor=worker_id,
+        )
+        if route == "gated":
             logger.info(
                 "job_awaiting_adjudication", extra={"run_id": str(job.run_id)}
             )
             return 0
-        record.record_outcome(
-            AttemptOutcome.returned,
-            verdict=_auto_verdict(VerdictDecision.accepted),
-        )
-        record.discharge()
-        if _release_terminal(lease, events, record, "completed", worker_id,
-                             from_status="running"):
+        if route == "completed":
             logger.info("job_completed", extra={"run_id": str(job.run_id)})
             return 0
         # Lease expired mid-run and someone reclaimed: they own the outcome.
@@ -578,66 +696,27 @@ def execute_job(
         )
         return 2
 
-    # Failure path — retry accounting lives in the account, never the queue.
-    record.record_outcome(
-        AttemptOutcome.raised,
+    route = conclude_attempt(
+        lease, outcome=AttemptOutcome.raised,
         error=type(flow_exc).__name__,
-        verdict=_auto_verdict(
-            VerdictDecision.rejected, reason=type(flow_exc).__name__
-        ),
+        queue=queue, events=events, actor=worker_id,
+        timeout_seconds=job.timeout_seconds,
     )
-    if record.retries_left():
-        try:
-            lease.release(record)
-        except LeaseLost:
-            logger.warning(
-                "job_requeue_ownership_lost",
-                extra={"run_id": str(job.run_id)},
-            )
-            return 1
-        _emit(
-            events, record, "retry_scheduled", worker_id,
-            from_status="running", to_status="pending",
-            cause=type(flow_exc).__name__,
-        )
-        retry_job = FlowJob(
-            run_id=record.obligation.id,
-            flow_name=record.obligation.flow_name,
-            kwargs=record.obligation.kwargs,
-            max_retries=record.obligation.max_retries,
-            timeout_seconds=job.timeout_seconds,
-            parent_id=record.obligation.parent_id,
-            root_id=record.obligation.root_id,
-            caused_by=f"retry_of_attempt:{len(record.attempts)}",
-        )
-        try:
-            queue.enqueue(retry_job, delay=_retry_backoff(len(record.attempts)))
-        except Exception:
-            # The account already shows a rejected attempt with budget left;
-            # the sweeper will notice the parked obligation and re-enqueue.
-            logger.warning(
-                "job_retry_enqueue_failed",
-                extra={"run_id": str(job.run_id)},
-                exc_info=True,
-            )
+    if route == "pending":
         logger.info(
             "job_requeued",
             extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
         )
+    elif route == "failed":
+        logger.warning(
+            "job_failed_permanently",
+            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+        )
     else:
-        record.abandon("max_retries_exceeded")
-        if _release_terminal(lease, events, record, "failed", worker_id,
-                             from_status="running",
-                             cause=type(flow_exc).__name__):
-            logger.warning(
-                "job_failed_permanently",
-                extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
-            )
-        else:
-            logger.warning(
-                "job_failure_ownership_lost",
-                extra={"run_id": str(job.run_id)},
-            )
+        logger.warning(
+            "job_conclusion_ownership_lost",
+            extra={"run_id": str(job.run_id)},
+        )
 
     return 1
 

@@ -14,6 +14,10 @@ from .controller import FlowController
 from .models import (
     AdjudicationResponse,
     CancelRunResponse,
+    ExecutorClaimResponse,
+    ExecutorEffectResponse,
+    ExecutorOutcomeResponse,
+    ExecutorRenewResponse,
     FlowSubmissionResponse,
     RunDTO,
     RunStateDTO,
@@ -146,6 +150,70 @@ _ADJUDICATE_RUN = RouteSpec(
         403: {"description": "Actor not eligible under the gate policy"},
         404: {"description": "Run not found among active runs"},
         409: {"description": "Run is not awaiting adjudication"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_CLAIM_RUN = RouteSpec(
+    path="/runs/{run_id}/claim",
+    method="POST",
+    summary="Claim an obligation for a detached executor",
+    description=(
+        "Fenced acquisition of an existing obligation's lease for an "
+        "external executor (harness). The claim transition — crash "
+        "accounting for a dead predecessor, appending this executor's "
+        "attempt — is atomic with the acquisition. Returns the epoch fence "
+        "token required by every subsequent renew/effect/outcome call."
+    ),
+    tags=["Executor"],
+    response_model=ExecutorClaimResponse,
+    responses={
+        200: {"description": "Claimed; epoch is the fence token"},
+        404: {"description": "Unknown run — submit first"},
+        409: {"description": "Not claimable (closed, gated, busy, paused, or budget spent)"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_RENEW_RUN = RouteSpec(
+    path="/runs/{run_id}/renew",
+    method="POST",
+    summary="Heartbeat a held lease and observe signals",
+    tags=["Executor"],
+    response_model=ExecutorRenewResponse,
+    responses={
+        200: {"description": "Renewed; pending signals included"},
+        409: {"description": "Fenced — discard the outcome"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_RUN_EFFECT = RouteSpec(
+    path="/runs/{run_id}/effects",
+    method="POST",
+    summary="Record a side-effect exactly once per occurrence",
+    tags=["Executor"],
+    response_model=ExecutorEffectResponse,
+    responses={
+        200: {"description": "Effect recorded (or converged on a prior record)"},
+        409: {"description": "Fenced — discard the outcome"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_RUN_OUTCOME = RouteSpec(
+    path="/runs/{run_id}/outcome",
+    method="POST",
+    summary="Conclude the attempt and route the obligation",
+    tags=["Executor"],
+    response_model=ExecutorOutcomeResponse,
+    responses={
+        200: {"description": "Outcome recorded; status is the route taken"},
+        409: {"description": "Fenced — the outcome was discarded"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
@@ -291,6 +359,10 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
         _wire(router, _CANCEL_RUN, controller.cancel_run)
         _wire(router, _ADJUDICATE_RUN, controller.adjudicate_run)
+        _wire(router, _CLAIM_RUN, controller.claim_run)
+        _wire(router, _RENEW_RUN, controller.renew_run)
+        _wire(router, _RUN_EFFECT, controller.record_run_effect)
+        _wire(router, _RUN_OUTCOME, controller.record_run_outcome)
     if not _RUNS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _RUNS_QUERY, controller.query_runs)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:

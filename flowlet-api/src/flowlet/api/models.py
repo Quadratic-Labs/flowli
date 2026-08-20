@@ -129,6 +129,108 @@ class FlowArguments(Base):
     )
 
 
+class ExecutorClaimRequest(Base):
+    """Claim an existing obligation for a detached executor.
+
+    Attributes:
+        flow_name: Flow the obligation belongs to (part of its key).
+        executor: Stable identifier of the claiming executor (harness /
+            session id) — recorded as the attempt's executor and required
+            for every subsequent fenced call.
+        ttl_seconds: Lease duration per renewal; renew well within it.
+    """
+    flow_name: str = Field(min_length=1)
+    executor: str = Field(min_length=1, max_length=256)
+    ttl_seconds: int | None = Field(None, ge=10, le=86400)
+
+
+class ExecutorClaimResponse(Base):
+    """The claimed obligation and the fencing token.
+
+    Attributes:
+        run_id: The obligation claimed.
+        epoch: Fence token — pass it to every subsequent call; a 409 on a
+            later call means the lease was stolen and the outcome must be
+            discarded.
+        deadline_at: Current lease expiry (ISO).
+        attempt: This attempt's number.
+        kwargs: The obligation's contract inputs.
+        adjudication: ``auto`` or ``gated`` — a gated obligation suspends
+            on a returned outcome instead of self-discharging.
+        signals: Signals already pending at claim time.
+    """
+    run_id: UUID
+    epoch: int
+    deadline_at: str
+    attempt: int
+    kwargs: dict[str, Any]
+    adjudication: str
+    signals: dict[str, Any]
+
+
+class ExecutorRenewRequest(Base):
+    """Heartbeat: renew the lease and observe signals."""
+    flow_name: str = Field(min_length=1)
+    executor: str = Field(min_length=1, max_length=256)
+    epoch: int = Field(ge=1)
+    ttl_seconds: int | None = Field(None, ge=10, le=86400)
+
+
+class ExecutorRenewResponse(Base):
+    """Renewal outcome: new deadline and pending signals."""
+    run_id: UUID
+    deadline_at: str
+    signals: dict[str, Any]
+
+
+class ExecutorEffectRequest(Base):
+    """Record a side-effect exactly once per occurrence.
+
+    The occurrence key derives from (obligation, name, occurrence) — never
+    the attempt — so retried executors converge on the recorded result.
+    """
+    flow_name: str = Field(min_length=1)
+    executor: str = Field(min_length=1, max_length=256)
+    epoch: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=256)
+    occurrence: str = Field("1", min_length=1, max_length=256)
+    result: Any = None
+
+
+class ExecutorEffectResponse(Base):
+    """The recorded effect result.
+
+    ``produced`` is False when a previous execution's result was returned.
+    """
+    run_id: UUID
+    name: str
+    occurrence: str
+    result: Any
+    produced: bool
+
+
+class ExecutorOutcomeRequest(Base):
+    """Report how the attempt's execution ended.
+
+    Attributes:
+        outcome: ``returned`` (normal end — auto-verdict or gate applies),
+            ``raised`` (failure — retry budget decides), or ``interrupted``
+            (a honoured cancel/interrupt signal).
+        error: Short machine-readable error class when ``raised``.
+    """
+    flow_name: str = Field(min_length=1)
+    executor: str = Field(min_length=1, max_length=256)
+    epoch: int = Field(ge=1)
+    outcome: str = Field(pattern="^(returned|raised|interrupted)$")
+    error: str | None = Field(None, max_length=256)
+
+
+class ExecutorOutcomeResponse(Base):
+    """The route the account took: completed/gated/pending/failed/canceled."""
+    run_id: UUID
+    status: str
+
+
 class AdjudicationRequest(Base):
     """API model for resolving a gated obligation.
 

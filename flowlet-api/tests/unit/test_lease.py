@@ -72,7 +72,7 @@ class TestRunLeaseBeat:
         before = state_repo.read(obligation.flow_name, obligation.id).deadline_at
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
-        assert run_lease.beat() is False
+        assert run_lease.beat() == {}
 
         after = state_repo.read(obligation.flow_name, obligation.id).deadline_at
         assert after.value >= before.value
@@ -87,7 +87,7 @@ class TestRunLeaseBeat:
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=3600.0)
         # Interval starts at claim time, so this beat is a free no-op.
-        assert run_lease.beat() is False
+        assert run_lease.beat() == {}
         assert store.get_object_sync(key).etag == etag_before  # no write
 
     def test_beat_observes_cancel_signal(
@@ -98,7 +98,7 @@ class TestRunLeaseBeat:
         signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
 
         run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
-        assert run_lease.beat() is True
+        assert CANCEL in run_lease.beat()
 
     def test_beat_raises_lease_lost_when_fenced(
         self, state_repo, signals, make_record, seed_lease, store
@@ -129,7 +129,7 @@ class TestRunLeaseBeat:
 
 class TestHeartbeat:
     def test_noop_outside_worker_context(self):
-        assert heartbeat() is False
+        assert heartbeat() == {}
 
     def test_raises_run_cancelled_by_default(
         self, state_repo, signals, make_record
@@ -156,7 +156,7 @@ class TestHeartbeat:
 
         token = bind_lease(run_lease)
         try:
-            assert heartbeat(raise_on_cancel=False) is True
+            assert CANCEL in heartbeat(raise_on_cancel=False)
         finally:
             unbind_lease(token)
 

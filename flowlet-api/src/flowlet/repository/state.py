@@ -146,6 +146,14 @@ class StateLease:
         """The holder this lease was acquired with."""
         return self._lease.holder
 
+    @property
+    def deadline_at(self) -> Timestamp:
+        """The lease's current expiry."""
+        # The engine's deadline is a cairndb Timestamp (a datetime in
+        # older engine versions) — normalize to the flowlet Timestamp.
+        raw = self._lease.deadline_at
+        return Timestamp.from_datetime(getattr(raw, "value", raw))
+
     def renew(self) -> None:
         """Extend the lease deadline by its ttl. Raises LeaseLost if fenced."""
         self._lease.renew_sync()
@@ -274,6 +282,66 @@ class StateRepository:
             return None
         return StateLease(
             record=from_payload(ObligationRecord)(lease.state), lease=lease
+        )
+
+    def resume(
+        self,
+        flow_name: str,
+        run_id: UUID,
+        *,
+        holder: str,
+        epoch: int,
+        ttl: float,
+    ) -> StateLease | None:
+        """Reattach to a held lease across process boundaries, fenced.
+
+        The external-executor surface is stateless HTTP: each call proves
+        ownership by (holder, epoch) and gets a live handle back.  Any
+        interim steal bumped the epoch, so a stale executor gets None and
+        must discard its outcome — the same fencing contract as in-process
+        holders, re-derived from the document.
+
+        Args:
+            flow_name: Name of the flow.
+            run_id: UUID identifying the obligation.
+            holder: The executor claiming to hold the lease.
+            epoch: The fence token returned at acquisition.
+            ttl: Lease duration for subsequent renewals.
+
+        Returns:
+            A StateLease bound to the current document, or None when the
+            document is missing, released, or held under a different
+            (holder, epoch) — i.e. the caller was fenced.
+        """
+        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        if obj is None:
+            return None
+        try:
+            doc = json.loads(obj.data)
+        except Exception:
+            logger.exception(
+                "state_resume_parse_error", extra={"run_id": str(run_id)}
+            )
+            return None
+        if doc.get("holder") != holder or doc.get("epoch") != epoch:
+            return None
+        payload = doc.get("state")
+        if payload is None:
+            return None
+        from cairndb.core.types import Timestamp as CairnTimestamp
+
+        lease = Lease(
+            self.store,
+            self._key(flow_name, run_id),
+            ttl=ttl,
+            epoch=epoch,
+            holder=holder,
+            deadline_at=CairnTimestamp.from_iso(doc["deadline_at"]),
+            state=payload,
+            etag=obj.etag,
+        )
+        return StateLease(
+            record=from_payload(ObligationRecord)(payload), lease=lease
         )
 
     def delete(self, flow_name: str, run_id: UUID) -> None:

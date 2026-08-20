@@ -89,28 +89,26 @@ class RunLease:
     min_interval: float = DEFAULT_MIN_BEAT_INTERVAL
     _last_beat: float = field(factory=time.monotonic, init=False)
 
-    def beat(self) -> bool:
-        """Renew the lease and report whether cancellation was requested.
+    def beat(self) -> dict[str, dict]:
+        """Renew the lease and observe the obligation's pending signals.
 
         Throttled: within ``min_interval`` of the previous effective beat the
-        call returns False without any I/O.
+        call returns an empty mapping without any I/O.
 
         Returns:
-            True when a cancel signal was observed, False otherwise.
+            Pending signals, name → payload (``cancel``, ``interrupt``,
+            controller-defined names).  Empty when none are set.
 
         Raises:
             LeaseLost: When the run is no longer owned by this worker.
         """
         if time.monotonic() - self._last_beat < self.min_interval:
-            return False
+            return {}
         self._last_beat = time.monotonic()
 
         self.lease.renew()
         obligation = self.lease.record.obligation
-        return (
-            self.signals.get(obligation.flow_name, obligation.id, CANCEL)
-            is not None
-        )
+        return self.signals.list(obligation.flow_name, obligation.id)
 
 
 _current_lease: contextvars.ContextVar[RunLease | None] = contextvars.ContextVar(
@@ -133,23 +131,24 @@ def current_lease() -> RunLease | None:
     return _current_lease.get()
 
 
-def heartbeat(*, raise_on_cancel: bool = True) -> bool:
-    """Renew the current run's lease and observe cancellation.
+def heartbeat(*, raise_on_cancel: bool = True) -> dict[str, dict]:
+    """Renew the current run's lease and observe pending signals.
 
     Call between units of work in long-running flows.  Cheap to call often:
     actual state-store I/O happens at most once per ``min_interval``.
     Outside a worker-managed run (direct call, sync API execution, tests)
-    this is a no-op returning False.
+    this is a no-op returning an empty mapping.
 
     Args:
         raise_on_cancel: When True (default) a pending cancel signal raises
             :class:`RunCancelled`, so unmodified flows stop at their next
-            heartbeat.  Pass False to receive the request as a return value
+            heartbeat.  Pass False to receive it in the returned mapping
             and shut down gracefully.
 
     Returns:
-        True when cancellation was requested (only with
-        ``raise_on_cancel=False``), False otherwise.
+        Pending signals, name → payload.  ``cancel`` and ``interrupt`` are
+        kernel names; controllers may define others (steering payloads).
+        Empty when nothing is pending.
 
     Raises:
         RunCancelled: Cancel requested and ``raise_on_cancel`` is True.
@@ -157,18 +156,20 @@ def heartbeat(*, raise_on_cancel: bool = True) -> bool:
 
     Example:
         >>> for batch in batches:
-        ...     flowlet.heartbeat()
+        ...     pending = flowlet.heartbeat()
+        ...     if "interrupt" in pending:
+        ...         write_resume_artifact(); return
         ...     process(batch)
     """
     lease = _current_lease.get()
     if lease is None:
-        return False
-    cancelled = lease.beat()
-    if cancelled and raise_on_cancel:
+        return {}
+    pending = lease.beat()
+    if CANCEL in pending and raise_on_cancel:
         raise RunCancelled(
             f"obligation {lease.lease.record.obligation.id} cancelled"
         )
-    return cancelled
+    return pending
 
 
 def effect(name: str, body, *, occurrence: str = "1"):

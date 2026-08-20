@@ -44,7 +44,13 @@ from .models import (
     VerdictDecision,
 )
 from .queue import JobQueueProtocol
-from .repository import AlreadyClosed, SignalRepository, StateRepository, StateView
+from .repository import (
+    AlreadyClosed,
+    SignalRepository,
+    StateRepository,
+    StateView,
+    TimerRepository,
+)
 from .types import Timestamp
 
 if TYPE_CHECKING:
@@ -110,12 +116,14 @@ class SweepStats:
         requeued: Expired or stuck runs re-enqueued for another attempt.
         failed: Obligations abandoned (attempt budget spent).
         archived: Closed state documents moved out of the active directory.
+        timers_fired: Due timers fired (signal sent and/or wake-up enqueued).
         errors: Runs skipped because of read/write errors (logged).
     """
     scanned: int = 0
     requeued: int = 0
     failed: int = 0
     archived: int = 0
+    timers_fired: int = 0
     errors: int = 0
 
 
@@ -124,6 +132,7 @@ def sweep(
     queue: JobQueueProtocol,
     *,
     signals: SignalRepository | None = None,
+    timers: TimerRepository | None = None,
     pending_grace: int = DEFAULT_PENDING_GRACE,
     archive_grace: int = DEFAULT_ARCHIVE_GRACE,
     history: "RunHistory | None" = None,
@@ -135,7 +144,10 @@ def sweep(
         state_repo: State repository holding the active obligations.
         queue: Job queue to enqueue wake-up messages on.
         signals: Optional signal repository; when given, an archived run's
-            signals are cleared with it.
+            signals are cleared with it, pause modes gate re-enqueues, and
+            due timers can deliver their signals.
+        timers: Optional timer repository; when given, due timers fire in
+            this pass (bounded by the sweep cadence).
         pending_grace: Seconds a parked obligation may wait before it is
             assumed stuck (lost retry message) and re-enqueued.
         archive_grace: Seconds a closed run stays in the active directory
@@ -163,6 +175,13 @@ def sweep(
             elif record.open_attempt is not None:
                 _recover_crashed(state_repo, queue, view, stats, events)
             elif record.obligation.status == ObligationStatus.open:
+                if signals is not None and signals.paused_scopes(
+                    flow_name=record.obligation.flow_name,
+                    run_id=record.obligation.id,
+                    parent_id=record.obligation.parent_id,
+                    root_id=record.obligation.root_id,
+                ):
+                    continue  # paused: stays parked until RESUME revokes
                 _maybe_requeue_parked(
                     queue, view, now, pending_grace, stats, events
                 )
@@ -180,6 +199,9 @@ def sweep(
 
     _archive_all(state_repo, signals, history, to_archive, stats)
 
+    if timers is not None:
+        _fire_due_timers(state_repo, timers, signals, queue, now, stats)
+
     logger.info(
         "sweep_done",
         extra={
@@ -187,6 +209,7 @@ def sweep(
             "requeued": stats.requeued,
             "failed": stats.failed,
             "archived": stats.archived,
+            "timers_fired": stats.timers_fired,
             "errors": stats.errors,
         },
     )
@@ -347,6 +370,64 @@ def _archive_all(
         if signals is not None:
             signals.clear(obligation.flow_name, obligation.id)
         stats.archived += 1
+
+
+def _fire_due_timers(
+    state_repo: StateRepository,
+    timers: TimerRepository,
+    signals: SignalRepository | None,
+    queue: JobQueueProtocol,
+    now: Timestamp,
+    stats: SweepStats,
+) -> None:
+    """Fire every due timer: deliver its signal and/or wake-up, then clear.
+
+    Idempotent by construction — signal sends converge on the first,
+    duplicate wake-ups are dropped by the worker state machine — so a crash
+    between firing and clearing merely re-fires harmlessly on the next
+    pass.  A timer for a closed or vanished obligation is cleared without
+    firing.
+    """
+    for timer in timers.due(now):
+        try:
+            view = state_repo.read(timer.flow_name, timer.run_id)
+            closed = (
+                view is None or view.record.obligation.status.is_closed()
+            )
+            if not closed:
+                if timer.signal is not None and signals is not None:
+                    signals.send(
+                        timer.flow_name,
+                        timer.run_id,
+                        timer.signal,
+                        actor="timer",
+                        details={"timer": timer.name, **(timer.details or {})},
+                    )
+                if timer.wakeup:
+                    obligation = view.record.obligation
+                    queue.enqueue(
+                        FlowJob(
+                            run_id=obligation.id,
+                            flow_name=obligation.flow_name,
+                            kwargs=obligation.kwargs,
+                            max_retries=obligation.max_retries,
+                            parent_id=obligation.parent_id,
+                            root_id=obligation.root_id,
+                            caused_by=f"timer:{timer.name}",
+                        )
+                    )
+                stats.timers_fired += 1
+                logger.info(
+                    "timer_fired",
+                    extra={"run_id": str(timer.run_id), "timer": timer.name},
+                )
+            timers.clear(timer.flow_name, timer.run_id, timer.name)
+        except Exception:
+            stats.errors += 1
+            logger.exception(
+                "timer_fire_error",
+                extra={"run_id": str(timer.run_id), "timer": timer.name},
+            )
 
 
 def _emit(

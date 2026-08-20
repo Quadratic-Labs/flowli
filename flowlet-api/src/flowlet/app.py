@@ -137,6 +137,8 @@ class Flowlet:
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
         self.signals = deps.get("signals")
+        self.timers = deps.get("timers")
+        self.resources = deps.get("resources")
         self.history = deps.get("history")
         self.dispatch_repo = deps.get("dispatch_repo")
         self.events = deps.get("events")
@@ -188,6 +190,8 @@ class Flowlet:
         deps["querier"] = None
         deps["dispatch_repo"] = None
         deps["signals"] = None
+        deps["timers"] = None
+        deps["resources"] = None
         deps["events"] = None
         if configs.storage is not None:
             from .repository.log import LogRepository
@@ -209,8 +213,12 @@ class Flowlet:
             from .repository.signals import SignalRepository
             from .repository.state import StateRepository
             deps["log_repo"] = LogRepository(store=store)
+            from .repository.resources import ResourceLeaseRepository
+            from .repository.timers import TimerRepository
             deps["state_repo"] = StateRepository(store=store)
             deps["signals"] = SignalRepository(store=store)
+            deps["timers"] = TimerRepository(store=store)
+            deps["resources"] = ResourceLeaseRepository(store=store)
             deps["dispatch_repo"] = DispatchKeyRepository(store=store)
             deps["events"] = RunEventLog(store=store)
             deps["cache_repo"] = CacheRepository.from_deps(**deps)

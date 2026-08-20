@@ -133,7 +133,8 @@ def sweep(app_ref: str, pending_grace: int | None, archive_grace: int | None) ->
         kwargs["archive_grace"] = archive_grace
     stats = sweeper.sweep(
         flowlet.state_repo, flowlet.queue, signals=flowlet.signals,
-        history=flowlet.history, events=flowlet.events, **kwargs
+        timers=flowlet.timers, history=flowlet.history,
+        events=flowlet.events, **kwargs
     )
     click.echo(
         f"scanned={stats.scanned} requeued={stats.requeued} "
