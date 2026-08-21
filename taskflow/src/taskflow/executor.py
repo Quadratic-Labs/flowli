@@ -24,6 +24,8 @@ class RegistryExecutor:
         registry: The flow registry (decorated callables + options).
     """
 
+    registry: Registry
+
     def __init__(self, registry: Registry):
         self.registry = registry
 

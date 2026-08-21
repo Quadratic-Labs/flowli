@@ -10,6 +10,7 @@ surface.
 """
 import logging
 from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from flowlet.app import Flowlet
 from flowlet.config import FlowletConfig
@@ -44,6 +45,12 @@ class Taskflow:
         >>>
         >>> app.include_router(tf.get_router(), prefix="/flowlet")
     """
+
+    # Declared attribute types — class-level annotations are the single
+    # source of truth for type checkers.
+    kernel: Flowlet
+    registry: Registry
+    _router: "APIRouter | None"
 
     def __init__(self, kernel: Flowlet, registry: Registry):
         self.kernel = kernel
@@ -142,7 +149,7 @@ class Taskflow:
 
     # -- surfaces --------------------------------------------------------------
 
-    def get_router(self):
+    def get_router(self) -> "APIRouter":
         """The combined router: authoring surface + the kernel's account surface."""
         from taskflow.api import build_taskflow_router
 
@@ -151,7 +158,7 @@ class Taskflow:
         return router
 
     @property
-    def router(self):
+    def router(self) -> "APIRouter":
         """The combined router, built once."""
         if self._router is None:
             self._router = self.get_router()
