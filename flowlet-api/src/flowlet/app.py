@@ -165,7 +165,7 @@ class Flowlet:
             >>>
             >>> # Filesystem storage
             >>> flowlet = Flowlet.configure(
-            ...     {"storage": {"type": "filesystem", "base_path": "./data"}}
+            ...     {"storage": {"type": "filesystem", "path": "./data"}}
             ... )
             >>>
             >>> # Typed config

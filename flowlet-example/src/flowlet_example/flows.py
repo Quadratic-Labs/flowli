@@ -11,7 +11,7 @@ from flowlet.app import Flowlet
 # flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
 # flowlet.init_database()
 flowlet = Flowlet.configure({
-    "storage": {"type": "filesystem", "base_path": "./storage"},
+    "storage": {"type": "filesystem", "path": "./storage"},
     "queue": {"type": "memory"},
 })
 

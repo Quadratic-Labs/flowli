@@ -1,16 +1,21 @@
 """Configuration schema for the Flowlet framework.
 
 Provides FlowletConfig, the single source of application-level settings.
-The storage backend resolves to one CairnDB blob store that every
-repository shares; the queue backend is configured separately.
+Storage is cairndb's own :class:`~cairndb.storage.config.StorageConfig` —
+flowlet defines no storage types of its own: dicts are dispatched through
+``StorageConfig.from_dict`` and whatever backends cairndb supports
+(filesystem, S3, Azure, GCS, and anything it grows next) are available
+verbatim, with cairndb's field names.
 """
-from typing import TYPE_CHECKING
+from functools import cached_property
+from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field, InstanceOf
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from cairndb.storage.config import StorageConfig
+
 from flowlet.queue.config import QueueConfig
-from flowlet.storage.config import StorageConfig
 
 if TYPE_CHECKING:
     from cairndb.storage.base import BlobStorage
@@ -21,17 +26,20 @@ if TYPE_CHECKING:
 # role: core
 # intent: single source of application-level configuration resolving to one blob store
 # description: >
-#   FlowletConfig holds a single storage backend (filesystem or Azure), the
-#   optional queue backend, and the history toggle.  The store property
-#   exposes the one cairndb BlobStorage every component consumes: state CAS
-#   writes, dispatch claims, span/event streams, and the history commit log
-#   (a cairndb named log, logs/history/, on the same store).
+#   FlowletConfig holds the storage backend (cairndb's StorageConfig,
+#   verbatim — dicts go through StorageConfig.from_dict, so the backend
+#   catalog, field names, and validation are cairndb's), the optional queue
+#   backend, and the history toggle.  The store property exposes the one
+#   cairndb BlobStorage every component consumes: state CAS writes,
+#   dispatch claims, span/event streams, signals, timers, resources, and
+#   the history commit log.
 # rules:
+#   - Flowlet MUST NOT define storage backends or their config types; the
+#     storage field is cairndb's StorageConfig, nothing else.
 #   - storage MUST be a single backend or None; never a list.
-#   - SQLite MUST NOT appear in StorageConfig; it is internal to the
-#     CacheRepository.
+#   - SQLite MUST NOT appear in storage configuration; it is internal to
+#     the CacheRepository.
 # dependencies:
-#   - storage.config
 #   - queue.config
 # aliases:
 #   - flowlet-config
@@ -42,15 +50,24 @@ if TYPE_CHECKING:
 # ---
 
 
+def _to_storage_config(value: Any) -> Any:
+    """Dispatch dict input through cairndb's backend catalog."""
+    if isinstance(value, dict):
+        return StorageConfig.from_dict(value)
+    return value
+
+
 class FlowletConfig(BaseSettings):
     """Configuration schema for the Flowlet framework.
 
-    Centralises all framework settings. Can be loaded from Python objects,
-    dicts, or environment variables with the ``FLOWLET_`` prefix.
+    Centralises all framework settings. Can be loaded from Python objects
+    or dicts; queue settings also come from ``FLOWLET_``-prefixed
+    environment variables, storage from ``CAIRNDB_*`` via
+    :meth:`cairndb.storage.config.StorageConfig.from_env`.
 
     Attributes:
-        storage: Single storage backend for the run record, run state, and
-            history, or None for in-memory-only operation (no persistence;
+        storage: A cairndb StorageConfig (or a ``type``-discriminated dict
+            for it), or None for in-memory-only operation (no persistence;
             query endpoints are unavailable).
         queue: Optional queue backend for asynchronous flow submission. When
             absent only synchronous execution via ``POST /execute`` is available.
@@ -59,14 +76,13 @@ class FlowletConfig(BaseSettings):
     Example:
         >>> # Filesystem storage with in-memory queue
         >>> config = FlowletConfig(
-        ...     storage={"type": "filesystem", "base_path": "./storage"},
+        ...     storage={"type": "filesystem", "path": "./storage"},
         ...     queue={"type": "memory"},
         ... )
         >>>
-        >>> # Azure Blob storage with Azure Queue
+        >>> # S3 with a prefix
         >>> config = FlowletConfig(
-        ...     storage={"type": "azure_blob", "connection_string": "...", "container_name": "flowlet"},
-        ...     queue={"type": "azure_queue", "connection_string": "...", "queue_name": "jobs"},
+        ...     storage={"type": "s3", "bucket": "flowlet", "prefix": "prod/"},
         ... )
     """
 
@@ -77,10 +93,12 @@ class FlowletConfig(BaseSettings):
         arbitrary_types_allowed=True,
     )
 
-    storage: StorageConfig | None = Field(
+    storage: Annotated[
+        InstanceOf[StorageConfig], BeforeValidator(_to_storage_config)
+    ] | None = Field(
         default=None,
         description=(
-            "Storage backend for run records and state. "
+            "cairndb storage backend (StorageConfig or its dict form). "
             "When None the framework runs without persistence and "
             "query endpoints are unavailable."
         ),
@@ -102,9 +120,9 @@ class FlowletConfig(BaseSettings):
         ),
     )
 
-    @property
+    @cached_property
     def store(self) -> "BlobStorage | None":
-        """The single CairnDB blob store all components share.
+        """The single cairndb blob store all components share (cached).
 
         Returns:
             The configured backend's store, or None when no storage backend
@@ -112,7 +130,7 @@ class FlowletConfig(BaseSettings):
         """
         if self.storage is None:
             return None
-        return self.storage.store
+        return self.storage.create_storage()
 
 # ---
 # endregion
