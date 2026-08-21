@@ -17,6 +17,9 @@ from flowlet.config import FlowletConfig
 
 from taskflow.registry import Registry
 
+if TYPE_CHECKING:
+    from fastapi import APIRouter
+
 logger = logging.getLogger(__name__)
 
 
