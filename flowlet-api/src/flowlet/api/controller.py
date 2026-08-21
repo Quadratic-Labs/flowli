@@ -120,6 +120,17 @@ class FlowController:
         >>> await controller.submit_flow("my_flow", FlowArguments(kwargs={"x": 1}))
     """
 
+    # Declared attribute types — the class-level annotations are the single
+    # source of truth for type checkers; __init__ assigns against them.
+    querier: RunQuery | None
+    queue: JobQueueProtocol | None
+    state_repo: "StateRepository | None"
+    signals: "SignalRepository | None"
+    dispatch_repo: "DispatchKeyRepository | None"
+    events: "RunEventLog | None"
+    prepare_submission: "Callable[[str, FlowArguments], FlowArguments] | None"
+    gate_policy: "Callable[[str], Callable | None] | None"
+
     def __init__(
         self,
         *,
@@ -277,7 +288,7 @@ class FlowController:
         return FlowSubmissionResponse(
             job_id=job.job_id,
             run_id=job.run_id,
-            submitted_at=job.submitted_at,
+            submitted_at=job.submitted_at.value,
             deduplicated=deduplicated,
         )
 

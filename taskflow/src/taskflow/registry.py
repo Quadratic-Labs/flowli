@@ -21,28 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 # region @registry.parameters
-# ---
-# role: core
-# intent: extract and validate flow/task parameter schemas from type hints
-# description: >
-#   Flows can be invoked through RPC with parameters validated via dynamically
-#   generated Pydantic models. Schemas are derived from Python type annotations,
-#   either explicitly declared or inferred from the function signature.
-# rules:
-#   - MUST extract type hints before the function is wrapped by instrumentation
-#   - SHOULD fall back to __annotations__ when get_type_hints() raises
-#   - MUST skip *args and **kwargs parameters
-# dependencies:
-# aliases:
-#   - schema
-#   - parameters
-#   - flow-schema
-# triggers:
-#   - flow parameters
-#   - schema validation
-#   - pydantic model from signature
-#   - extract flow schema
-# ---
 
 @define(slots=True, kw_only=True)
 class FlowParameterSchema:
@@ -201,36 +179,10 @@ def extract_flow_schema(fn: Callable, flow_name: str) -> FlowSchema | None:
         logger.error(f"Failed to extract schema for {flow_name}: {e}", exc_info=True)
         return None
 
-# ---
 # endregion
 
 
 # region @registry.registry
-# ---
-# role: core
-# intent: store and expose instrumented flows and tasks by name
-# description: >
-#   Global registry for flows and tasks. Each registered callable is wrapped
-#   by the instrumentation layer so every call emits structured run telemetry.
-#   Registered flows can also be invoked through RPC, so the registry keeps
-#   their argument schemas for validation.
-# rules:
-#   - MUST extract schema from the original function before wrapping it
-#   - MUST NOT allow duplicate flow or task names
-#   - SHOULD log a warning and continue when schema extraction fails
-# dependencies:
-#   - registry.parameters
-#   - instrumentation
-#   - models
-# aliases:
-#   - flow-registry
-#   - register
-# triggers:
-#   - register a flow
-#   - register a task
-#   - how to add a flow
-#   - list registered flows
-# ---
 
 @define(slots=True, kw_only=True)
 class FlowOptions:
@@ -493,5 +445,4 @@ class Registry:
         self.tasks[task_name] = wrapper
         return wrapper
 
-# ---
 # endregion

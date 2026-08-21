@@ -15,7 +15,8 @@ def _load(app_ref: str):
     module_name, _, attr = app_ref.partition(":")
     module = importlib.import_module(module_name)
     tf = getattr(module, attr or "taskflow")
-    from .app import Taskflow
+
+    from taskflow.app import Taskflow
 
     if not isinstance(tf, Taskflow):
         raise click.ClickException(f"{app_ref} is not a Taskflow instance")
@@ -36,10 +37,10 @@ def work(app_ref: str, worker_id: str | None, once: bool, poll_interval: float):
     """Run the worker: registered callables through the kernel's executor seam."""
     from flowlet.worker import execute_job
 
-    from .executor import RegistryExecutor
+    from taskflow.executor import RegistryExecutor
 
     tf = _load(app_ref)
-    if tf.queue is None or tf.state_repo is None:
+    if tf.queue is None or tf.state_repo is None or tf.signals is None:
         raise click.ClickException("Worker requires both queue and storage")
 
     if worker_id is None:

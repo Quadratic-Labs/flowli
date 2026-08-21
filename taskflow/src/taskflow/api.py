@@ -18,7 +18,7 @@ from flowlet.repository import EffectRepository
 from flowlet.types import Timestamp
 from flowlet.worker import DEFAULT_TIMEOUT, conclude_attempt
 
-from .executor import RegistryExecutor
+from taskflow.executor import RegistryExecutor
 
 if TYPE_CHECKING:
     from .app import Taskflow
@@ -59,6 +59,9 @@ def _run_flow_sync(tf: "Taskflow", flow_name: str, payload: FlowArguments) -> No
         )
         record.begin_attempt("sync-worker")
         return record
+
+    # configure() wires signals whenever storage is configured.
+    assert tf.signals is not None
 
     lease = state_repo.acquire(
         flow_name, run_id, ttl=DEFAULT_TIMEOUT, holder="sync-worker",

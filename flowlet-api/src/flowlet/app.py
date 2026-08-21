@@ -23,8 +23,10 @@ if TYPE_CHECKING:
     from .queue import JobQueueProtocol
     from .repository.dispatch import DispatchKeyRepository
     from .repository.log import LogRepository
+    from .repository.resources import ResourceLeaseRepository
     from .repository.signals import SignalRepository
     from .repository.state import StateRepository
+    from .repository.timers import TimerRepository
 
 
 # region @app
@@ -120,14 +122,27 @@ class Flowlet:
     account surface.
     """
 
+    # Declared attribute types: deps.get() would otherwise infer Unknown,
+    # poisoning every downstream consumer (taskflow, codeflow).
+    controller: "FlowController"
+    router: "APIRouter"
+    queue: "JobQueueProtocol | None"
+    state_repo: "StateRepository | None"
+    signals: "SignalRepository | None"
+    timers: "TimerRepository | None"
+    resources: "ResourceLeaseRepository | None"
+    history: "RunHistory | None"
+    dispatch_repo: "DispatchKeyRepository | None"
+    events: "RunEventLog | None"
+
     def __init__(self, **deps):
         """Initialise Flowlet from the accumulated dependency map.
 
         Args:
             **deps: Full FlowletDeps dict produced by configure().
         """
-        self.controller: FlowController = deps["controller"]  # type: ignore[assignment]
-        self.router: APIRouter = deps["router"]  # type: ignore[assignment]
+        self.controller = deps["controller"]
+        self.router = deps["router"]
         self.queue = deps.get("queue")
         self.state_repo = deps.get("state_repo")
         self.signals = deps.get("signals")

@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from flowlet.app import Flowlet
 from flowlet.config import FlowletConfig
 
-from .registry import Registry
+from taskflow.registry import Registry
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class Taskflow:
         self._router = None
 
     @classmethod
-    def configure(cls, configs: FlowletConfig | Mapping | None = None) -> "Taskflow":
+    def configure(cls, configs: FlowletConfig | Mapping | None = None) -> Taskflow:
         """Wire the kernel with taskflow's hooks and return the facade.
 
         The registry-backed hooks: submissions are schema-validated and
@@ -144,7 +144,7 @@ class Taskflow:
 
     def get_router(self):
         """The combined router: authoring surface + the kernel's account surface."""
-        from .api import build_taskflow_router
+        from taskflow.api import build_taskflow_router
 
         router = build_taskflow_router(self)
         router.include_router(self.kernel.router)
