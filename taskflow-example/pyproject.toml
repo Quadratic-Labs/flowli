@@ -3,18 +3,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "flowlet-example"
+name = "taskflow-example"
 version = "0.1.0"
-description = "Example application demonstrating Flowlet framework usage"
+description = "Example application demonstrating the Taskflow authoring layer over the Flowlet account kernel"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [
     { name = "Flowlet Team" }
 ]
 
 dependencies = [
-    "flowlet>=0.1.0",
+    "taskflow>=0.1.0",
     "uvicorn[standard]>=0.24.0",
 ]
 
@@ -25,4 +25,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/flowlet_example"]
+packages = ["src/taskflow_example"]

@@ -154,7 +154,7 @@ flows.db-journal
 # gitignore patterns to wheel file selection, silently dropping the
 # subpackage from builds.
 /storage/
-/flowlet-example/storage/
+/taskflow-example/storage/
 
 # Logs
 *.log

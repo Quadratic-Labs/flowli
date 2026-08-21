@@ -1,16 +1,14 @@
 """
-Example flows demonstrating Flowlet features
+Example flows demonstrating the Taskflow authoring layer over the
+Flowlet account kernel.
 """
-import time
 import random
+import time
 from datetime import datetime
 
 from taskflow import Taskflow
 
-
-# flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
-# flowlet.init_database()
-flowlet = Taskflow.configure({
+tf = Taskflow.configure({
     "storage": {"type": "filesystem", "path": "./storage"},
     "queue": {"type": "memory"},
 })
@@ -19,7 +17,7 @@ flowlet = Taskflow.configure({
 # region Tasks
 # ============================================================================
 
-@flowlet.task()
+@tf.task()
 def fetch_data(source: str):
     """Simulate fetching data from a source"""
     print(f"Fetching data from {source}...")
@@ -31,7 +29,7 @@ def fetch_data(source: str):
     }
 
 
-@flowlet.task()
+@tf.task()
 def transform_data(data: dict):
     """Transform the data by doubling all values"""
     print(f"Transforming data from {data['source']}...")
@@ -44,7 +42,7 @@ def transform_data(data: dict):
     }
 
 
-@flowlet.task()
+@tf.task()
 def validate_data(data: dict):
     """Validate the data meets requirements"""
     print("Validating data...")
@@ -55,7 +53,7 @@ def validate_data(data: dict):
     return {**data, "validated": True}
 
 
-@flowlet.task()
+@tf.task()
 def save_to_database(data: dict, table_name: str = "results"):
     """Simulate saving data to a database"""
     print(f"Saving data to table '{table_name}'...")
@@ -67,7 +65,7 @@ def save_to_database(data: dict, table_name: str = "results"):
     }
 
 
-@flowlet.task()
+@tf.task()
 def send_notification(message: str, recipient: str):
     """Simulate sending a notification"""
     print(f"Sending notification to {recipient}: {message}")
@@ -75,7 +73,7 @@ def send_notification(message: str, recipient: str):
     return {"sent": True, "recipient": recipient}
 
 
-@flowlet.task()
+@tf.task()
 def calculate_statistics(numbers: list):
     """Calculate basic statistics on a list of numbers"""
     print("Calculating statistics...")
@@ -89,7 +87,7 @@ def calculate_statistics(numbers: list):
     }
 
 
-@flowlet.task()
+@tf.task()
 def risky_operation(fail_probability: float = 0.3):
     """A task that randomly fails to demonstrate error handling"""
     print(f"Running risky operation (fail probability: {fail_probability})...")
@@ -98,13 +96,21 @@ def risky_operation(fail_probability: float = 0.3):
         raise RuntimeError("Random failure occurred in risky operation!")
     return {"success": True, "lucky": True}
 
+
+@tf.task()
+def deploy(target: str):
+    """Simulate deploying to an environment"""
+    print(f"Deploying to {target}...")
+    time.sleep(0.3)
+    return {"target": target, "deployed": True}
+
 # ============================================================================
 # endregion
 
 # region Flows
 # ============================================================================
 
-@flowlet.flow("simple_etl", timeout=120, max_retries=3)
+@tf.flow("simple_etl", timeout=120, max_retries=3)
 def simple_etl_flow(source: str = "api"):
     """
     A simple ETL (Extract, Transform, Load) flow that:
@@ -113,16 +119,9 @@ def simple_etl_flow(source: str = "api"):
     3. Validates it
     4. Saves it to a database
     """
-    # Extract
     raw_data = fetch_data(source)
-
-    # Transform
     transformed = transform_data(raw_data)
-
-    # Validate
     validated = validate_data(transformed)
-
-    # Load
     result = save_to_database(validated, table_name="processed_data")
 
     return {
@@ -132,7 +131,7 @@ def simple_etl_flow(source: str = "api"):
     }
 
 
-@flowlet.flow("data_pipeline")
+@tf.flow("data_pipeline")
 def data_pipeline_flow(source: str = "database", notify: bool = True):
     """
     A more complex data pipeline that:
@@ -141,17 +140,11 @@ def data_pipeline_flow(source: str = "database", notify: bool = True):
     3. Saves results
     4. Optionally sends notifications
     """
-    # Fetch and transform
     raw_data = fetch_data(source)
     transformed = transform_data(raw_data)
-
-    # Calculate statistics on transformed data
     stats = calculate_statistics(transformed["data"])
-
-    # Save to database
     save_result = save_to_database(transformed, table_name="analytics")
 
-    # Optional notification
     if notify:
         notification = send_notification(
             message=f"Pipeline completed: {stats['count']} records processed",
@@ -168,7 +161,7 @@ def data_pipeline_flow(source: str = "database", notify: bool = True):
     }
 
 
-@flowlet.flow("hello_world")
+@tf.flow("hello_world")
 def hello_world_flow(name: str = "World"):
     """
     A simple hello world flow to demonstrate basic functionality
@@ -178,7 +171,7 @@ def hello_world_flow(name: str = "World"):
     return {"message": message, "timestamp": datetime.now().isoformat()}
 
 
-@flowlet.flow("parallel_tasks")
+@tf.flow("parallel_tasks")
 def parallel_tasks_flow(count: int = 3):
     """
     Demonstrates running multiple independent tasks
@@ -197,26 +190,39 @@ def parallel_tasks_flow(count: int = 3):
     }
 
 
-@flowlet.flow("error_handling_demo", timeout=60, max_retries=2)
+@tf.flow("error_handling_demo", timeout=60, max_retries=2)
 def error_handling_demo_flow(fail_chance: float = 0.5):
     """
-    Demonstrates error handling by running a risky operation
+    Demonstrates the retry budget by running a task that fails at random.
+    Each failed attempt is retried (up to max_retries) before the run is
+    accounted as failed.
     """
-    # try:
     result = risky_operation(fail_probability=fail_chance)
     send_notification(
         message="Risky operation succeeded!",
         recipient="success@example.com"
     )
     return {"status": "success", "result": result}
-    # except Exception as e:
-    #     # Even though we catch the exception, the task will be marked as failed
-    #     # This demonstrates that you can handle errors in your flow logic
-    #     send_notification(
-    #         message=f"Risky operation failed: {str(e)}",
-    #         recipient="alerts@example.com"
-    #     )
-    #     return {"status": "handled_error", "error": str(e)}
+
+
+def _only_leads(actor: str, _record) -> bool:
+    """Gate policy: only 'lead' may adjudicate a deploy."""
+    return actor == "lead"
+
+
+@tf.flow("deploy_to_prod", gated=True, gate=_only_leads)
+def deploy_to_prod_flow(target: str = "prod"):
+    """
+    Demonstrates adjudication: the attempt runs to completion, but the
+    obligation then suspends as ``awaiting_adjudication`` instead of
+    auto-discharging. Resolve it with:
+
+        POST /runs/{run_id}/adjudicate {"decision": "accepted", "actor": "lead"}
+
+    Only the 'lead' actor is eligible (see the gate policy above); any other
+    actor gets a 403. 'rejected' reopens the obligation for another attempt.
+    """
+    return deploy(target)
 
 # ============================================================================
 # endregion

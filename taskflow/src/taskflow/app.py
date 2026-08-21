@@ -152,7 +152,7 @@ class Taskflow:
 
     # -- surfaces --------------------------------------------------------------
 
-    def get_router(self) -> "APIRouter":
+    def get_router(self) -> APIRouter:
         """The combined router: authoring surface + the kernel's account surface."""
         from taskflow.api import build_taskflow_router
 
@@ -161,7 +161,7 @@ class Taskflow:
         return router
 
     @property
-    def router(self) -> "APIRouter":
+    def router(self) -> APIRouter:
         """The combined router, built once."""
         if self._router is None:
             self._router = self.get_router()
@@ -199,3 +199,8 @@ class Taskflow:
     @property
     def history(self):
         return self.kernel.history
+
+    @property
+    def lifespan(self):
+        """FastAPI lifespan passthrough — see ``Flowlet.lifespan``."""
+        return self.kernel.lifespan

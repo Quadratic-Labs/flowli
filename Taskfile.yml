@@ -5,17 +5,18 @@ vars:
 
 tasks:
   install:
-    desc: Install flowlet + flowlet-example (editable) and the dashboard's npm deps
+    desc: Install flowlet, taskflow, taskflow-example (editable) and the dashboard's npm deps
     cmds:
       - .venv/bin/pip install -e flowlet-api
-      - .venv/bin/pip install -e flowlet-example --no-deps
+      - .venv/bin/pip install -e taskflow --no-deps
+      - .venv/bin/pip install -e taskflow-example --no-deps
       - npm install --prefix flowlet-web
 
   api:
     desc: Run the example API + embedded in-memory worker (single-process demo, port 8001)
-    dir: flowlet-example
+    dir: taskflow-example
     cmds:
-      - ../.venv/bin/uvicorn flowlet_example.main:app --reload --port {{.API_PORT}}
+      - ../.venv/bin/uvicorn taskflow_example.main:app --reload --port {{.API_PORT}}
 
   web:
     desc: Run the dashboard dev server (proxies /api to localhost:8001)
@@ -32,7 +33,7 @@ tasks:
       - curl -s http://localhost:{{.API_PORT}}/flows | python3 -m json.tool
 
   submit:
-    desc: 'Submit a flow for async execution. Usage: task submit FLOW=hello_world KWARGS=''{"name":"Flowlet"}'''
+    desc: 'Submit a flow for async execution. Usage: task submit FLOW=hello_world KWARGS=''{"name":"Taskflow"}'''
     vars:
       FLOW: '{{.FLOW | default "hello_world"}}'
       KWARGS: '{{.KWARGS | default "{}"}}'
@@ -52,14 +53,15 @@ tasks:
   worker:
     desc: Run a standalone worker process (see README's multi-process caveat re in-memory queue)
     cmds:
-      - .venv/bin/flowlet work --app flowlet_example.flows:flowlet
+      - .venv/bin/taskflow work --app taskflow_example.flows:tf
 
   sweep:
     desc: Run one sweep pass (crash recovery / archival of closed runs)
     cmds:
-      - .venv/bin/flowlet sweep --app flowlet_example.flows:flowlet
+      - .venv/bin/flowlet sweep --app taskflow_example.flows:tf
 
   test:
-    desc: Run the flowlet-api test suite
+    desc: Run the flowlet-api and taskflow test suites
     cmds:
       - .venv/bin/pytest flowlet-api/tests
+      - .venv/bin/pytest taskflow/tests

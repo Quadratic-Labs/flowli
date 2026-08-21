@@ -5,9 +5,9 @@ Usage: python scripts/worker.py
 import logging
 import time
 
-from flowlet_example.flows import flowlet
-from flowlet.worker import execute_job
 from taskflow import RegistryExecutor
+from taskflow_example.flows import tf
+from flowlet.worker import execute_job
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -15,24 +15,25 @@ logging.basicConfig(level=logging.INFO)
 
 def run_worker(worker_id: str = "dev-worker-1", poll_interval: float = 1.0) -> None:
     """Run a worker loop that continuously polls the queue for jobs."""
-    if not flowlet.queue:
-        raise RuntimeError("Queue not configured — set queue.type in Flowlet.configure()")
+    if not tf.queue:
+        raise RuntimeError("Queue not configured — set queue.type in Taskflow.configure()")
+    if not tf.state_repo or not tf.signals:
+        raise RuntimeError("Storage not configured — set storage.type in Taskflow.configure()")
 
-    if not flowlet.state_repo:
-        raise RuntimeError("Storage not configured — set storage.type in Flowlet.configure()")
-
+    executor = RegistryExecutor(tf.registry)
     logger.info("worker_started", extra={"worker_id": worker_id})
 
     try:
         while True:
             try:
                 result = execute_job(
-                    queue=flowlet.queue,
-                    executor=RegistryExecutor(flowlet.registry),
-                    state_repo=flowlet.state_repo,
-                    signals=flowlet.signals,
-                    worker_id=worker_id,
-                    adjudication_for=flowlet.adjudication_for,
+                    tf.queue,
+                    executor,
+                    tf.state_repo,
+                    tf.signals,
+                    worker_id,
+                    events=tf.events,
+                    adjudication_for=tf.adjudication_for,
                 )
                 if result == 2:
                     time.sleep(poll_interval)

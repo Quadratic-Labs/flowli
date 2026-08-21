@@ -1,5 +1,5 @@
 """
-The Flowlet Example app.
+The Taskflow Example app.
 """
 import logging
 import threading
@@ -17,16 +17,25 @@ logger = logging.getLogger(__name__)
 
 
 def _worker_loop(stop_event: threading.Event) -> None:
-    """Background worker thread — drains the in-process InMemoryQueue."""
+    """Background worker thread — drains the in-process InMemoryQueue.
+
+    Only started once the lifespan guard has confirmed queue/state_repo/
+    signals are configured; the asserts just narrow that for the type
+    checker across the thread boundary.
+    """
+    executor = RegistryExecutor(flows.tf.registry)
+    queue, state_repo, signals = flows.tf.queue, flows.tf.state_repo, flows.tf.signals
+    assert queue is not None and state_repo is not None and signals is not None
     while not stop_event.is_set():
         try:
             result = execute_job(
-                queue=flows.flowlet.queue,
-                executor=RegistryExecutor(flows.flowlet.registry),
-                state_repo=flows.flowlet.state_repo,
-                signals=flows.flowlet.signals,
-                worker_id="embedded-worker",
-                adjudication_for=flows.flowlet.adjudication_for,
+                queue,
+                executor,
+                state_repo,
+                signals,
+                "embedded-worker",
+                events=flows.tf.events,
+                adjudication_for=flows.tf.adjudication_for,
             )
             if result == 2:  # no job available
                 time.sleep(1.0)
@@ -36,41 +45,45 @@ def _worker_loop(stop_event: threading.Event) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     stop_event = threading.Event()
     worker_thread = None
-    if isinstance(flows.flowlet.queue, InMemoryQueue) and flows.flowlet.state_repo is not None:
+    if (
+        isinstance(flows.tf.queue, InMemoryQueue)
+        and flows.tf.state_repo is not None
+        and flows.tf.signals is not None
+    ):
         worker_thread = threading.Thread(
-            target=_worker_loop, args=(stop_event,), daemon=True, name="flowlet-worker"
+            target=_worker_loop, args=(stop_event,), daemon=True, name="taskflow-worker"
         )
         worker_thread.start()
         logger.info("embedded_worker_started")
-    flows.flowlet.start()
+    flows.tf.start()
     try:
         yield
     finally:
         stop_event.set()
         if worker_thread is not None:
             worker_thread.join(timeout=5)
-        flows.flowlet.stop()
+        flows.tf.stop()
 
 
 app = FastAPI(
-    title="Flowlet Example Application",
-    description="Example application demonstrating the Flowlet workflow orchestration framework",
+    title="Taskflow Example Application",
+    description="Example application demonstrating the Taskflow authoring layer over the Flowlet account kernel",
     version="0.1.0",
     lifespan=lifespan,
 )
-app.include_router(flows.flowlet.router, prefix="", tags=["Flowlet"])
+app.include_router(flows.tf.router, prefix="", tags=["Taskflow"])
 
 
 @app.get("/")
 def root():
     """Root endpoint providing information about the application"""
     return {
-        "name": "Flowlet Example",
+        "name": "Taskflow Example",
         "version": "0.1.0",
-        "description": "Example application demonstrating Flowlet framework",
+        "description": "Example application demonstrating the Taskflow framework",
         "docs": {
             "intent": "visit the API's documentation",
             "route": "/docs",

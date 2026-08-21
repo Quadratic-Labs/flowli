@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _run_flow_sync(tf: "Taskflow", flow_name: str, payload: FlowArguments) -> None:
+def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None:
     """Execute a registered flow synchronously with full account discipline."""
     registry = tf.registry
     if flow_name not in registry.list_flows():
@@ -97,7 +97,7 @@ def _run_flow_sync(tf: "Taskflow", flow_name: str, payload: FlowArguments) -> No
             )
 
 
-def build_taskflow_router(tf: "Taskflow") -> APIRouter:
+def build_taskflow_router(tf: Taskflow) -> APIRouter:
     """The authoring routes: execute, flow listing, schemas."""
     router = APIRouter()
 
