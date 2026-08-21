@@ -28,7 +28,7 @@ from flowlet.repository.signals import CANCEL
 from flowlet.serdes import from_json, to_json
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeQueue, FakeRegistry
+from .test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture
@@ -180,8 +180,8 @@ class TestWorkerCancellation:
             heartbeat()
 
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: flow})
-        rc = execute_job(queue, registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
         view = state_repo.read(job.flow_name, job.run_id)
@@ -204,8 +204,8 @@ class TestWorkerCancellation:
 
         executed = []
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: lambda **kw: executed.append(1)})
-        rc = execute_job(queue, registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: lambda **kw: executed.append(1)})
+        rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
         assert executed == []
@@ -224,8 +224,8 @@ class TestWorkerCancellation:
             heartbeat()
 
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: flow})
-        rc = execute_job(queue, registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
         view = state_repo.read(job.flow_name, job.run_id)
@@ -281,10 +281,8 @@ class TestRelease:
 
 class TestCancelRun:
     @pytest.fixture
-    def controller(self, registry, state_repo, signals):
-        return FlowController(
-            registry=registry, state_repo=state_repo, signals=signals
-        )
+    def controller(self, state_repo, signals):
+        return FlowController(state_repo=state_repo, signals=signals)
 
     def test_pending_run_is_closed_directly(
         self, controller, state_repo, make_run_state, seed_lease, store
@@ -335,8 +333,8 @@ class TestCancelRun:
             controller.cancel_run(uuid7())
         assert exc.value.status_code == 404
 
-    def test_no_storage_is_503(self, registry):
-        controller = FlowController(registry=registry)
+    def test_no_storage_is_503(self):
+        controller = FlowController()
         with pytest.raises(HTTPException) as exc:
             controller.cancel_run(uuid7())
         assert exc.value.status_code == 503

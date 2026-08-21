@@ -14,7 +14,6 @@ instance, so flows, storage, and queue wiring live in exactly one place.
 import importlib
 import logging
 import sys
-import time
 
 import click
 
@@ -70,48 +69,6 @@ def _load_flowlet(app_ref: str):
 def main(verbose: bool) -> None:
     """Flowlet — lightweight serverless flow orchestration."""
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
-
-
-@main.command()
-@click.option("--app", "app_ref", required=True, help="Flowlet instance, e.g. 'myproject.flows:flowlet'.")
-@click.option("--worker-id", default=None, help="Worker identity; defaults to hostname+pid.")
-@click.option("--once", is_flag=True, help="Process a single message and exit with its code.")
-@click.option("--poll-interval", default=2.0, show_default=True, help="Idle sleep between polls (seconds).")
-def work(app_ref: str, worker_id: str | None, once: bool, poll_interval: float) -> None:
-    """Run the worker: dequeue jobs and execute them under the lease model."""
-    from .worker import execute_job
-
-    flowlet = _load_flowlet(app_ref)
-    if flowlet.queue is None or flowlet.state_repo is None:
-        raise click.ClickException("Worker requires both queue and storage to be configured")
-
-    if worker_id is None:
-        import os
-        import socket
-
-        worker_id = f"{socket.gethostname()}-{os.getpid()}"
-
-    logger.info("worker_started", extra={"worker_id": worker_id})
-    if once:
-        sys.exit(
-            execute_job(
-                flowlet.queue, flowlet.registry, flowlet.state_repo,
-                flowlet.signals, worker_id,
-                events=flowlet.events,
-            )
-        )
-
-    try:
-        while True:
-            rc = execute_job(
-                flowlet.queue, flowlet.registry, flowlet.state_repo,
-                flowlet.signals, worker_id,
-                events=flowlet.events,
-            )
-            if rc == 2:  # nothing to do — idle politely
-                time.sleep(poll_interval)
-    except KeyboardInterrupt:
-        logger.info("worker_stopped", extra={"worker_id": worker_id})
 
 
 @main.command()

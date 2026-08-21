@@ -4,11 +4,11 @@ Factory Boy factories for domain models (attrs-based).
 Generates domain model objects for testing without database dependencies.
 """
 from datetime import UTC, datetime
+from uuid import uuid7
 
 import factory
 
 from flowlet.models import RunLog, RunState, RunStatus, RunSummary, RunType
-from uuid import uuid7
 from flowlet.types import Timestamp
 
 

@@ -14,7 +14,7 @@ import pytest
 from cairndb.engine.logs import NamespacedStorage
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.history import RUN_ARCHIVED, HISTORY_LOG_NAME, RunHistory, refresh_history_db
+from flowlet.history import HISTORY_LOG_NAME, RUN_ARCHIVED, RunHistory, refresh_history_db
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
 from flowlet.sweeper import sweep

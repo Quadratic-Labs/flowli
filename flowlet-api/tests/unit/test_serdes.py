@@ -11,7 +11,7 @@ from uuid import UUID
 
 import pytest
 
-from flowlet.models import FlowJob, RunState, RunStatus, RunSummary, RunType, SpanEvent, SpanRecord
+from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
 from flowlet.serdes import (
     ValueDispatch,
     destructure,
@@ -19,9 +19,7 @@ from flowlet.serdes import (
     structure,
     to_json,
 )
-from uuid import uuid7
 from flowlet.types import Timestamp
-
 
 # =============================================================================
 # @valuedispatch — ValueDispatch

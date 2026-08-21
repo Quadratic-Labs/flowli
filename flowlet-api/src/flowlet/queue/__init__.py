@@ -19,8 +19,8 @@ from .config import AzureQueueStorageConfig, InMemoryQueueConfig, QueueConfig
 __all__ = [
     "AzureQueueStorageConfig",
     "InMemoryQueueConfig",
-    "QueueConfig",
     "JobQueueProtocol",
+    "QueueConfig",
 ]
 
 

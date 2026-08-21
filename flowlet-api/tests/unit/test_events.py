@@ -16,10 +16,9 @@ from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
 from flowlet.storage import run_prefix
 from flowlet.sweeper import sweep
-from flowlet.types import Timestamp
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeQueue, FakeRegistry
+from .test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture
@@ -154,12 +153,10 @@ class TestRunEventsEndpoint:
         return StateRepository(store=store)
 
     @pytest.fixture
-    def controller(self, registry, state_repo, event_log):
+    def controller(self, state_repo, event_log):
         from flowlet.api.controller import FlowController
 
-        return FlowController(
-            registry=registry, state_repo=state_repo, events=event_log
-        )
+        return FlowController(state_repo=state_repo, events=event_log)
 
     @pytest.mark.asyncio
     async def test_events_of_active_run(
@@ -177,7 +174,7 @@ class TestRunEventsEndpoint:
 
     @pytest.mark.asyncio
     async def test_archived_run_resolved_via_querier(
-        self, event_log, registry, state_repo
+        self, event_log, state_repo
     ):
         from unittest.mock import AsyncMock
 
@@ -190,8 +187,7 @@ class TestRunEventsEndpoint:
         querier = AsyncMock()
         querier.find_flow_name = AsyncMock(return_value="flow")
         controller = FlowController(
-            registry=registry, state_repo=state_repo,
-            events=event_log, querier=querier,
+            state_repo=state_repo, events=event_log, querier=querier,
         )
 
         response = await controller.get_run_events(_request(), run_id)
@@ -206,12 +202,12 @@ class TestRunEventsEndpoint:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_no_storage_is_503(self, registry):
+    async def test_no_storage_is_503(self):
         from fastapi import HTTPException
 
         from flowlet.api.controller import FlowController
 
-        controller = FlowController(registry=registry)
+        controller = FlowController()
         with pytest.raises(HTTPException) as exc:
             await controller.get_run_events(_request(), uuid7())
         assert exc.value.status_code == 503
@@ -263,9 +259,9 @@ class TestWorkerEmission:
         signals = SignalRepository(store=store)
         job = make_flow_job()
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
 
-        rc = execute_job(queue, registry, state_repo, signals, "w1", events=event_log)
+        rc = execute_job(queue, executor, state_repo, signals, "w1", events=event_log)
 
         assert rc == 0
         names = [e["event"] for e in _read_events(store, job.flow_name, job.run_id)]
@@ -284,12 +280,12 @@ class TestWorkerEmission:
 
         job = make_flow_job(max_retries=2)
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: boom})
+        executor = FakeExecutor({job.flow_name: boom})
 
-        execute_job(queue, registry, state_repo, signals, "w1", events=event_log)  # attempt 1
+        execute_job(queue, executor, state_repo, signals, "w1", events=event_log)  # attempt 1
         retry_job = queue.enqueued[0][0]
         queue.jobs = [retry_job]
-        execute_job(queue, registry, state_repo, signals, "w1", events=event_log)  # attempt 2
+        execute_job(queue, executor, state_repo, signals, "w1", events=event_log)  # attempt 2
 
         events = _read_events(store, job.flow_name, job.run_id)
         names = [e["event"] for e in events]

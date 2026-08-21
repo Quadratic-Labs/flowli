@@ -127,6 +127,14 @@ class FlowArguments(Base):
             "parent_id/root_id"
         ),
     )
+    timeout_seconds: int | None = Field(
+        None, ge=10, le=86400,
+        description="Per-attempt lease duration; None uses the worker default",
+    )
+    max_retries: int | None = Field(
+        None, ge=1, le=100,
+        description="Attempt budget; None uses the kernel default (3)",
+    )
 
 
 class ExecutorClaimRequest(Base):

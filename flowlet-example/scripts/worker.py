@@ -7,6 +7,7 @@ import time
 
 from flowlet_example.flows import flowlet
 from flowlet.worker import execute_job
+from taskflow import RegistryExecutor
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -27,10 +28,11 @@ def run_worker(worker_id: str = "dev-worker-1", poll_interval: float = 1.0) -> N
             try:
                 result = execute_job(
                     queue=flowlet.queue,
-                    registry=flowlet.registry,
+                    executor=RegistryExecutor(flowlet.registry),
                     state_repo=flowlet.state_repo,
                     signals=flowlet.signals,
                     worker_id=worker_id,
+                    adjudication_for=flowlet.adjudication_for,
                 )
                 if result == 2:
                     time.sleep(poll_interval)

@@ -4,12 +4,12 @@ Factory Boy factories for the snapshot database ORM model.
 The Run table is flat (no RunLink); hierarchy is derived from log files.
 """
 from datetime import UTC, datetime
+from uuid import uuid7
 
 import factory
 
 from flowlet.api.database import Run
 from flowlet.models import RunStatus
-from uuid import uuid7
 
 
 class RunOrmFactory(factory.Factory):

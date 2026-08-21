@@ -5,12 +5,12 @@ import time
 import random
 from datetime import datetime
 
-from flowlet.app import Flowlet
+from taskflow import Taskflow
 
 
 # flowlet = configure({"database": {"url": "sqlite:///flowlet_example.db"}})
 # flowlet.init_database()
-flowlet = Flowlet.configure({
+flowlet = Taskflow.configure({
     "storage": {"type": "filesystem", "path": "./storage"},
     "queue": {"type": "memory"},
 })

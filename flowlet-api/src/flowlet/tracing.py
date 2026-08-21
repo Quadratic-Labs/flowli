@@ -34,6 +34,7 @@ import typing
 from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
+from cairndb.storage.base import BlobStorage
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -44,11 +45,8 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import Status, StatusCode
 
-from cairndb.storage.base import BlobStorage
-
 from .models import RunType
 from .storage import append_lines, run_prefix
-from .types import Timestamp
 
 logger = logging.getLogger(__name__)
 

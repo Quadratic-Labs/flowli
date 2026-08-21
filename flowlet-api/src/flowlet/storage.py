@@ -12,38 +12,11 @@ from uuid import UUID
 
 from cairndb.storage.base import BlobStorage
 
-from ..types import Timestamp
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
 _APPEND_ATTEMPTS = 8
-
-
-# region @storage.keys
-# ---
-# role: storage
-# intent: key conventions for the run-record layout on the blob store
-# description: >
-#   All framework data lives under four reserved key prefixes of one store:
-#   state/<flow>/<run_id>.json (active control plane, CAS-written),
-#   dispatch/<flow>/<digest>.json (idempotency claims, put-if-absent),
-#   runs/<flow>/<yyyy-mm-dd>/<run_id>/ (the immutable run record: spans,
-#   events.jsonl, archived state.json), and logs/history/ (the cairndb
-#   commit log of archived runs).  The date partition is derived from the
-#   run_id's uuid7 timestamp, so keys are computable without listing.
-# rules:
-#   - run_prefix MUST be derivable from (flow_name, run_id) alone.
-#   - Key layouts MUST NOT collide with cairndb's own reserved prefixes
-#     (log/, snapshots/, logs/, txapplied/).
-# dependencies:
-#   - types.time
-# aliases:
-#   - run-folder
-#   - key-layout
-# triggers:
-#   - where are run records stored
-#   - how are storage keys laid out
-# ---
 
 
 def run_prefix(flow_name: str, run_id: UUID) -> str:
@@ -62,32 +35,6 @@ def run_prefix(flow_name: str, run_id: UUID) -> str:
     """
     date = Timestamp.from_uuid7(run_id).value.strftime("%Y-%m-%d")
     return f"runs/{flow_name}/{date}/{run_id}"
-
-# ---
-# endregion
-
-
-# region @storage.append
-# ---
-# role: storage
-# intent: append lines to a blob-store object via etag compare-and-swap
-# description: >
-#   Blob objects have no append primitive, so append_lines() loops:
-#   read the object with its etag, concatenate the new lines, and CAS-write
-#   (put-if-absent when the object does not exist yet).  A lost race is
-#   retried on the fresh content.  Volume is a handful of lifecycle events
-#   and span batches per run, so contention is negligible; the loop is
-#   bounded and reports failure instead of raising.
-# rules:
-#   - append_lines MUST NOT raise; it returns False on exhaustion/errors.
-#   - Lines MUST only ever be appended — existing content is never altered.
-# dependencies:
-#   - storage.keys
-# aliases:
-#   - cas-append
-# triggers:
-#   - how are jsonl files appended on blob storage
-# ---
 
 
 def append_lines(store: BlobStorage, key: str, lines: str) -> bool:
@@ -131,6 +78,3 @@ def read_lines(store: BlobStorage, key: str) -> list[str]:
     if obj is None:
         return []
     return [line for line in obj.data.decode("utf-8").splitlines() if line.strip()]
-
-# ---
-# endregion

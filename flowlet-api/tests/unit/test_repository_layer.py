@@ -14,7 +14,6 @@ from pathlib import Path
 from uuid import uuid7
 
 import pytest
-from attrs import evolve
 from cairndb.core.exceptions import LeaseLost
 from cairndb.storage.filesystem import FilesystemStorage
 

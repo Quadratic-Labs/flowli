@@ -6,13 +6,13 @@ around common types.
 
 For more application specific types, see models.
 """
-from datetime import datetime, timedelta, timezone, UTC
 import secrets
-from typing import Callable, NewType, TypeAlias, Self, TypeVar
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import NewType, Self, TypeAlias, TypeVar
 from uuid import UUID
 
 from attrs import define, field
-
 
 # region @types.std
 # ---
@@ -89,17 +89,17 @@ class Timestamp:
     @classmethod
     def now(cls) -> Self:
         """Get current UTC timestamp."""
-        return cls(datetime.now(timezone.utc))
+        return cls(datetime.now(UTC))
 
     @classmethod
     def from_datetime(cls, dt: datetime) -> Self:
         """Create from datetime, converting to UTC if needed."""
         if dt.tzinfo is None:
             # Assume UTC if no timezone specified
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         else:
             # Convert to UTC
-            dt = dt.astimezone(timezone.utc)
+            dt = dt.astimezone(UTC)
         return cls(dt)
 
     @classmethod

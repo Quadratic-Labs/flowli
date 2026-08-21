@@ -51,9 +51,10 @@ rejected attempt recorded and the obligation still open, then self-enqueues
 a fresh wake-up message with exponential backoff.
 """
 import logging
+from collections.abc import Callable
 from enum import StrEnum
+from typing import Protocol
 
-from . import tracing
 from .events import RunEventLog
 from .lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
 from .models import (
@@ -66,7 +67,6 @@ from .models import (
     VerdictDecision,
 )
 from .queue import JobQueueProtocol
-from .registry import Registry
 from .repository import (
     AlreadyClosed,
     EffectRepository,
@@ -81,6 +81,28 @@ from .types import Timestamp
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 900  # seconds — default lease per execution attempt
+
+
+class Executor(Protocol):
+    """The seam between the kernel and whatever does the work.
+
+    An executor runs one attempt's work under an already-bound
+    :class:`~flowlet.lease.RunLease` (so ``flowlet.heartbeat()`` and
+    ``flowlet.effect()`` are ambient).  The kernel interprets its end:
+
+    - return            → outcome ``returned`` (auto-verdict or gate)
+    - raise RunCancelled → outcome ``interrupted``
+    - raise LeaseLost    → the outcome is discarded (fenced)
+    - raise anything     → outcome ``raised`` (retry budget decides)
+
+    Controllers supply implementations: taskflow's RegistryExecutor invokes
+    a decorated Python callable; CodeFlow's harness is the same role over
+    the HTTP claim surface (it never reaches this in-process seam).
+    """
+
+    def execute(self, obligation, attempt: int) -> None:
+        """Run the attempt's work for *obligation*."""
+        ...
 
 
 # region @worker.state
@@ -183,7 +205,6 @@ def existing_state_case(
 #   - state_repository
 #   - signals_repository
 #   - models.account
-#   - registry.registry
 #   - lease
 #   - events.log
 # aliases:
@@ -462,12 +483,13 @@ def conclude_attempt(
 
 def execute_job(
     queue: JobQueueProtocol,
-    registry: Registry,
+    executor: Executor,
     state_repo: StateRepository,
     signals: SignalRepository,
     worker_id: str,
     default_timeout: int = DEFAULT_TIMEOUT,
     events: RunEventLog | None = None,
+    adjudication_for: "Callable[[str], str] | None" = None,
 ) -> int:
     """Execute a single job from the queue under the account state machine.
 
@@ -484,13 +506,17 @@ def execute_job(
 
     Args:
         queue: Job queue to dequeue from.
-        registry: Flow registry for retrieving flow functions.
+        executor: What runs the attempt's work (the controller's half).
         state_repo: State repository owning the obligation lease documents.
         signals: Signal repository the cancel signal is read from.
         worker_id: Unique identifier for this worker instance.
         default_timeout: Lease seconds used when the job carries no
             timeout_seconds.
         events: Optional run event log receiving lifecycle events.
+        adjudication_for: Per-flow adjudication policy (``"auto"``/
+            ``"gated"``) stamped on obligations *created* by this claim;
+            None means auto.  Existing obligations keep the policy fixed
+            at their creation.
 
     Returns:
         Exit code — 0 success or deliberate cancel, 1 failure, 2 no job or
@@ -558,9 +584,10 @@ def execute_job(
         return 2
 
     cancel_pending = signals.get(job.flow_name, job.run_id, CANCEL) is not None
-    get_options = getattr(registry, "get_flow_options", None)
-    options = get_options(job.flow_name) if get_options is not None else None
-    gated = bool(options is not None and getattr(options, "gated", False))
+    gated = (
+        adjudication_for is not None
+        and adjudication_for(job.flow_name) == "gated"
+    )
     timeout = job.timeout_seconds or default_timeout
     decision: dict = {}
     try:
@@ -637,13 +664,7 @@ def execute_job(
     lease_lost = False
     lease_token = bind_lease(run_lease)
     try:
-        fn = registry.get_flow(job.flow_name)
-        with tracing.run_root(
-            record.obligation.id,
-            record.obligation.flow_name,
-            attempt=len(record.attempts),
-        ):
-            fn(**record.obligation.kwargs)
+        executor.execute(record.obligation, len(record.attempts))
     except RunCancelled:
         cancelled = True
         logger.info("job_cancelled", extra={"run_id": str(job.run_id)})
@@ -655,9 +676,6 @@ def execute_job(
         logger.exception("job_failed", extra={"run_id": str(job.run_id)})
     finally:
         unbind_lease(lease_token)
-        # Persist buffered spans before the terminal write so the run
-        # record is complete by the time the state reports it closed.
-        tracing.force_flush()
 
     if lease_lost:
         # The run was reclaimed mid-flight; the new owner records the outcome.

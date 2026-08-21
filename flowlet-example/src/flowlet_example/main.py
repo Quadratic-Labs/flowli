@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from . import flows
 from flowlet.queue.memory import InMemoryQueue
 from flowlet.worker import execute_job
+from taskflow import RegistryExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,11 @@ def _worker_loop(stop_event: threading.Event) -> None:
         try:
             result = execute_job(
                 queue=flows.flowlet.queue,
-                registry=flows.flowlet.registry,
+                executor=RegistryExecutor(flows.flowlet.registry),
                 state_repo=flows.flowlet.state_repo,
                 signals=flows.flowlet.signals,
                 worker_id="embedded-worker",
+                adjudication_for=flows.flowlet.adjudication_for,
             )
             if result == 2:  # no job available
                 time.sleep(1.0)

@@ -14,8 +14,8 @@ from typing import Any, Callable, get_type_hints
 from attrs import define
 from pydantic import BaseModel, Field, create_model
 
-from .tracing import instrument
-from .models import RunType
+from flowlet.tracing import instrument
+from flowlet.models import RunType
 
 logger = logging.getLogger(__name__)
 

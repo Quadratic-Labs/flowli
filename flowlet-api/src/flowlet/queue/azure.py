@@ -4,16 +4,13 @@ Provides production-ready queue backend using Azure Queue Storage.
 Messages are JSON-serialized FlowJob objects used purely as wake-up
 signals; ownership and retries live in the state store.
 """
-from typing import TYPE_CHECKING
 from uuid import UUID
+
 from attrs import define, field
 
 from ..models import FlowJob
 from ..serdes import from_json, to_json
 from .config import AzureQueueStorageConfig
-
-if TYPE_CHECKING:
-    from azure.storage.queue import QueueClient, QueueMessage
 
 
 @define

@@ -3,7 +3,6 @@ Run analysis: derives structured summaries from recorded spans.
 """
 from .models import RunSummary, SpanRecord
 
-
 # region @analysis
 # ---
 # role: computation

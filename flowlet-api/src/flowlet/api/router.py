@@ -5,7 +5,8 @@ Provides build_router() to wire a FlowController onto an APIRouter.
 Route HTTP metadata (path, method, summary, tags, responses) is defined
 separately in @router.contracts so the controller layer stays HTTP-unaware.
 """
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from attrs import Factory, define
 from fastapi import APIRouter
@@ -22,7 +23,6 @@ from .models import (
     RunDTO,
     RunStateDTO,
 )
-
 
 # region @router.contracts
 # ---
@@ -75,22 +75,6 @@ class RouteSpec:
     requires_state: bool = False
     requires_events: bool = False
 
-
-_EXECUTE_FLOW = RouteSpec(
-    path="/execute/{flow_name}",
-    method="POST",
-    summary="Execute a registered flow synchronously",
-    description=(
-        "Execute a flow with validated arguments and block until it completes.\n\n"
-        "Inspect the parameter schema first: GET /flows/{flow_name}/schema"
-    ),
-    tags=["Execution"],
-    responses={
-        200: {"description": "Flow executed successfully"},
-        404: {"description": "Flow not found"},
-        422: {"description": "Invalid flow arguments — see error details"},
-    },
-)
 
 _SUBMIT_FLOW = RouteSpec(
     path="/submit/{flow_name}",
@@ -272,25 +256,6 @@ _RUN_EVENTS = RouteSpec(
     requires_events=True,
 )
 
-_LIST_FLOWS = RouteSpec(
-    path="/flows",
-    method="GET",
-    summary="List all registered flows with their schemas",
-    description="Returns metadata for all flows including parameter information.",
-    tags=["Introspection"],
-    response_model=list[dict],
-)
-
-_FLOW_SCHEMA = RouteSpec(
-    path="/flows/{flow_name}/schema",
-    method="GET",
-    summary="Get parameter schema for a specific flow",
-    description="Returns detailed schema including JSON Schema for client generation.",
-    tags=["Introspection"],
-    response_model=dict,
-    responses={404: {"description": "Flow not found"}},
-)
-
 # ---
 # endregion
 
@@ -351,9 +316,6 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     """
     router = APIRouter()
 
-    _wire(router, _LIST_FLOWS, controller.list_flows_with_schemas)
-    _wire(router, _FLOW_SCHEMA, controller.get_flow_schema)
-    _wire(router, _EXECUTE_FLOW, controller.run_flow)
     if not _SUBMIT_FLOW.requires_queue or controller.queue is not None:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
     if not _CANCEL_RUN.requires_state or controller.state_repo is not None:

@@ -9,12 +9,11 @@ import json
 from uuid import uuid7
 
 import pytest
+from cairndb.storage.filesystem import FilesystemStorage
 from fastapi import HTTPException
 
 from flowlet.api.controller import FlowController
 from flowlet.api.models import FlowArguments
-from cairndb.storage.filesystem import FilesystemStorage
-
 from flowlet.repository.dispatch import DispatchKeyRepository
 
 
@@ -75,12 +74,8 @@ class TestResolveOrCreate:
 
 class TestSubmitFlowWithDispatchKey:
     @pytest.fixture
-    def controller(self, registry_with_flows, mock_queue, dispatch_repo):
-        return FlowController(
-            registry=registry_with_flows,
-            queue=mock_queue,
-            dispatch_repo=dispatch_repo,
-        )
+    def controller(self, mock_queue, dispatch_repo):
+        return FlowController(queue=mock_queue, dispatch_repo=dispatch_repo)
 
     def test_first_submission_is_not_deduplicated(self, controller):
         resp = controller.submit_flow(
@@ -118,8 +113,8 @@ class TestSubmitFlowWithDispatchKey:
         assert first.run_id != second.run_id
         assert second.deduplicated is False
 
-    def test_key_without_dispatch_repo_is_503(self, registry_with_flows, mock_queue):
-        controller = FlowController(registry=registry_with_flows, queue=mock_queue)
+    def test_key_without_dispatch_repo_is_503(self, mock_queue):
+        controller = FlowController(queue=mock_queue)
         with pytest.raises(HTTPException) as exc:
             controller.submit_flow(
                 "my_flow", FlowArguments(kwargs={"x": 1, "y": 2}, dispatch_key="k1")

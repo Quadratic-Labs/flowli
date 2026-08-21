@@ -19,12 +19,11 @@ from flowlet.models import (
     RunStatus,
     VerdictDecision,
 )
-from flowlet.registry import FlowOptions
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.sweeper import sweep
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeQueue, FakeRegistry
+from .test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture
@@ -42,28 +41,27 @@ def signals(store):
     return SignalRepository(store=store)
 
 
-def _gated_registry(flow_name, fn, gate=None):
-    return FakeRegistry(
-        {flow_name: fn},
-        options={flow_name: FlowOptions(gated=True, gate=gate)},
-    )
+GATED = "gated"
 
 
-def _run_gated(state_repo, signals, job, fn=lambda **kw: None, gate=None):
+def _run_gated(state_repo, signals, job, fn=lambda **kw: None):
     """Execute a gated job once and return the worker's exit code."""
-    registry = _gated_registry(job.flow_name, fn, gate)
-    return execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+    executor = FakeExecutor({job.flow_name: fn})
+    return execute_job(
+        FakeQueue([job]), executor, state_repo, signals, "w1",
+        adjudication_for=lambda _f: GATED,
+    )
 
 
 class _Controller:
     """Build a controller wired to the same stores as the worker."""
 
-    def __new__(cls, state_repo, signals, registry, queue=None):
+    def __new__(cls, state_repo, signals, gate=None, queue=None):
         return FlowController(
-            registry=registry,
             state_repo=state_repo,
             signals=signals,
             queue=queue,
+            gate_policy=(lambda _f: gate) if gate is not None else None,
         )
 
 
@@ -98,8 +96,11 @@ class TestGatedSuspension:
         epoch_before = state_repo.read(job.flow_name, job.run_id).epoch
 
         executed = []
-        registry = _gated_registry(job.flow_name, lambda **kw: executed.append(1))
-        rc = execute_job(FakeQueue([job]), registry, state_repo, signals, "w2")
+        executor = FakeExecutor({job.flow_name: lambda **kw: executed.append(1)})
+        rc = execute_job(
+            FakeQueue([job]), executor, state_repo, signals, "w2",
+            adjudication_for=lambda _f: GATED,
+        )
 
         assert rc == 2
         assert executed == []
@@ -130,9 +131,7 @@ class TestAdjudication:
     ):
         job = make_flow_job()
         _run_gated(state_repo, signals, job)
-        controller = _Controller(
-            state_repo, signals, _gated_registry(job.flow_name, lambda **kw: None)
-        )
+        controller = _Controller(state_repo, signals)
 
         resp = controller.adjudicate_run(
             job.run_id,
@@ -155,8 +154,7 @@ class TestAdjudication:
         job = make_flow_job(max_retries=3)
         _run_gated(state_repo, signals, job)
         queue = FakeQueue([])
-        registry = _gated_registry(job.flow_name, lambda **kw: None)
-        controller = _Controller(state_repo, signals, registry, queue=queue)
+        controller = _Controller(state_repo, signals, queue=queue)
 
         resp = controller.adjudicate_run(
             job.run_id,
@@ -171,9 +169,13 @@ class TestAdjudication:
         wake, _ = queue.enqueued[0]
         assert wake.run_id == job.run_id
         assert wake.caused_by == "adjudication:rejected_by:reviewer-7"
-        # … and a worker executes attempt 2, suspending again for judgment.
+        # … and a worker executes attempt 2, suspending again for judgment
+        # (the obligation was created gated; the policy is fixed at creation).
         queue.jobs = [wake]
-        rc = execute_job(queue, registry, state_repo, signals, "w2")
+        rc = execute_job(
+            queue, FakeExecutor({job.flow_name: lambda **kw: None}),
+            state_repo, signals, "w2",
+        )
         assert rc == 0
         record = state_repo.read(job.flow_name, job.run_id).record
         assert len(record.attempts) == 2
@@ -184,9 +186,7 @@ class TestAdjudication:
     ):
         job = make_flow_job(max_retries=1)
         _run_gated(state_repo, signals, job)
-        controller = _Controller(
-            state_repo, signals, _gated_registry(job.flow_name, lambda **kw: None)
-        )
+        controller = _Controller(state_repo, signals)
 
         resp = controller.adjudicate_run(
             job.run_id,
@@ -203,9 +203,8 @@ class TestAdjudication:
     ):
         job = make_flow_job()
         gate = lambda actor, record: actor.startswith("admin")  # noqa: E731
-        _run_gated(state_repo, signals, job, gate=gate)
-        registry = _gated_registry(job.flow_name, lambda **kw: None, gate=gate)
-        controller = _Controller(state_repo, signals, registry)
+        _run_gated(state_repo, signals, job)
+        controller = _Controller(state_repo, signals, gate=gate)
 
         with pytest.raises(HTTPException) as exc:
             controller.adjudicate_run(
@@ -228,10 +227,7 @@ class TestAdjudication:
     ):
         record = make_record(status=RunStatus.pending)
         seed_lease(store, record)
-        controller = _Controller(
-            state_repo, signals,
-            _gated_registry(record.obligation.flow_name, lambda **kw: None),
-        )
+        controller = _Controller(state_repo, signals)
 
         with pytest.raises(HTTPException) as exc:
             controller.adjudicate_run(
@@ -245,9 +241,7 @@ class TestAdjudication:
     ):
         job = make_flow_job()
         _run_gated(state_repo, signals, job)
-        controller = _Controller(
-            state_repo, signals, _gated_registry(job.flow_name, lambda **kw: None)
-        )
+        controller = _Controller(state_repo, signals)
 
         resp = controller.cancel_run(job.run_id)
 
@@ -274,8 +268,8 @@ class TestEffects:
             result = flowlet_pkg.effect("send_email", lambda: fired.append(1) or "sent")
             assert result == "sent"
 
-        registry = FakeRegistry({job.flow_name: flow})
-        rc = execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        rc = execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert rc == 0
         assert fired == [1]
@@ -301,9 +295,9 @@ class TestEffects:
             if calls["n"] == 1:
                 raise ValueError("flaky after the effect")
 
-        registry = FakeRegistry({job.flow_name: flow})
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
-        rc = execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
+        rc = execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert rc == 0
         assert fired == [1]  # the side effect fired exactly once
@@ -322,8 +316,8 @@ class TestEffects:
             flowlet_pkg.effect("notify", lambda: fired.append(1), occurrence="1")
             flowlet_pkg.effect("notify", lambda: fired.append(1), occurrence="manual-2")
 
-        registry = FakeRegistry({job.flow_name: flow})
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert fired == [1, 1]
         record = state_repo.read(job.flow_name, job.run_id).record
@@ -345,8 +339,8 @@ class TestProvenance:
     ):
         job = make_flow_job()
         job.caused_by = "dispatch:webhook-42"
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         record = state_repo.read(job.flow_name, job.run_id).record
         assert record.obligation.caused_by == "dispatch:webhook-42"
@@ -360,7 +354,7 @@ class TestProvenance:
             raise ValueError("boom")
 
         queue = FakeQueue([job])
-        execute_job(queue, FakeRegistry({job.flow_name: boom}), state_repo, signals, "w1")
+        execute_job(queue, FakeExecutor({job.flow_name: boom}), state_repo, signals, "w1")
 
         retry_job, _ = queue.enqueued[0]
         assert retry_job.caused_by == "retry_of_attempt:1"

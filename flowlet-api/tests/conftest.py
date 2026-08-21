@@ -7,12 +7,12 @@ Provides:
 - run_state / span_record factory fixtures (return a builder callable)
 - Mock querier and queue stubs
 """
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock
+from uuid import UUID, uuid7
+
 import pytest
 import pytest_asyncio
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, Mock
-from uuid import UUID
-
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -22,10 +22,7 @@ from sqlalchemy.ext.asyncio import (
 from flowlet.api.controller import FlowController
 from flowlet.api.database import Base
 from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
-from flowlet.registry import Registry
-from uuid import uuid7
 from flowlet.types import Timestamp
-
 
 # ============================================================================
 # Builder functions — module-level, used by fixtures below and within conftest
@@ -264,32 +261,6 @@ def make_span_record():
 
 
 # ============================================================================
-# Registry fixtures
-# ============================================================================
-
-
-@pytest.fixture
-def registry() -> Registry:
-    """Empty Registry instance."""
-    return Registry()
-
-
-@pytest.fixture
-def registry_with_flows(registry: Registry) -> Registry:
-    """Registry with two typed flows pre-registered."""
-
-    def my_flow(x: int, y: int) -> int:
-        return x + y
-
-    def other_flow(name: str) -> str:
-        return f"hello {name}"
-
-    registry.register_flow(my_flow, name="my_flow")
-    registry.register_flow(other_flow, name="other_flow")
-    return registry
-
-
-# ============================================================================
 # Controller fixtures
 # ============================================================================
 
@@ -312,21 +283,21 @@ def mock_queue() -> Mock:
 
 
 @pytest.fixture
-def controller(registry: Registry) -> FlowController:
+def controller() -> FlowController:
     """FlowController with no querier and no queue."""
-    return FlowController(registry=registry)
+    return FlowController()
 
 
 @pytest.fixture
-def controller_with_querier(registry: Registry, mock_querier: AsyncMock) -> FlowController:
+def controller_with_querier(mock_querier: AsyncMock) -> FlowController:
     """FlowController with a mocked querier (for query endpoint tests)."""
-    return FlowController(registry=registry, querier=mock_querier)
+    return FlowController(querier=mock_querier)
 
 
 @pytest.fixture
-def controller_with_queue(registry: Registry, mock_queue: Mock) -> FlowController:
+def controller_with_queue(mock_queue: Mock) -> FlowController:
     """FlowController with a mocked queue (for submit endpoint tests)."""
-    return FlowController(registry=registry, queue=mock_queue)
+    return FlowController(queue=mock_queue)
 
 
 # ============================================================================

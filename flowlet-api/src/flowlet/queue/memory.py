@@ -5,8 +5,9 @@ Suitable for local development, testing, and single-process deployments.
 """
 import threading
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
+
 from attrs import define, field
 
 from ..models import FlowJob
@@ -60,7 +61,7 @@ class InMemoryQueue:
         Raises:
             RuntimeError: If queue is full and max_size is configured.
         """
-        visible_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        visible_at = datetime.now(UTC) + timedelta(seconds=delay)
         with self._lock:
             if self.config.max_size > 0 and len(self._queue) >= self.config.max_size:
                 raise RuntimeError(
@@ -81,7 +82,7 @@ class InMemoryQueue:
         Returns:
             FlowJob if a visible message exists, None otherwise.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         claim_window = timeout if timeout is not None else _DEFAULT_CLAIM_WINDOW
 
         with self._lock:

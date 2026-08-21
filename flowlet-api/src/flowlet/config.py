@@ -10,10 +10,9 @@ verbatim, with cairndb's field names.
 from functools import cached_property
 from typing import TYPE_CHECKING, Annotated, Any
 
+from cairndb.storage.config import StorageConfig
 from pydantic import BeforeValidator, Field, InstanceOf
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-from cairndb.storage.config import StorageConfig
 
 from flowlet.queue.config import QueueConfig
 

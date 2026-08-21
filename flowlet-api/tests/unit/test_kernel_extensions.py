@@ -26,7 +26,6 @@ from flowlet.models import (
     RunStatus,
     VerdictDecision,
 )
-from flowlet.registry import FlowOptions
 from flowlet.repository import (
     ResourceLeaseRepository,
     SignalRepository,
@@ -38,7 +37,7 @@ from flowlet.sweeper import sweep
 from flowlet.types import Timestamp
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeQueue, FakeRegistry
+from .test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture
@@ -61,9 +60,8 @@ def timers(store):
     return TimerRepository(store=store)
 
 
-def _controller(state_repo, signals, registry=None, queue=None):
+def _controller(state_repo, signals, queue=None):
     return FlowController(
-        registry=registry or FakeRegistry({}),
         state_repo=state_repo,
         signals=signals,
         queue=queue,
@@ -83,9 +81,9 @@ class TestPauseAdmission:
         signals.send_scoped("global", PAUSE, actor="operator")
         job = make_flow_job()
         executed = []
-        registry = FakeRegistry({job.flow_name: lambda **kw: executed.append(1)})
+        executor = FakeExecutor({job.flow_name: lambda **kw: executed.append(1)})
 
-        rc = execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        rc = execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert rc == 2
         assert executed == []
@@ -96,12 +94,12 @@ class TestPauseAdmission:
     ):
         signals.send_scoped("flow:test_flow", PAUSE, actor="operator")
         job = make_flow_job(flow_name="test_flow")
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
 
-        assert execute_job(FakeQueue([job]), registry, state_repo, signals, "w1") == 2
+        assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 2
 
         signals.revoke_scoped("flow:test_flow", PAUSE)
-        assert execute_job(FakeQueue([job]), registry, state_repo, signals, "w1") == 0
+        assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 0
         assert state_repo.read(job.flow_name, job.run_id).state.status == RunStatus.completed
 
     def test_ancestor_pause_covers_children(
@@ -111,9 +109,9 @@ class TestPauseAdmission:
         signals.send_scoped(f"run:{parent}", PAUSE, actor="operator")
         job = make_flow_job()
         job.parent_id = parent
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
 
-        assert execute_job(FakeQueue([job]), registry, state_repo, signals, "w1") == 2
+        assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 2
 
     def test_sweeper_keeps_paused_runs_parked(
         self, state_repo, signals, make_run_state, seed_lease, store
@@ -151,8 +149,8 @@ class TestHeartbeatSignals:
                          details={"reason": "steer"})
             observed.append(flowlet_pkg.heartbeat())
 
-        registry = FakeRegistry({job.flow_name: flow})
-        rc = execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flow})
+        rc = execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert rc == 0
         pending = observed[0]
@@ -444,11 +442,7 @@ class TestExternalExecutor:
         record.obligation.adjudication = "gated"
         seed_lease(store, record)
         state = record.obligation
-        registry = FakeRegistry(
-            {state.flow_name: lambda **kw: None},
-            options={state.flow_name: FlowOptions(gated=True)},
-        )
-        controller = _controller(state_repo, signals, registry=registry)
+        controller = _controller(state_repo, signals)
         claim = controller.claim_run(
             state.id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),

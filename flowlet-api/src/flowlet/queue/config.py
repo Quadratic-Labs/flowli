@@ -4,13 +4,13 @@ Provides Pydantic configuration models for different queue implementations,
 following the discriminated union pattern used in storage configuration.
 """
 from functools import cached_property
-from typing import Literal, TYPE_CHECKING, Union, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal, Union
 
-from pydantic import Field, Discriminator
+from pydantic import Discriminator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
-    from azure.storage.queue import QueueServiceClient, QueueClient
+    from azure.storage.queue import QueueClient, QueueServiceClient
 
 
 class AzureQueueStorageConfig(BaseSettings):

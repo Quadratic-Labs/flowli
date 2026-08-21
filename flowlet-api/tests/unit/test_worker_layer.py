@@ -15,7 +15,6 @@ from flowlet.repository import SignalRepository, StateRepository, StateView
 from flowlet.types import Timestamp
 from flowlet.worker import JobState, execute_job, existing_state_case
 
-
 # ============================================================================
 # Fakes
 # ============================================================================
@@ -43,23 +42,14 @@ class FakeQueue:
         return len(self.jobs)
 
 
-class FakeRegistry:
-    """Maps flow names to callables, with optional per-flow options."""
+class FakeExecutor:
+    """Kernel executor double: maps flow names to callables."""
 
-    def __init__(self, flows, options=None):
+    def __init__(self, flows):
         self.flows = flows
-        self.options = options or {}
 
-    def get_flow(self, name):
-        return self.flows[name]
-
-    def list_flows(self):
-        return list(self.flows)
-
-    def get_flow_options(self, name):
-        from flowlet.registry import FlowOptions
-
-        return self.options.get(name, FlowOptions())
+    def execute(self, obligation, attempt):
+        self.flows[obligation.flow_name](**obligation.kwargs)
 
 
 # ============================================================================
@@ -146,9 +136,9 @@ class TestExecuteJobSuccess:
         job = make_flow_job(kwargs={"x": 1})
         seen = []
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: lambda **kw: seen.append(kw)})
+        executor = FakeExecutor({job.flow_name: lambda **kw: seen.append(kw)})
 
-        rc = execute_job(queue, registry, state_repo, signals, "w1")
+        rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
         assert seen == [{"x": 1}]
@@ -170,7 +160,7 @@ class TestExecuteJobSuccess:
 
         queue = FakeQueue([job])
         execute_job(
-            queue, FakeRegistry({job.flow_name: boom}), state_repo, signals, "w1"
+            queue, FakeExecutor({job.flow_name: boom}), state_repo, signals, "w1"
         )
         assert queue.acked == [job.job_id]
 
@@ -186,7 +176,7 @@ class TestExecuteJobSuccess:
 
         queue = FakeQueue([job])
         execute_job(
-            queue, FakeRegistry({job.flow_name: flow}), state_repo, signals, "w1"
+            queue, FakeExecutor({job.flow_name: flow}), state_repo, signals, "w1"
         )
 
         view = observed[0]
@@ -195,7 +185,7 @@ class TestExecuteJobSuccess:
         assert 1200 < remaining <= 1234
 
     def test_empty_queue_returns_2(self, state_repo, signals):
-        rc = execute_job(FakeQueue(), FakeRegistry({}), state_repo, signals, "w1")
+        rc = execute_job(FakeQueue(), FakeExecutor({}), state_repo, signals, "w1")
         assert rc == 2
 
 
@@ -210,7 +200,7 @@ class TestExecuteJobRetries:
 
         queue = FakeQueue([job])
         rc = execute_job(
-            queue, FakeRegistry({job.flow_name: boom}), state_repo, signals, "w1"
+            queue, FakeExecutor({job.flow_name: boom}), state_repo, signals, "w1"
         )
 
         assert rc == 1
@@ -232,9 +222,9 @@ class TestExecuteJobRetries:
         def boom(**kw):
             raise ValueError("boom")
 
-        registry = FakeRegistry({job.flow_name: boom})
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: boom})
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         view = state_repo.read(job.flow_name, job.run_id)
         assert view.state.attempt == 2
@@ -250,10 +240,10 @@ class TestExecuteJobRetries:
         def boom(**kw):
             raise ValueError("boom")
 
-        registry = FakeRegistry({job.flow_name: boom})
-        assert execute_job(FakeQueue([job]), registry, state_repo, signals, "w1") == 1
+        executor = FakeExecutor({job.flow_name: boom})
+        assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 1
         q2 = FakeQueue([job])
-        assert execute_job(q2, registry, state_repo, signals, "w1") == 1
+        assert execute_job(q2, executor, state_repo, signals, "w1") == 1
 
         view = state_repo.read(job.flow_name, job.run_id)
         assert view.state.status == RunStatus.failed
@@ -278,7 +268,7 @@ class TestExecuteJobSkips:
         queue = FakeQueue([job])
         rc = execute_job(
             queue,
-            FakeRegistry({job.flow_name: lambda **kw: calls.append(1)}),
+            FakeExecutor({job.flow_name: lambda **kw: calls.append(1)}),
             state_repo,
             signals,
             "w1",
@@ -309,7 +299,7 @@ class TestExecuteJobSkips:
         queue = FakeQueue([job])
         rc = execute_job(
             queue,
-            FakeRegistry({job.flow_name: lambda **kw: calls.append(1)}),
+            FakeExecutor({job.flow_name: lambda **kw: calls.append(1)}),
             state_repo,
             signals,
             "w1",
@@ -345,7 +335,7 @@ class TestExecuteJobTakeover:
         queue = FakeQueue([job])
         rc = execute_job(
             queue,
-            FakeRegistry({job.flow_name: lambda **kw: seen.append(kw)}),
+            FakeExecutor({job.flow_name: lambda **kw: seen.append(kw)}),
             state_repo,
             signals,
             "w2",
@@ -381,7 +371,7 @@ class TestExecuteJobTakeover:
         queue = FakeQueue([job])
         rc = execute_job(
             queue,
-            FakeRegistry({job.flow_name: lambda **kw: calls.append(1)}),
+            FakeExecutor({job.flow_name: lambda **kw: calls.append(1)}),
             state_repo,
             signals,
             "w2",

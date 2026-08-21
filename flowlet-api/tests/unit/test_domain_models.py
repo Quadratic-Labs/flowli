@@ -8,13 +8,11 @@ Covers:
 - FlowJob defaults
 """
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid7
 
 import pytest
 
 from flowlet.models import FlowJob, RunStatus, RunSummary, RunType
-from uuid import uuid7
-from flowlet.types import Timestamp
 
 
 @pytest.mark.unit

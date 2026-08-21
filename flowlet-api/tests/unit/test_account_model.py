@@ -12,7 +12,6 @@ import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 
 from flowlet.models import (
-    Attempt,
     AttemptOutcome,
     Obligation,
     ObligationRecord,
@@ -26,7 +25,7 @@ from flowlet.serdes import from_json, from_payload, to_json, to_payload
 from flowlet.types import Timestamp
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeQueue, FakeRegistry
+from .test_worker_layer import FakeExecutor, FakeQueue
 
 
 def _record(**obligation_kwargs) -> ObligationRecord:
@@ -208,8 +207,8 @@ class TestAccountThroughWorker:
         job.root_id = root
 
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
-        execute_job(queue, registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
+        execute_job(queue, executor, state_repo, signals, "w1")
 
         record = state_repo.read(job.flow_name, job.run_id).record
         assert record.obligation.parent_id == parent
@@ -233,8 +232,8 @@ class TestAccountThroughWorker:
         )
 
         queue = FakeQueue([job])
-        registry = FakeRegistry({job.flow_name: lambda **kw: None})
-        rc = execute_job(queue, registry, state_repo, signals, "w2")
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
+        rc = execute_job(queue, executor, state_repo, signals, "w2")
 
         assert rc == 0
         record = state_repo.read(job.flow_name, job.run_id).record
@@ -263,10 +262,10 @@ class TestAccountThroughWorker:
             if calls["n"] < 3:
                 raise ValueError("flaky")
 
-        registry = FakeRegistry({job.flow_name: flaky})
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
-        execute_job(FakeQueue([job]), registry, state_repo, signals, "w1")
+        executor = FakeExecutor({job.flow_name: flaky})
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
+        execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         record = state_repo.read(job.flow_name, job.run_id).record
         outcomes = [a.outcome for a in record.attempts]

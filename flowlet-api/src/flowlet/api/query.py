@@ -4,7 +4,7 @@ Query layer for run history: RunState from SQLite, full Run from logs.
 Three query patterns are served:
 
 1. ``list_recent_states`` — the last *N* RunState rows per registered flow,
-   using the registry to cover every registered flow (including those that have
+   covering every flow present in the cache (including archived ones that have
    never been run, which simply produce no rows).
 2. ``list_states``        — paginated, filterable list of RunState rows for
    list / table views.
@@ -19,7 +19,6 @@ from sqlalchemy import Select, bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .. import analysis
-from ..registry import Registry
 from ..repository.log import LogRepository
 from ..serdes import destructure
 from .cache import CacheRepository
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 #   RunQuery is the read-side of the Flowlet API query layer.  Three query
 #   patterns are served:
 #   1. list_recent_states — last N RunState rows per registered flow; the
-#      registry is consulted when flow_names is None so every registered flow
+#      the cache's distinct flow names are used when flow_names is None
 #      is covered.  Flows never run produce no rows.
 #   2. list_states        — paginated, filterable RunState query for list views.
 #   3. get_run            — full run detail: logs loaded recursively from
@@ -47,13 +46,13 @@ logger = logging.getLogger(__name__)
 #   Log loading is synchronous (the store's *_sync methods are primitive).
 # rules:
 #   - MUST NOT write to the database; this is a read-only component.
-#   - list_recent_states MUST consult the registry when flow_names is None.
+#   - list_recent_states MUST cover every flow in the cache when
+#     flow_names is None (the kernel knows no registry).
 #   - get_run MUST read spans via LogRepository.get_spans (one folder per run).
 #   - Timestamps MUST be serialised as plain datetime (UTC) in dicts returned by get_run.
 # dependencies:
 #   - analysis
 #   - models.run
-#   - registry.registry
 #   - log_repository
 #   - cache.repository
 #   - database.models
@@ -75,7 +74,7 @@ class RunQuery:
     Attributes:
         cache: CacheRepository providing the local SQLite engine, refreshed
             on demand from storage.
-        registry: Enumerates registered flow names when no explicit filter is
+        cache: Also enumerates known flow names when no explicit filter is
             given to ``list_recent_states``.
         log_repo: Loads span files from run folders.
     """
@@ -93,7 +92,6 @@ class RunQuery:
     def __init__(
         self,
         *,
-        registry: Registry,
         cache_repo: CacheRepository,
         log_repo: LogRepository,
         **_,
@@ -102,13 +100,11 @@ class RunQuery:
 
         Args:
             cache_repo: CacheRepository owning the local SQLite engine.
-            registry: Flow registry for resolving registered flow names.
             log_repo: LogRepository for reading span files from storage.
             **_: Unused keyword arguments accepted for dependency-injection
                 compatibility.
         """
         self.cache = cache_repo
-        self.registry = registry
         self.log_repo = log_repo
 
     def _session_factory(self) -> async_sessionmaker[AsyncSession]:
@@ -132,6 +128,16 @@ class RunQuery:
             .offset(bindparam("offset"))
         )
 
+    async def _known_flow_names(self) -> list[str]:
+        """Distinct flow names present in the refreshed cache."""
+        from sqlalchemy import text
+
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                text("SELECT DISTINCT flow_name FROM runs ORDER BY flow_name")
+            )
+            return [row[0] for row in result.fetchall()]
+
     async def list_recent_states(
         self,
         flow_names: list[str] | None = None,
@@ -140,12 +146,11 @@ class RunQuery:
     ) -> list[RunRow]:
         """Fetch the most recent *last_n* RunState rows for each flow.
 
-        When *flow_names* is ``None`` the registry is consulted to obtain all
-        registered flow names, so every registered flow is represented.  Flows
-        that have never been run simply produce no rows.
+        When *flow_names* is ``None`` the cache's distinct flow names are
+        used, so every flow that ever produced a run is represented.
 
         Args:
-            flow_names: Flows to include, or ``None`` for all registered flows.
+            flow_names: Flows to include, or ``None`` for all known flows.
             last_n: Maximum number of rows to return per flow.
 
         Returns:
@@ -154,11 +159,15 @@ class RunQuery:
             :class:`~flowlet.api.models.RunStateDTO` via
             ``RunStateDTO.model_validate(row)``.
         """
-        names = flow_names if flow_names is not None else self.registry.list_flows()
+        await self.cache.refresh()
+        names = (
+            flow_names
+            if flow_names is not None
+            else await self._known_flow_names()
+        )
         if not names:
             return []
 
-        await self.cache.refresh()
         stmt = self.SQL_RECENT_STATES
         rows: list[RunRow] = []
         async with self._session_factory()() as session:

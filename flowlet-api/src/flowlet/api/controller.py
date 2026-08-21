@@ -1,19 +1,22 @@
 """
-FastAPI controllers for Flowlet.
+FastAPI controllers for the Flowlet account surface.
 
-Provides the FlowController class for handling flow execution and query endpoints.
+FlowController handles the kernel's HTTP endpoints: submission, cancel,
+adjudication, the fenced executor claim lifecycle, and the run/log query
+projections.  Authoring surfaces (synchronous execution of registered
+callables, schema introspection) belong to layer-2 controllers — taskflow
+mounts them beside this router.
 """
 import hashlib
 import json
 import logging
-from inspect import Parameter
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid7
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, Request, Response
-from pydantic import ValidationError
 
 from ..models import FlowJob
 from ..queue import JobQueueProtocol
@@ -40,7 +43,6 @@ from .query import RunQuery
 
 if TYPE_CHECKING:
     from ..events import RunEventLog
-    from ..registry import Registry
     from ..repository.dispatch import DispatchKeyRepository
     from ..repository.signals import SignalRepository
     from ..repository.state import StateRepository
@@ -71,25 +73,23 @@ def _etag_json_response(request: Request, body: str) -> Response:
 # region @controller
 # ---
 # role: api
-# intent: handle flow execution and run-query HTTP endpoints
+# intent: handle the account-surface HTTP endpoints
 # description: >
-#   FlowController is the thin FastAPI handler layer.  It validates incoming
-#   requests, delegates to the domain layer (RunQuery, Registry, JobQueue),
-#   and maps domain exceptions to HTTP status codes.
-#   Execution endpoints: run_flow (synchronous), submit_flow (async queue,
-#   idempotent via optional dispatch_key), and cancel_run (cooperative
-#   cancellation through the state store).
-#   Query endpoints: query_runs (recent RunState rows) and query_logs (full run
-#   with log detail).
-#   Introspection endpoints: get_flow_schema and list_flows_with_schemas read
-#   parameter metadata straight from the Registry.
+#   FlowController is the thin FastAPI handler layer over the kernel:
+#   submit_flow (queue wake-up, idempotent via optional dispatch_key,
+#   pluggable kwargs validation), cancel_run, adjudicate_run (with a
+#   pluggable gate-policy provider — policy stays in controllers), the
+#   fenced executor claim lifecycle (claim/renew/effects/outcome), and the
+#   query projections (query_runs, query_logs, run events).  It knows no
+#   registry: authoring endpoints live in layer-2 packages (taskflow).
 # rules:
 #   - MUST NOT contain business logic; delegate everything to the domain layer.
+#   - MUST NOT know about registries or authoring surfaces; extension is by
+#     the injected prepare_submission / gate_policy hooks only.
 #   - MUST map domain exceptions to appropriate HTTP status codes.
 #   - query_runs MUST be async (delegates to RunQuery async methods).
 # dependencies:
 #   - query
-#   - registry.registry
 #   - models.job
 # aliases:
 #   - flow-controller
@@ -100,203 +100,65 @@ def _etag_json_response(request: Request, body: str) -> Response:
 
 
 class FlowController:
-    """FastAPI controller for flow execution and query endpoints.
-
-    Provides handler methods for all Flowlet REST API operations including
-    flow execution, listing flows, querying run states, and retrieving run
-    details.
+    """FastAPI controller for the kernel's account surface.
 
     Attributes:
         querier: RunQuery instance for reading run states and log details.
-        registry: Flow registry, accessed via querier.
         queue: Optional job queue for asynchronous execution.
-        state_repo: Optional state repository; when present, synchronous
-            run_flow executions record their state like a worker would.
+        state_repo: Optional state repository (cancel/adjudicate/claim).
+        signals: Optional signal repository (cancel signal, pause scopes).
+        prepare_submission: Optional hook ``(flow_name, payload) → payload``
+            applied on submission — layer-2 controllers inject schema
+            validation and per-flow defaults (timeout, budget) here; the
+            kernel accepts anything by default.
+        gate_policy: Optional hook ``flow_name → ((actor, record) → bool) |
+            None`` consulted by adjudication — eligibility policy stays in
+            controllers, the kernel records only actor and decision.
 
     Example:
         >>> controller = FlowController(querier=run_query)
-        >>> flows = controller.list_flows_with_schemas()
         >>> await controller.submit_flow("my_flow", FlowArguments(kwargs={"x": 1}))
     """
 
     def __init__(
         self,
         *,
-        registry: Registry,
         querier: RunQuery | None = None,
         queue: JobQueueProtocol | None = None,
         state_repo: "StateRepository | None" = None,
         signals: "SignalRepository | None" = None,
         dispatch_repo: "DispatchKeyRepository | None" = None,
         events: "RunEventLog | None" = None,
+        prepare_submission: "Callable[[str, FlowArguments], FlowArguments] | None" = None,
+        gate_policy: "Callable[[str], Callable | None] | None" = None,
         **_,
     ):
         """Initialise the flow controller.
 
         Args:
-            registry: Flow registry for resolving registered flows.
             querier: RunQuery providing read access to run states and logs.
                 When None the query endpoints return 503.
             queue: Optional job queue for asynchronous flow submission.
-            state_repo: Optional state repository so synchronous executions
-                leave the same durable record a worker would; also required
-                by the cancel endpoint.
+            state_repo: Optional state repository; required by the cancel,
+                adjudication, and executor endpoints.
             signals: Optional signal repository; required by the cancel
                 endpoint to reach an actively-owned run.
             dispatch_repo: Optional dispatch-key repository enabling
                 idempotent submissions; when None, dispatch_key submissions
                 return 503.
             events: Optional run event log receiving lifecycle events.
+            prepare_submission: Optional submission hook (layer 2).
+            gate_policy: Optional adjudication-eligibility provider (layer 2).
             **_: Additional unused dependencies (for flexible dependency injection).
         """
-        self.registry = registry
         self.querier = querier
         self.queue = queue
         self.state_repo = state_repo
         self.signals = signals
         self.dispatch_repo = dispatch_repo
         self.events = events
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _parse_kwargs(self, flow_name: str, payload: FlowArguments) -> dict[str, Any]:
-        schema = self.registry.get_flow_schema(flow_name)
-        if schema is not None:
-            try:
-                validated = schema.pydantic_model(**payload.kwargs)
-                return validated.model_dump()
-            except ValidationError as e:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Invalid flow arguments",
-                        "flow": flow_name,
-                        "errors": e.errors(),
-                    },
-                )
-        return payload.kwargs or {}
-
-    # ------------------------------------------------------------------
-    # Execution endpoints
-    # ------------------------------------------------------------------
-
-    def run_flow(self, flow_name: str, payload: FlowArguments) -> None:
-        """Execute a registered flow synchronously.
-
-        Args:
-            flow_name: Name of the flow to execute.
-            payload: Keyword arguments for the flow function.
-
-        Raises:
-            HTTPException: 404 if the flow is not registered.
-            HTTPException: 422 if the arguments fail schema validation.
-        """
-        if flow_name not in self.registry.list_flows():
-            raise HTTPException(status_code=404, detail="Flow not found")
-        fn = self.registry.get_flow(flow_name)
-        kwargs = self._parse_kwargs(flow_name, payload)
-
-        run_id = uuid7()
-        from .. import tracing
-        from ..models import (
-            AttemptOutcome,
-            Obligation,
-            ObligationRecord,
-            Timestamp,
-            Verdict,
-            VerdictDecision,
-        )
-        from ..worker import DEFAULT_TIMEOUT
-
-        logger.info(
-            "flow_run_started",
-            extra={"flow_name": flow_name, "run_id": str(run_id)},
-        )
-
-        # Account the run like a worker would: acquire the obligation's
-        # lease so the record follows the same fenced discipline
-        # (best-effort — a failed acquisition never blocks the call).
-        lease = None
-        if self.state_repo is not None:
-            def _initial(_existing) -> ObligationRecord:
-                record = ObligationRecord(
-                    obligation=Obligation(
-                        id=run_id,
-                        flow_name=flow_name,
-                        kwargs=kwargs,
-                        max_retries=1,  # synchronous calls are never retried
-                        created_at=Timestamp.now(),
-                    )
-                )
-                record.begin_attempt("sync-worker")
-                return record
-
-            try:
-                lease = self.state_repo.acquire(
-                    flow_name,
-                    run_id,
-                    ttl=DEFAULT_TIMEOUT,
-                    holder="sync-worker",
-                    state_fn=_initial,
-                )
-            except Exception:
-                logger.exception(
-                    "sync_run_state_acquire_failed", extra={"run_id": str(run_id)}
-                )
-
-        def _finalize(exc: Exception | None) -> None:
-            if lease is None:
-                return
-            record = lease.record
-            now = Timestamp.now()
-            if exc is None:
-                record.record_outcome(
-                    AttemptOutcome.returned,
-                    verdict=Verdict(
-                        decision=VerdictDecision.accepted, rendered_at=now
-                    ),
-                )
-                record.discharge()
-            else:
-                record.record_outcome(
-                    AttemptOutcome.raised,
-                    error=type(exc).__name__,
-                    verdict=Verdict(
-                        decision=VerdictDecision.rejected,
-                        rendered_at=now,
-                        reason=type(exc).__name__,
-                    ),
-                )
-                record.abandon("max_retries_exceeded")
-            try:
-                lease.release(record)
-            except Exception:
-                logger.exception(
-                    "sync_run_state_release_failed", extra={"run_id": str(run_id)}
-                )
-
-        try:
-            try:
-                with tracing.run_root(run_id, flow_name):
-                    fn(**kwargs)
-            finally:
-                tracing.force_flush()
-
-            _finalize(None)
-            logger.info(
-                "flow_run_completed",
-                extra={"flow_name": flow_name, "run_id": str(run_id)},
-            )
-
-        except Exception as exc:
-            logger.exception(
-                "flow_run_failed",
-                extra={"flow_name": flow_name, "run_id": str(run_id)},
-            )
-            _finalize(exc)
-            raise
+        self.prepare_submission = prepare_submission
+        self.gate_policy = gate_policy
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
         """Submit a flow for asynchronous execution via the job queue.
@@ -333,11 +195,9 @@ class FlowController:
                     "Use POST /execute/{flow_name} for synchronous execution."
                 ),
             )
-        if flow_name not in self.registry.list_flows():
-            raise HTTPException(status_code=404, detail="Flow not found")
-
-        kwargs = self._parse_kwargs(flow_name, payload)
-        options = self.registry.get_flow_options(flow_name)
+        if self.prepare_submission is not None:
+            payload = self.prepare_submission(flow_name, payload)
+        kwargs = payload.kwargs or {}
 
         parent_id = payload.parent_run_id
         root_id = None
@@ -362,8 +222,8 @@ class FlowController:
         job = FlowJob(
             flow_name=flow_name,
             kwargs=kwargs,
-            timeout_seconds=options.timeout_seconds,
-            max_retries=options.max_retries,
+            timeout_seconds=payload.timeout_seconds,
+            max_retries=payload.max_retries if payload.max_retries is not None else 3,
             parent_id=parent_id,
             root_id=root_id,
         )
@@ -604,8 +464,7 @@ class FlowController:
                 ),
             )
 
-        options = self.registry.get_flow_options(flow_name)
-        gate = getattr(options, "gate", None)
+        gate = self.gate_policy(flow_name) if self.gate_policy is not None else None
         if gate is not None and not gate(payload.actor, record):
             raise HTTPException(
                 status_code=403,
@@ -769,7 +628,6 @@ class FlowController:
         cancel_pending = (
             self.signals.get(flow_name, run_id, CANCEL) is not None
         )
-        options = self.registry.get_flow_options(flow_name)
         ttl = payload.ttl_seconds or DEFAULT_TIMEOUT
         decision: dict = {}
         synthetic = FlowJob(
@@ -789,7 +647,9 @@ class FlowController:
                     job=synthetic,
                     worker_id=payload.executor,
                     cancel_pending=cancel_pending,
-                    gated=bool(getattr(options, "gated", False)),
+                    # Creation is forbidden here (404 above), and existing
+                    # obligations keep the adjudication fixed at creation.
+                    gated=False,
                     decision=decision,
                 ),
             )
@@ -1109,86 +969,6 @@ class FlowController:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-    # ------------------------------------------------------------------
-    # Introspection endpoints
-    # ------------------------------------------------------------------
-
-    def get_flow_schema(self, flow_name: str) -> dict[str, Any]:
-        """Return the parameter schema for a specific flow.
-
-        Args:
-            flow_name: Name of the flow.
-
-        Returns:
-            Dictionary with flow metadata including JSON Schema and parameter
-            descriptions.
-
-        Raises:
-            HTTPException: 404 if the flow is not registered.
-        """
-        if flow_name not in self.registry.list_flows():
-            raise HTTPException(status_code=404, detail="Flow not found")
-
-        schema = self.registry.get_flow_schema(flow_name)
-        if schema is None:
-            return {
-                "flow_name": flow_name,
-                "has_schema": False,
-                "message": "No type hints available for this flow",
-            }
-
-        return {
-            "flow_name": flow_name,
-            "docstring": schema.docstring,
-            "has_schema": True,
-            "parameters": [
-                {
-                    "name": p.name,
-                    "type": str(p.type_annotation),
-                    "required": p.required,
-                    "default": p.default if p.default != Parameter.empty else None,
-                    "description": p.description,
-                }
-                for p in schema.parameters
-            ],
-            "json_schema": schema.pydantic_model.model_json_schema(),
-        }
-
-    def list_flows_with_schemas(self) -> list[dict[str, Any]]:
-        """List all registered flows with their parameter schemas.
-
-        Returns:
-            List of flow metadata dictionaries.
-        """
-        flows = []
-        for flow_name in self.registry.list_flows():
-            fn = self.registry.get_flow(flow_name)
-            schema = self.registry.get_flow_schema(flow_name)
-
-            flow_info: dict[str, Any] = {
-                "name": flow_name,
-                "docstring": fn.__doc__,
-                "has_schema": schema is not None,
-            }
-
-            if schema:
-                flow_info["parameters"] = [
-                    {
-                        "name": p.name,
-                        "type": str(p.type_annotation),
-                        "required": p.required,
-                    }
-                    for p in schema.parameters
-                ]
-
-            flows.append(flow_info)
-
-        return flows
-
-    # ------------------------------------------------------------------
-    # WebSocket endpoint
-    # ------------------------------------------------------------------
 
 # ---
 # endregion
