@@ -6,6 +6,7 @@ import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type Ru
 import { StatusBadge } from '@/components/StatusBadge';
 import { RunFlamegraph } from '@/components/RunFlamegraph';
 import { CancelRunButton } from '@/components/CancelRunButton';
+import { AdjudicateRunPanel } from '@/components/AdjudicateRunPanel';
 
 interface LogLine { ts: string | null; level: string; message: string }
 
@@ -91,6 +92,12 @@ function groupAttempts(spans: SpanRecordDTO[]): AttemptView[] {
 
 const TERMINAL_EVENTS = ['completed', 'failed', 'canceled'];
 
+/** Statuses the kernel treats as closed (RunStatus.is_closed(), mirrored).
+ *  Distinct from TERMINAL_EVENTS: an "adjudicated" event can close a run
+ *  (accepted) or reopen it (rejected, budget left) — the resulting status,
+ *  not the event name, says which. */
+const CLOSED_STATUSES = ['completed', 'failed', 'canceled', 'warning', 'stopped'];
+
 /** Map the latest lifecycle event to a displayable status for runs whose
  *  span record does not exist yet (spans export only on completion). */
 function eventToStatus(event: string | undefined): string {
@@ -99,7 +106,22 @@ function eventToStatus(event: string | undefined): string {
   if (event === 'claimed') return 'running';
   if (event === 'retry_scheduled' || event === 'requeued') return 'pending';
   if (event === 'cancel_requested') return 'canceling';
-  return event; // completed / failed / canceled map to themselves
+  if (event === 'awaiting_adjudication') return 'gated';
+  return event; // completed / failed / canceled / adjudicated map to themselves
+}
+
+/** The account's authoritative status, from the last lifecycle event that
+ *  recorded one (`to`) — falls back to the span-derived status when no such
+ *  event exists yet.  The two can disagree: a gated run's callable already
+ *  returned (its span says "completed"), but the account may have since been
+ *  canceled or rejected instead of discharged, and the account is the one
+ *  that actually decides whether the run's contract was met. */
+function accountStatus(events: RunEvent[], fallback: string): string {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const to = events[i].to;
+    if (to) return to;
+  }
+  return fallback;
 }
 
 function eventBadgeClass(event: string): string {
@@ -225,11 +247,15 @@ export default function RunDetail() {
   const logs = current?.logs ?? [];
   const children = view?.children ?? [];
 
-  // The span-derived status only reflects finished spans; the event log knows
-  // whether the run is actually still in flight (e.g. a retry is scheduled).
   const lastEvent = events.at(-1)?.event;
-  const runActive = lastEvent
-    ? !TERMINAL_EVENTS.includes(lastEvent)
+
+  // The account, not the span tree, decides whether the run's contract was
+  // met — a gated run's callable already returned (span status "completed")
+  // but may since have been canceled or rejected instead of discharged.
+  const displayStatus = accountStatus(events, view?.status ?? '');
+  const isGated = displayStatus === 'gated';
+  const runActive = events.length > 0
+    ? !CLOSED_STATUSES.includes(displayStatus.toLowerCase())
     : isCancellable(view?.status ?? '');
 
   return (
@@ -261,6 +287,8 @@ export default function RunDetail() {
                 : 'Execution in progress — the full record (flamegraph, logs) appears when the attempt finishes.'}
             </p>
           </div>
+
+          {eventToStatus(lastEvent) === 'gated' && <AdjudicateRunPanel runId={runId} />}
 
           {events.length > 0 && (
             <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen>
@@ -307,7 +335,7 @@ export default function RunDetail() {
                 <p><strong>Name:</strong> {view.span_name}</p>
                 <p><strong>Run ID:</strong> <span className="font-mono text-xs">{runId}</span></p>
                 <p><strong>Root span:</strong> <span className="font-mono text-xs">{view.span_id}</span></p>
-                <p><strong>Status:</strong> <StatusBadge status={view.status} />
+                <p><strong>Status:</strong> <StatusBadge status={displayStatus} />
                   {attempts.length > 1 && (
                     <span className="text-gray-500 ml-2">attempt {effectiveAttempt} of {attempts.at(-1)?.attempt}</span>
                   )}
@@ -319,6 +347,8 @@ export default function RunDetail() {
               </div>
             </div>
           </div>
+
+          {isGated && <AdjudicateRunPanel runId={runId} />}
 
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
             <RunFlamegraph runData={view} />

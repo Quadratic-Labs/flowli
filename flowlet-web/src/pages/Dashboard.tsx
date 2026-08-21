@@ -3,9 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { RefreshCw, CheckCircle, AlertTriangle, XCircle, HelpCircle } from 'lucide-react';
 import { getDashboardMetrics, timeAgo } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import type { BreadcrumbItem } from '@/components/Breadcrumb';
-
-export const dashboardCrumbs: BreadcrumbItem[] = [{ label: 'Home', url: '/' }];
 
 export default function Dashboard() {
   const nav = useNavigate();
@@ -53,12 +50,13 @@ export default function Dashboard() {
           </div>
 
           {/* Summary cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {[
               { label: 'Total Flows (24h)', value: metrics.totalFlows, color: 'text-gray-800' },
               { label: `Successful (${metrics.successRate.toFixed(1)}%)`, value: metrics.successfulFlows, color: 'text-green-600' },
               { label: `Failed (${metrics.failureRate.toFixed(1)}%)`, value: metrics.failedFlows, color: 'text-red-600' },
               { label: 'Currently Running', value: metrics.runningFlows, color: 'text-orange-500' },
+              { label: 'Needs Adjudication', value: metrics.gatedRuns.length, color: 'text-purple-600' },
             ].map(card => (
               <div key={card.label} className="bg-white rounded shadow p-6 text-center">
                 <div className={`text-5xl font-medium mb-2 ${card.color}`}>{card.value}</div>
@@ -66,6 +64,30 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
+
+          {/* Gated runs — need a human verdict, not a failure */}
+          {metrics.gatedRuns.length > 0 && (
+            <div className="bg-white rounded shadow p-6 border-l-4" style={{ borderLeftColor: '#9c27b0' }}>
+              <h2 className="text-lg font-medium mb-4">Needs Adjudication</h2>
+              <table className="w-full text-sm">
+                <thead><tr className="text-left border-b">
+                  <th className="py-2 pr-4">Flow Name</th><th className="py-2 pr-4">Status</th>
+                  <th className="py-2 pr-4">Started</th><th className="py-2">Actions</th>
+                </tr></thead>
+                <tbody>{metrics.gatedRuns.map(run => (
+                  <tr key={run.run_id} className="border-b hover:bg-gray-50">
+                    <td className="py-2 pr-4 font-medium">{run.flow_name}</td>
+                    <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
+                    <td className="py-2 pr-4">{timeAgo(run.started_at)}</td>
+                    <td className="py-2">
+                      <button onClick={() => nav(`/runs/${run.run_id}`)}
+                        className="text-blue-600 hover:underline">Review</button>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
 
           {/* Failures table */}
           <div className="bg-white rounded shadow p-6">

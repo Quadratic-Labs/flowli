@@ -70,9 +70,8 @@ export function RunFlamegraph({ runData }: { runData: RunSummaryDTO }) {
         tooltip.style('visibility', 'visible')
           .html(`<strong>${d.name}</strong><br/>Status: ${d.status}<br/>Duration: ${d.duration.toFixed(2)}ms<br/>Depth: ${d.depth}`);
       })
-      .on('mousemove', (_event: MouseEvent, _d: FNode) => {
-        const e = _event as MouseEvent;
-        tooltip.style('top', (e.pageY - 10) + 'px').style('left', (e.pageX + 10) + 'px');
+      .on('mousemove', (event: MouseEvent) => {
+        tooltip.style('top', (event.pageY - 10) + 'px').style('left', (event.pageX + 10) + 'px');
       })
       .on('mouseout', function() { d3.select(this).attr('opacity', 1); tooltip.style('visibility', 'hidden'); });
 
