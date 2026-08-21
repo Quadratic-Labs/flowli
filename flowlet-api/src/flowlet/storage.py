@@ -16,6 +16,7 @@ from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
+
 _APPEND_ATTEMPTS = 8
 
 
