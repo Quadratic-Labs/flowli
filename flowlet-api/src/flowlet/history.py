@@ -6,16 +6,21 @@ before a closed run's state leaves the active prefix, and readers project
 the log into a durable SQLite ``runs`` table that answers long-horizon
 dashboard queries without rescanning state objects.
 
-This is strictly additive to the control plane: leases, the worker state
-machine, and the pull-based cache are untouched.  The history log is the
-CairnDB **named log** ``history`` (keys under ``logs/history/``) on the
-same store as everything else, so it never collides with the ``runs/``
+This is strictly additive to the control plane: leases and the worker
+state machine are untouched.  CacheRepository's archived-run scan consults
+it (get_states()) to avoid a blob GET per archived run on a cold seed, but
+falls back to reading state.json directly for any run history doesn't
+have — the cache never depends on history being enabled.  The history log
+is the CairnDB **named log** ``history`` (keys under ``logs/history/``) on
+the same store as everything else, so it never collides with the ``runs/``
 and ``state/`` planes.
 """
 import asyncio
 import json
 import logging
 import time
+from collections.abc import Iterable
+from uuid import UUID
 
 from attrs import define, field
 from cairndb import Event, EventType, SchemaVersion
@@ -244,6 +249,40 @@ class RunHistory:
                     from_json(RunState)(row[0]) for row in await cursor.fetchall()
                 )
         return states
+
+    async def get_states(self, run_ids: Iterable[UUID]) -> dict[UUID, RunState]:
+        """Look up specific archived runs by ID from the local projection.
+
+        Bulk point-lookup for CacheRepository's archived-run seeding: a
+        handful of local SQLite reads instead of one blob GET per run.
+        Refreshes first (TTL-throttled).
+
+        Args:
+            run_ids: Run IDs to look up.
+
+        Returns:
+            Mapping of the run_ids that were found to their RunState. A
+            run_id absent from the projection — archived before history was
+            enabled, or not yet replayed — is simply absent from the
+            result; callers should fall back to reading its state.json
+            directly.
+        """
+        import aiosqlite
+
+        ids = list(run_ids)
+        if not ids:
+            return {}
+        await self.refresh()
+        placeholders = ",".join("?" for _ in ids)
+        results: dict[UUID, RunState] = {}
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"SELECT run_id, state_json FROM runs WHERE run_id IN ({placeholders})",
+                [str(rid) for rid in ids],
+            )
+            for run_id_str, state_json in await cursor.fetchall():
+                results[UUID(run_id_str)] = from_json(RunState)(state_json)
+        return results
 
 
 async def refresh_history_db(store: BlobStorage, db_path: str) -> None:

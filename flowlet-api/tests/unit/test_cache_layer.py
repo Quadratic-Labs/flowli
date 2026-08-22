@@ -6,6 +6,7 @@ from cairndb.storage.filesystem import FilesystemStorage
 from sqlalchemy import select
 
 from flowlet.api.cache import CacheRepository, Run
+from flowlet.history import RunHistory
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
 from flowlet.types import Timestamp
@@ -24,6 +25,11 @@ def state_repo(store):
 @pytest.fixture
 def cache(state_repo, tmp_path):
     return CacheRepository(state_repo=state_repo, store=state_repo.store, ttl=0.0)
+
+
+@pytest.fixture
+def history(store, tmp_path):
+    return RunHistory(store=store, db_path=str(tmp_path / "history.db"), ttl=0.0)
 
 
 async def _rows(cache):
@@ -93,3 +99,60 @@ class TestRefresh:
 
         await cache.refresh(force=True)
         assert len(await _rows(cache)) == 1
+
+
+@pytest.mark.unit
+class TestHistorySeeding:
+    """When history is configured, a newly-seen archived run_id is looked up
+    there first — coverage must be identical whether or not it's found."""
+
+    def test_run_known_to_history_is_seeded_without_reading_state_json(
+        self, state_repo, history, make_run_state, seed_lease, store
+    ):
+        import asyncio
+
+        state = make_run_state(
+            status=RunStatus.completed,
+            ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
+        )
+        seed_lease(store, state)
+        state_repo.archive(state.flow_name, state.run_id)
+
+        history.record_many([state])  # sync — must run outside any event loop
+
+        # Prove the cache doesn't need the blob's content: corrupt it before
+        # refreshing.  Deleting it outright would also remove it from the
+        # listing _read_new_archived_states discovers run_ids from in the
+        # first place, which would prove nothing either way.
+        from flowlet.storage import run_prefix
+        key = f"{run_prefix(state.flow_name, state.run_id)}/state.json"
+        store.put_object_sync(key, b"not valid json")
+
+        cache = CacheRepository(state_repo=state_repo, store=store, history=history, ttl=0.0)
+        asyncio.run(cache.refresh())
+
+        rows = asyncio.run(_rows(cache))
+        assert len(rows) == 1
+        assert rows[0].run_id == state.run_id
+        assert rows[0].status == RunStatus.completed.value
+
+    async def test_run_unknown_to_history_falls_back_to_state_json(
+        self, state_repo, history, make_run_state, seed_lease, store
+    ):
+        """A run history has never heard of (e.g. archived before history was
+        enabled) is still picked up — history is never a coverage gate."""
+        state = make_run_state(
+            status=RunStatus.completed,
+            ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
+        )
+        seed_lease(store, state)
+        state_repo.archive(state.flow_name, state.run_id)
+        # Deliberately not recorded to history.
+
+        cache = CacheRepository(state_repo=state_repo, store=store, history=history, ttl=0.0)
+        await cache.refresh()
+
+        rows = await _rows(cache)
+        assert len(rows) == 1
+        assert rows[0].run_id == state.run_id
+        assert rows[0].status == RunStatus.completed.value

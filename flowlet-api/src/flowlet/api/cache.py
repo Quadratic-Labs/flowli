@@ -15,6 +15,7 @@ any time, which is what makes the API scale-to-zero safe.
 import logging
 import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from attrs import Factory, define, field
@@ -32,6 +33,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from ..models import RunState
 from ..repository.state import StateRepository
 from ..serdes import from_json
+
+if TYPE_CHECKING:
+    from ..history import RunHistory
 
 logger = logging.getLogger(__name__)
 
@@ -149,16 +153,26 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
 #   is called by the query layer before reads: within the TTL it is a no-op;
 #   otherwise it re-reads every active state file and any archived state.json
 #   not yet seen, upserting them into the runs table.  Archived states are
-#   immutable so they are ingested exactly once per process lifetime.
+#   immutable so they are ingested exactly once per process lifetime.  When a
+#   RunHistory is configured, newly-seen archived run_ids are looked up in
+#   its projection first (a handful of local SQLite reads) instead of one
+#   blob GET per run — the expensive part of a cold seed at scale; only
+#   run_ids history doesn't have (archived before history was enabled, or a
+#   replay gap) fall back to reading state.json directly, so coverage is
+#   identical either way — history is purely a cost optimisation here, never
+#   a correctness dependency.
 # rules:
 #   - The cache MUST be reconstructible from storage alone (no correctness role).
 #   - refresh() MUST be cheap within the TTL (single timestamp check).
 #   - MUST only be used from a single event loop (the API's) — no threads.
 #   - Archived state.json files MUST be treated as immutable.
+#   - A run_id absent from history's projection MUST still be read directly
+#     — history coverage gaps must never become cache coverage gaps.
 # dependencies:
 #   - state_repository
 #   - cache.schema
 #   - storage.keys
+#   - history
 # aliases:
 #   - run-cache
 # triggers:
@@ -174,12 +188,16 @@ class CacheRepository:
     Attributes:
         state_repo: Repository for the active ``state/`` directory.
         store: CairnDB blob store containing the ``runs/`` tree.
+        history: Optional RunHistory consulted to seed newly-seen archived
+            run_ids without a blob GET per run; None falls back to reading
+            every archived run's state.json directly (unchanged behavior).
         ttl: Minimum seconds between two storage scans.
         engine: Async in-memory SQLite engine the query layer reads from.
     """
 
     state_repo: StateRepository
     store: BlobStorage
+    history: "RunHistory | None" = None
     ttl: float = DEFAULT_TTL_SECONDS
     engine: AsyncEngine = Factory(
         lambda: create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -189,15 +207,18 @@ class CacheRepository:
     _seen_archived: set[UUID] = field(factory=set, alias="_seen_archived")
 
     @classmethod
-    def from_deps(cls, *, state_repo, configs, **_) -> "CacheRepository":
+    def from_deps(cls, *, state_repo, configs, history=None, **_) -> "CacheRepository":
         """Construct from the configure() dependency dict.
 
         Args:
             state_repo: Active-state repository.
             configs: Application config providing the blob store.
+            history: Optional RunHistory (built earlier in configure() than
+                this component, so it's already in deps when RunQuery(**deps)
+                needs it too).
             **_: Absorbs unused dependency keys.
         """
-        return cls(state_repo=state_repo, store=configs.store)
+        return cls(state_repo=state_repo, store=configs.store, history=history)
 
     def session_factory(self) -> async_sessionmaker[AsyncSession]:
         """Session factory bound to the cache engine."""
@@ -219,7 +240,7 @@ class CacheRepository:
             self._schema_ready = True
 
         active = self.state_repo.list_states()
-        archived = self._read_new_archived_states()
+        archived = await self._read_new_archived_states()
 
         async with self.session_factory()() as session:
             for state in active:
@@ -234,13 +255,18 @@ class CacheRepository:
             extra={"active": len(active), "new_archived": len(archived)},
         )
 
-    def _read_new_archived_states(self) -> list[RunState]:
+    async def _read_new_archived_states(self) -> list[RunState]:
         """Scan run folders for archived state.json objects not yet ingested.
 
         Archived states are immutable, so each is read exactly once per
-        process lifetime (tracked in ``_seen_archived``).
+        process lifetime (tracked in ``_seen_archived``).  When ``history``
+        is configured, newly-seen run_ids are looked up there first — a
+        handful of local SQLite reads instead of one blob GET per run; any
+        run_id history doesn't have falls back to reading state.json
+        directly, so coverage never depends on history being enabled or
+        caught up.
         """
-        states: list[RunState] = []
+        new_keys: dict[UUID, str] = {}
         for key in self.store.list_objects_sync("runs/"):
             # runs/<flow>/<date>/<run_id>/state.json
             parts = key.split("/")
@@ -251,6 +277,18 @@ class CacheRepository:
             except ValueError:
                 continue
             if run_id in self._seen_archived:
+                continue
+            new_keys[run_id] = key
+        if not new_keys:
+            return []
+
+        from_history: dict[UUID, RunState] = {}
+        if self.history is not None:
+            from_history = await self.history.get_states(new_keys.keys())
+
+        states: list[RunState] = list(from_history.values())
+        for run_id, key in new_keys.items():
+            if run_id in from_history:
                 continue
             obj = self.store.get_object_sync(key)
             if obj is None:
