@@ -21,8 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .. import analysis
 from ..repository.log import LogRepository
 from ..serdes import destructure
-from .cache import CacheRepository
-from .database import Run as RunRow
+from .cache import CacheRepository, Run as RunRow
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +54,7 @@ logger = logging.getLogger(__name__)
 #   - models.run
 #   - log_repository
 #   - cache.repository
-#   - database.models
+#   - cache.schema
 # aliases:
 #   - run-query
 # triggers:

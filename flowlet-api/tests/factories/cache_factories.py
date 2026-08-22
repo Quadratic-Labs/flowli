@@ -8,7 +8,7 @@ from uuid import uuid7
 
 import factory
 
-from flowlet.api.database import Run
+from flowlet.api.cache import Run
 from flowlet.models import RunStatus
 
 

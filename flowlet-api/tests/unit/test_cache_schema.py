@@ -1,5 +1,5 @@
 """
-Unit tests for api/database.py — async snapshot functions.
+Unit tests for the cache's ORM schema (api/cache.py) — async snapshot functions.
 
 Covers:
 - ensure_snapshot_schema creates the runs table (no RunLink)
@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from flowlet.api.database import Run, upsert_run_state
+from flowlet.api.cache import Run, upsert_run_state
 from flowlet.models import RunStatus
 
 

@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from flowlet.api.cache import Base
 from flowlet.api.controller import FlowController
-from flowlet.api.database import Base
 from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
 from flowlet.types import Timestamp
 

@@ -14,25 +14,130 @@ any time, which is what makes the API scale-to-zero safe.
 """
 import logging
 import time
+from datetime import datetime
 from uuid import UUID
 
 from attrs import Factory, define, field
 from cairndb.storage.base import BlobStorage
+from sqlalchemy import DateTime, String, Uuid
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ..models import RunState
 from ..repository.state import StateRepository
 from ..serdes import from_json
-from .database import ensure_snapshot_schema, upsert_run_state
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 5.0
+
+
+# region @cache.schema
+# ---
+# role: storage
+# intent: ORM schema and upsert helpers for the cache's ephemeral SQLite index
+# description: >
+#   Base/Run define the one-table schema CacheRepository indexes RunState
+#   rows into; ensure_snapshot_schema/upsert_run_state are the create/write
+#   primitives it calls on refresh.  This is NOT durable storage — cairndb
+#   owns that (state/ leases, runs/ archives) — it is a disposable, rebuild-
+#   from-storage-anytime SQL mirror that exists only because cairndb's blob
+#   store has no query/filter/index capability of its own.
+# rules:
+#   - Run rows MUST be derivable from storage alone — never a write target
+#     for anything but CacheRepository.refresh().
+# aliases:
+#   - cache-schema
+#   - run-snapshot-schema
+# ---
+
+
+class Base(DeclarativeBase):
+    """Base class for the cache's SQLAlchemy ORM models."""
+
+
+class Run(Base):
+    """Flat snapshot row for a single flow run — the cache's one table.
+
+    One row per run; upserted on every state transition.  Hierarchy is NOT
+    stored here — query logs instead.
+
+    Attributes:
+        run_id: Unique identifier (UUIDv7 — chronologically ordered, the
+            largest run_id is the most recent run).
+        flow_name: Name of the flow being executed.
+        status: Current execution status string.
+        worker_id: Identifier of the owning worker.
+        started_at: Wall-clock time when the run started.
+        ended_at: Wall-clock time when the run finished (NULL if ongoing).
+        attempt: Current attempt number (1-based).
+        max_retries: Maximum allowed retries.
+    """
+    __tablename__ = "runs"
+
+    run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
+    flow_name: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt: Mapped[int] = mapped_column(default=1)
+    max_retries: Mapped[int] = mapped_column(default=3)
+
+
+async def ensure_snapshot_schema(engine: AsyncEngine) -> None:
+    """Create the ``runs`` table in the cache's SQLite engine if not present.
+
+    Args:
+        engine: Async SQLAlchemy engine bound to the cache's SQLite database.
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
+    """Upsert a single RunState into the flat runs table.
+
+    Uses SQLite's ``ON CONFLICT DO UPDATE`` so re-processing an existing
+    run_id updates the row instead of raising.
+
+    Args:
+        session: Active async SQLAlchemy session for the cache engine.
+        state: RunState to persist.
+    """
+    started_at = state.started_at.value
+    ended_at = state.ended_at.value if state.ended_at is not None else None
+
+    await session.execute(
+        sqlite_insert(Run).values(
+            run_id=state.run_id,
+            flow_name=state.flow_name,
+            status=state.status.value,
+            worker_id=state.worker_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            attempt=state.attempt,
+            max_retries=state.max_retries,
+        ).on_conflict_do_update(
+            index_elements=[Run.run_id],
+            set_=dict(
+                flow_name=state.flow_name,
+                status=state.status.value,
+                worker_id=state.worker_id,
+                ended_at=ended_at,
+                attempt=state.attempt,
+            ),
+        )
+    )
+
+# ---
+# endregion
 
 
 # region @cache.repository
@@ -52,8 +157,7 @@ DEFAULT_TTL_SECONDS = 5.0
 #   - Archived state.json files MUST be treated as immutable.
 # dependencies:
 #   - state_repository
-#   - database.snapshot
-#   - database.models
+#   - cache.schema
 #   - storage.keys
 # aliases:
 #   - run-cache

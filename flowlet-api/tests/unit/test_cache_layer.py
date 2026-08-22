@@ -5,8 +5,7 @@ import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 from sqlalchemy import select
 
-from flowlet.api.cache import CacheRepository
-from flowlet.api.database import Run
+from flowlet.api.cache import CacheRepository, Run
 from flowlet.models import RunStatus
 from flowlet.repository import StateRepository
 from flowlet.types import Timestamp
