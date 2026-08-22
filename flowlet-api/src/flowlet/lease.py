@@ -18,47 +18,15 @@ import time
 from attrs import define, field
 from cairndb.core.exceptions import LeaseLost as LeaseLost  # re-export
 
-from .models import Effect
-from .repository.effects import EffectRepository
-from .repository.signals import CANCEL, SignalRepository
-from .repository.state import StateLease
-from .types import Timestamp
+from flowlet.models import Effect
+from flowlet.repository.effects import EffectRepository
+from flowlet.repository.signals import CANCEL, SignalRepository
+from flowlet.repository.state import StateLease
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_BEAT_INTERVAL = 5.0  # seconds between effective (I/O) heartbeats
-
-
-# region @lease
-# ---
-# role: core
-# intent: renew a running flow's lease and observe cancellation cooperatively
-# description: >
-#   RunLease is created by the worker at claim time and bound to a
-#   contextvar for the duration of the flow call.  heartbeat() (module
-#   function, exported as flowlet.heartbeat) is throttled to one effective
-#   beat per min_interval: it renews the engine lease (LeaseLost propagates
-#   when the run was reclaimed after expiry) and reads the cancel signal.
-#   Flows that never call heartbeat() keep the original static-deadline
-#   behaviour.
-# rules:
-#   - heartbeat() MUST be a no-op outside a worker-managed run context.
-#   - LeaseLost MUST mean fenced ownership, nothing else — the lease
-#     document is single-writer and renewals are never reinterpreted.
-#   - RunCancelled MUST only be raised for a deliberate cancel signal.
-#   - Cancellation MUST be observed from the signal object, never from the
-#     lease payload.
-# dependencies:
-#   - state_repository
-#   - signals_repository
-# aliases:
-#   - heartbeat
-#   - run-lease
-# triggers:
-#   - how does a flow renew its lease
-#   - how is a run cancelled
-#   - how does cooperative cancellation work
-# ---
 
 
 class RunCancelled(Exception):
@@ -224,6 +192,3 @@ def effect(name: str, body, *, occurrence: str = "1"):
         )
         lease.lease.write(record)  # fenced account update
     return result
-
-# ---
-# endregion

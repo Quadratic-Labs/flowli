@@ -4,7 +4,7 @@ from collections.abc import Callable
 from typing import Any, get_args, get_origin
 from uuid import UUID
 
-from .models import (
+from flowlet.models import (
     Attempt,
     AttemptOutcome,
     Effect,
@@ -21,27 +21,7 @@ from .models import (
     Verdict,
     VerdictDecision,
 )
-from .types import JsonAtom, Timestamp
-
-# region @valuedispatch
-# ---
-# role: util
-# intent: curried function dispatch on a type argument, with generic alias support
-# description: >
-#   Similar to singledispatch but dispatches on a type value (not the runtime type
-#   of the argument). The __call__ returns a Callable (deserializer), making it
-#   curried: dispatch(Type)(data).
-#   For generic aliases (e.g. list[RunLog]), get_origin/get_args are used to
-#   resolve type parameters into deserializers before passing them to the factory
-#   handler, so composition is automatic: dispatch(list[list[RunLog]]) works.
-# rules:
-#   - Non-generic handlers have signature fn(data) -> T.
-#   - Generic-origin handlers have signature fn(*resolved_deserializers) -> Callable.
-#   - The default is returned as-is for unregistered non-generic types.
-# dependencies:
-# aliases:
-# triggers:
-# ---
+from flowlet.types import JsonAtom, Timestamp
 
 class ValueDispatch:
     def __init__(self, default: Callable):
@@ -67,30 +47,6 @@ class ValueDispatch:
 
 valuedispatch = ValueDispatch
 
-# ---
-# endregion
-
-
-# region @serdes.dict
-# ---
-# role: util
-# intent: structural serdes between domain models and typed dicts
-# description: >
-#   to_dict converts domain models to plain dicts, preserving typed values
-#   (UUID, Timestamp, StrEnum) as-is. list and dict containers are handled
-#   recursively. This is the lossless intermediate layer: to_dict / from_dict
-#   round-trip without any type coercion.
-#   from_dict is curried via ValueDispatch: from_dict(RunLog)(data) or
-#   from_dict(list[RunLog])(data). Generic type args are pre-resolved to
-#   deserializers before being passed to factory handlers.
-# rules:
-#   - to_dict MUST NOT convert UUID, Timestamp, or StrEnum to str.
-#   - from_dict handlers MUST assume typed values (UUID, Timestamp already resolved).
-#   - Generic handlers (list, dict) MUST accept resolved deserializers, not raw types.
-# dependencies:
-# aliases:
-# triggers:
-# ---
 
 @functools.singledispatch
 def destructure(data: Any) -> Any:
@@ -295,30 +251,6 @@ def _(data: dict) -> RunState:
         cancel_requested=data.get("cancel_requested", False),
     )
 
-# ---
-# endregion
-
-
-# region @serdes.json
-# ---
-# role: util
-# intent: serdes between domain models and JSON strings, with type coercion
-# description: >
-#   to_json converts a domain model to a JSON string via to_dict + _json_default.
-#   _json_default is a singledispatch encoder for types that json.dumps cannot
-#   handle natively (UUID -> str, Timestamp -> ISO str).
-#   from_json is curried: from_json(RunLog)(raw_str) -> RunLog.
-#   from_json handlers own the full coercion pipeline (json.loads + str -> UUID,
-#   str -> Timestamp), making them the single source of truth for the wire format.
-# rules:
-#   - _json_default MUST use singledispatch (not isinstance chains).
-#   - from_json handlers MUST call json.loads internally.
-#   - StrEnum values are handled natively by json.dumps (no _json_default needed).
-# dependencies:
-#   - serdes.dict
-# aliases:
-# triggers:
-# ---
 
 @functools.singledispatch
 def _json_default(obj) -> JsonAtom:
@@ -485,6 +417,3 @@ def _(data: str) -> ObligationRecord:
         attempts=[_attempt_from_raw(a) for a in raw.get("attempts") or []],
         effects=[_effect_from_raw(e) for e in raw.get("effects") or []],
     )
-
-# ---
-# endregion

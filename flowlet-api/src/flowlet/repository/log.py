@@ -11,41 +11,12 @@ from uuid import UUID
 
 from cairndb.storage.base import BlobStorage
 
-from ..models import SpanRecord
-from ..serdes import from_json
-from ..storage import read_lines, run_prefix
-from ..types import Period, PeriodUUID
+from flowlet.models import SpanRecord
+from flowlet.serdes import from_json
+from flowlet.storage import read_lines, run_prefix
+from flowlet.types import Period, PeriodUUID
 
 logger = logging.getLogger(__name__)
-
-
-# region @log_repository
-# ---
-# role: storage
-# intent: read per-run span objects from the runs/<flow>/<date>/<run_id>/ layout
-# description: >
-#   LogRepository is the read side of the run-record storage.  Each run owns
-#   one key prefix containing spans-<attempt>.jsonl objects (all spans of one
-#   execution attempt) and, once closed and archived, a state.json.  All of a
-#   run's objects share its prefix, so reading a run is a single prefix
-#   listing — no recursive reference-following.  The date partition is
-#   derived from the run_id's uuid7 timestamp, so keys are computable
-#   without listing.
-# rules:
-#   - MUST be synchronous (the store's *_sync methods are the primitive form).
-#   - list_run_ids MUST return ids in ascending UUIDv7 (chronological) order.
-#   - MUST skip malformed span lines rather than raising.
-# dependencies:
-#   - storage.keys
-#   - models.run
-#   - serdes.json
-#   - tracing
-# aliases:
-#   - run-reader
-# triggers:
-#   - how to read spans for a run
-#   - list runs for a flow
-# ---
 
 
 class LogRepository:
@@ -145,9 +116,6 @@ class LogRepository:
                 )
         return spans
 
-# ---
-# endregion
-
 
 # region
 
@@ -168,4 +136,3 @@ def _date_in_period(date_name: str, period: PeriodUUID) -> bool:
         return True
     return True
 
-# endregion

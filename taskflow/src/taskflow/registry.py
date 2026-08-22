@@ -20,8 +20,6 @@ from flowlet.models import RunType
 logger = logging.getLogger(__name__)
 
 
-# region @registry.parameters
-
 @define(slots=True, kw_only=True)
 class FlowParameterSchema:
     """Metadata about a single flow parameter.
@@ -179,10 +177,6 @@ def extract_flow_schema(fn: Callable, flow_name: str) -> FlowSchema | None:
         logger.error(f"Failed to extract schema for {flow_name}: {e}", exc_info=True)
         return None
 
-# endregion
-
-
-# region @registry.registry
 
 @define(slots=True, kw_only=True)
 class FlowOptions:
@@ -445,4 +439,3 @@ class Registry:
         self.tasks[task_name] = wrapper
         return wrapper
 
-# endregion

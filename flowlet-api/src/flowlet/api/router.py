@@ -11,8 +11,8 @@ from typing import Any
 from attrs import Factory, define
 from fastapi import APIRouter
 
-from .controller import FlowController
-from .models import (
+from flowlet.api.controller import FlowController
+from flowlet.api.models import (
     AdjudicationResponse,
     CancelRunResponse,
     ExecutorClaimResponse,
@@ -23,23 +23,6 @@ from .models import (
     RunDTO,
     RunStateDTO,
 )
-
-# region @router.contracts
-# ---
-# role: api
-# intent: declare HTTP route metadata independently of the controller implementation
-# description: >
-#   RouteSpec carries every piece of FastAPI route metadata except the endpoint
-#   callable.  All route definitions live here so the HTTP contract (URLs,
-#   methods, summaries, tags, status codes) can be read and changed in one
-#   place without touching any controller logic.
-#   build_router (see @router.routes) consumes these specs and attaches
-#   controller methods as callbacks via router.add_api_route.
-# rules:
-#   - RouteSpec MUST NOT reference FlowController or any domain type.
-#   - Conditional routes (requires_queue=True) MUST be skipped silently
-#     by build_router when no queue is available.
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -256,32 +239,6 @@ _RUN_EVENTS = RouteSpec(
     requires_events=True,
 )
 
-# ---
-# endregion
-
-
-# region @router.routes
-# ---
-# role: api
-# intent: wire RouteSpec contracts to FlowController methods via add_api_route
-# description: >
-#   build_router iterates over the route registry, skipping requires_queue
-#   entries when no queue is present, and calls router.add_api_route with
-#   the bound controller method as the endpoint callable.
-#   FastAPI introspects the bound method signature directly — no closure
-#   wrappers are needed and the controller stays free of HTTP concerns.
-# rules:
-#   - MUST use add_api_route; MUST NOT introduce closure wrappers.
-#   - Conditional routes MUST be skipped when controller.queue is None.
-# dependencies:
-#   - controller
-# aliases:
-#   - flowlet-router
-# triggers:
-#   - where are routes defined
-#   - how to add a new endpoint
-# ---
-
 
 def _wire(router: APIRouter, spec: RouteSpec, endpoint: Callable) -> None:
     """Register one RouteSpec onto *router* with *endpoint* as the handler."""
@@ -336,6 +293,3 @@ def build_router(controller: FlowController, **_) -> APIRouter:
 
 
     return router
-
-# ---
-# endregion

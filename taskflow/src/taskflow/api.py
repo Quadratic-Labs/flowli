@@ -21,7 +21,7 @@ from flowlet.worker import DEFAULT_TIMEOUT, conclude_attempt
 from taskflow.executor import RegistryExecutor
 
 if TYPE_CHECKING:
-    from .app import Taskflow
+    from taskflow.app import Taskflow
 
 logger = logging.getLogger(__name__)
 

@@ -21,37 +21,9 @@ from uuid import UUID
 from attrs import define
 from cairndb.storage.base import BlobStorage
 
-from ..types import Timestamp
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
-
-
-# region @timers_repository
-# ---
-# role: storage
-# intent: durable timer documents fired by the sweeper's cron pass
-# description: >
-#   TimerRepository.set() writes (or reschedules — timers are mutable,
-#   unlike signals) a named timer for an obligation; due() lists the timers
-#   whose due_at has passed; clear() removes one after firing or when the
-#   waiting condition resolved early.  Firing semantics (signal and/or
-#   wake-up) are declared in the document; the sweeper executes them.
-# rules:
-#   - Timers are best-effort schedules: latency is bounded by the sweep
-#     cadence, never better.
-#   - Firing MUST be idempotent: duplicate fires converge (signals are
-#     claims, wake-ups are droppable).
-#   - Timers MUST be cleared by the firing pass; a timer that must repeat
-#     is re-set by its controller.
-# dependencies:
-#   - types.time
-# aliases:
-#   - timers
-#   - durable-timers
-# triggers:
-#   - how do gate timeouts work
-#   - how are grace budgets enforced
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -178,6 +150,3 @@ class TimerRepository:
             except Exception:
                 logger.exception("timer_parse_error", extra={"key": key})
         return found
-
-# ---
-# endregion

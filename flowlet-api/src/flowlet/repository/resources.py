@@ -19,32 +19,6 @@ from cairndb.storage.base import BlobStorage
 logger = logging.getLogger(__name__)
 
 
-# region @resources_repository
-# ---
-# role: storage
-# intent: fenced leases over named resources (write scopes, merge lock)
-# description: >
-#   ResourceLeaseRepository.acquire() takes the lease on a resource name
-#   (put-if-absent or fenced steal of an expired holder) and returns a
-#   handle whose renew/release are epoch-fenced.  Callers acquiring several
-#   resources MUST do so in a total order (sorted names) to avoid deadlock,
-#   and SHOULD release in reverse.  The payload records the holder's
-#   purpose for operators inspecting a stuck resource.
-# rules:
-#   - Multi-resource acquisition MUST follow a total order on names.
-#   - A lost renewal (LeaseLost) means the resource was stolen after
-#     expiry; the holder MUST stop relying on it immediately.
-#   - Resource semantics (globs, exclusivity classes) are controller logic.
-# dependencies:
-# aliases:
-#   - resource-leases
-#   - write-scopes
-# triggers:
-#   - how are write scopes locked
-#   - how does the merge queue serialize
-# ---
-
-
 @define(kw_only=True)
 class ResourceLease:
     """An owned lease on a named resource, epoch-fenced.
@@ -117,6 +91,3 @@ class ResourceLeaseRepository:
             extra={"resource": name, "holder": holder, "epoch": lease.epoch},
         )
         return ResourceLease(name=name, lease=lease)
-
-# ---
-# endregion

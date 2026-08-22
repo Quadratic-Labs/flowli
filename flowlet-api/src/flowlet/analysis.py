@@ -1,26 +1,7 @@
 """
 Run analysis: derives structured summaries from recorded spans.
 """
-from .models import RunSummary, SpanRecord
-
-# region @analysis
-# ---
-# role: computation
-# intent: derive a RunSummary tree from a flat list of SpanRecords
-# description: >
-#   Spans already carry their status, timing, and parent_span_id, so the
-#   summary is a pure tree-building pass — no event-level status derivation.
-#   A run may contain spans from several attempts (one root per attempt);
-#   the summary reflects the latest attempt's tree.
-# rules:
-#   - MUST be a pure function.
-#   - MUST summarise the latest attempt when several are present.
-# dependencies:
-#   - models.run
-# aliases:
-# triggers:
-#   - compute the run status for run id <id>.
-# ---
+from flowlet.models import RunSummary, SpanRecord
 
 def summarise(spans: list[SpanRecord]) -> RunSummary:
     """Build the run's summary tree from its recorded spans.
@@ -66,6 +47,3 @@ def summarise(spans: list[SpanRecord]) -> RunSummary:
     if root is None:
         raise ValueError("No root span")
     return root
-
-# ---
-# endregion

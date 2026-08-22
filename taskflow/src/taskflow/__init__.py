@@ -1,4 +1,4 @@
-from .app import Taskflow as Taskflow
-from .executor import RegistryExecutor as RegistryExecutor
-from .registry import FlowOptions as FlowOptions
-from .registry import Registry as Registry
+from taskflow.app import Taskflow as Taskflow
+from taskflow.executor import RegistryExecutor as RegistryExecutor
+from taskflow.registry import FlowOptions as FlowOptions
+from taskflow.registry import Registry as Registry

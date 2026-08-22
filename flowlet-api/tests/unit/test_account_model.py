@@ -25,7 +25,7 @@ from flowlet.serdes import from_json, from_payload, to_json, to_payload
 from flowlet.types import Timestamp
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeExecutor, FakeQueue
+from unit.test_worker_layer import FakeExecutor, FakeQueue
 
 
 def _record(**obligation_kwargs) -> ObligationRecord:

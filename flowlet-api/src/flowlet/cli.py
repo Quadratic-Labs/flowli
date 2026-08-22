@@ -20,34 +20,6 @@ import click
 logger = logging.getLogger(__name__)
 
 
-# region @cli
-# ---
-# role: orchestration
-# intent: expose work / sweep / api entrypoints over a user-configured Flowlet app
-# description: >
-#   The CLI resolves a "module:attribute" reference to the user's configured
-#   Flowlet instance and runs one of the three deployment roles against it.
-#   work runs the lease-based worker loop; a --once flag processes a single
-#   message and exits with the job's exit code (Container Apps job semantics).
-#   sweep runs one crash-recovery/hygiene pass and exits.  api serves the
-#   FastAPI router with uvicorn.
-# rules:
-#   - Commands MUST exit non-zero on configuration errors (missing queue/storage).
-#   - sweep MUST perform exactly one pass; scheduling belongs to the platform.
-# dependencies:
-#   - app
-#   - worker.execute
-#   - sweeper
-# aliases:
-#   - cli
-#   - entrypoints
-# triggers:
-#   - how do I run a worker
-#   - how do I run the sweeper
-#   - how do I serve the api
-# ---
-
-
 def _load_flowlet(app_ref: str):
     """Resolve a ``module:attribute`` reference to a Flowlet instance.
 
@@ -77,7 +49,7 @@ def main(verbose: bool) -> None:
 @click.option("--archive-grace", default=None, type=int, help="Seconds a closed run stays in state/.")
 def sweep(app_ref: str, pending_grace: int | None, archive_grace: int | None) -> None:
     """Run one sweep pass: recover expired leases, archive closed runs."""
-    from . import sweeper
+    from flowlet import sweeper
 
     flowlet = _load_flowlet(app_ref)
     if flowlet.queue is None or flowlet.state_repo is None:
@@ -114,6 +86,3 @@ def api(app_ref: str, host: str, port: int, prefix: str) -> None:
     fastapi_app = FastAPI(lifespan=flowlet.lifespan)
     fastapi_app.include_router(flowlet.router, prefix=prefix)
     uvicorn.run(fastapi_app, host=host, port=port)
-
-# ---
-# endregion

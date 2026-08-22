@@ -13,28 +13,7 @@ from uuid import UUID, uuid7
 
 from attrs import Factory, define, field
 
-from .types import JsonData, Timestamp
-
-# region @models.run
-# ---
-# role: datatype
-# intent: define run/span data models for the domain layer.
-# description:
-#   - Runs are hierarchically structured executions recorded as OTel spans;
-#   run_id is the trace_id, span ids are OTel 64-bit ids as 16-char hex.
-#   - SpanRecord is one finished span read back from the run folder's
-#   spans-<attempt>.jsonl files; SpanEvent is a log event inside a span.
-#   - RunSummary represents the derived status tree of a Run.
-# rules:
-#   - Models SHOULD be attrs define
-#   - For inheritance, models SHOULD use kw_only=True
-#   - For optimisation, models SHOULD use slots=True
-# dependencies:
-#    - types
-# aliases:
-# triggers:
-#    - what traces do runs leave ?
-# ---
+from flowlet.types import JsonData, Timestamp
 
 class RunType(StrEnum):
     flow = "flow"
@@ -197,45 +176,6 @@ class RunState:
     kwargs: dict[str, Any] = Factory(dict)
     cancel_requested: bool = False
 
-# ---
-# endregion
-
-
-# region @models.account
-# ---
-# role: datatype
-# intent: the account model — obligation, attempts, verdicts as durable record
-# description: >
-#   An ObligationRecord is the payload of one obligation's lease document:
-#   the obligation (unit of intent — what was promised, including its place
-#   in a parent/root hierarchy for sub-obligations), its attempts (units of
-#   execution, each with an explicit outcome), and per-attempt verdicts
-#   (units of judgment — how the outcome was adjudicated).  Execution only
-#   proposes entries into this account; the account is the system of
-#   record.  Done-ness is a recorded verdict, not a return code: the
-#   auto-verdict (returned ⇒ accepted) is merely the default adjudication
-#   policy, and gates/human adjudication slot into the same fields.
-# rules:
-#   - The account MUST be append-only in spirit: attempts are appended and
-#     their outcome recorded once; never rewritten.
-#   - Every attempt MUST end with an explicit outcome — crash accounting
-#     happens at the fenced steal that discovers the crash.
-#   - Obligation status transitions MUST go through the record methods so
-#     closed_at/cause stay consistent.
-#   - RunState/RunStatus are projections via summary(); they MUST NOT be
-#     stored as authority.
-# dependencies:
-#   - types
-# aliases:
-#   - account
-#   - obligation
-#   - attempt
-#   - verdict
-# triggers:
-#   - what constitutes a workflow
-#   - how is done-ness decided
-#   - how are attempts recorded
-# ---
 
 class ObligationStatus(StrEnum):
     """Lifecycle of an obligation — the unit of intent."""
@@ -512,26 +452,6 @@ class ObligationRecord:
             cancel_requested=obligation.cancel_requested,
         )
 
-# ---
-# endregion
-
-
-# region @models.job
-# ---
-# role: datatype
-# intent: describe metadata for the job queue
-# description: >
-#   The job queue serves for workers' synchronisation. Flows' requiring
-#   execution submit a job to the queue with metadata to be picked up
-#   independently by workers.
-# rules:
-#   - run_id MUST identify uniquely a run
-#   - Each message on the queue MUST have a unique job_id (job = message)
-# dependencies:
-#   - types
-# aliases:
-# triggers:
-# ---
 
 @define(slots=True, kw_only=True)
 class FlowJob:
@@ -576,6 +496,3 @@ class FlowJob:
     parent_id: UUID | None = field(default=None)
     root_id: UUID | None = field(default=None)
     caused_by: str | None = field(default=None)
-
-# ---
-# endregion

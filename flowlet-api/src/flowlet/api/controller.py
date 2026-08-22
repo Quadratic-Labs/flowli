@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, Request, Response
 
-from ..models import FlowJob
-from ..queue import JobQueueProtocol
-from .models import (
+from flowlet.models import FlowJob
+from flowlet.queue import JobQueueProtocol
+from flowlet.api.models import (
     AdjudicationRequest,
     AdjudicationResponse,
     CancelRunResponse,
@@ -39,13 +39,13 @@ from .models import (
     RunQueryRequest,
     RunStateDTO,
 )
-from .query import RunQuery
+from flowlet.api.query import RunQuery
 
 if TYPE_CHECKING:
-    from ..events import RunEventLog
-    from ..repository.dispatch import DispatchKeyRepository
-    from ..repository.signals import SignalRepository
-    from ..repository.state import StateRepository
+    from flowlet.events import RunEventLog
+    from flowlet.repository.dispatch import DispatchKeyRepository
+    from flowlet.repository.signals import SignalRepository
+    from flowlet.repository.state import StateRepository
 
 
 def _etag_json_response(request: Request, body: str) -> Response:
@@ -68,35 +68,6 @@ def _etag_json_response(request: Request, body: str) -> Response:
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
     return Response(content=body, media_type="application/json", headers={"ETag": etag})
-
-
-# region @controller
-# ---
-# role: api
-# intent: handle the account-surface HTTP endpoints
-# description: >
-#   FlowController is the thin FastAPI handler layer over the kernel:
-#   submit_flow (queue wake-up, idempotent via optional dispatch_key,
-#   pluggable kwargs validation), cancel_run, adjudicate_run (with a
-#   pluggable gate-policy provider — policy stays in controllers), the
-#   fenced executor claim lifecycle (claim/renew/effects/outcome), and the
-#   query projections (query_runs, query_logs, run events).  It knows no
-#   registry: authoring endpoints live in layer-2 packages (taskflow).
-# rules:
-#   - MUST NOT contain business logic; delegate everything to the domain layer.
-#   - MUST NOT know about registries or authoring surfaces; extension is by
-#     the injected prepare_submission / gate_policy hooks only.
-#   - MUST map domain exceptions to appropriate HTTP status codes.
-#   - query_runs MUST be async (delegates to RunQuery async methods).
-# dependencies:
-#   - query
-#   - models.job
-# aliases:
-#   - flow-controller
-# triggers:
-#   - where are HTTP handlers defined
-#   - how does the API layer work
-# ---
 
 
 class FlowController:
@@ -330,15 +301,15 @@ class FlowController:
             )
         flow_name = match.record.obligation.flow_name
 
-        from ..models import (
+        from flowlet.models import (
             AttemptOutcome,
             ObligationRecord,
             Verdict,
             VerdictDecision,
         )
-        from ..repository import AlreadyClosed
-        from ..repository.signals import CANCEL
-        from ..types import Timestamp
+        from flowlet.repository import AlreadyClosed
+        from flowlet.repository.signals import CANCEL
+        from flowlet.types import Timestamp
 
         def _respond(record: ObligationRecord, event: str | None) -> CancelRunResponse:
             state = record.summary()
@@ -457,14 +428,14 @@ class FlowController:
         record = match.record
         flow_name = record.obligation.flow_name
 
-        from ..models import (
+        from flowlet.models import (
             ObligationRecord,
             ObligationStatus,
             Verdict,
             VerdictDecision,
         )
-        from ..repository import AlreadyClosed
-        from ..types import Timestamp
+        from flowlet.repository import AlreadyClosed
+        from flowlet.types import Timestamp
 
         if record.obligation.status != ObligationStatus.awaiting_adjudication:
             raise HTTPException(
@@ -537,7 +508,7 @@ class FlowController:
             resolved.obligation.status == ObligationStatus.open
             and self.queue is not None
         ):
-            from ..models import FlowJob
+            from flowlet.models import FlowJob
 
             try:
                 self.queue.enqueue(
@@ -612,10 +583,10 @@ class FlowController:
         if self.state_repo is None or self.signals is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
 
-        from ..models import FlowJob
-        from ..repository import AlreadyClosed, Unclaimable
-        from ..repository.signals import CANCEL
-        from ..worker import DEFAULT_TIMEOUT, _claim_transition
+        from flowlet.models import FlowJob
+        from flowlet.repository import AlreadyClosed, Unclaimable
+        from flowlet.repository.signals import CANCEL
+        from flowlet.worker import DEFAULT_TIMEOUT, _claim_transition
 
         flow_name = payload.flow_name
         view = self.state_repo.read(flow_name, run_id)
@@ -677,7 +648,7 @@ class FlowController:
                 status_code=409, detail="Run is actively owned by another executor"
             )
 
-        from ..worker import _ClaimCase, _release_terminal
+        from flowlet.worker import _ClaimCase, _release_terminal
 
         if decision["case"] != _ClaimCase.execute:
             # Cancel honoured or budget spent at claim: close and refuse.
@@ -722,8 +693,8 @@ class FlowController:
         """
         if self.state_repo is None or self.signals is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
-        from ..lease import LeaseLost
-        from ..worker import DEFAULT_TIMEOUT
+        from flowlet.lease import LeaseLost
+        from flowlet.worker import DEFAULT_TIMEOUT
 
         lease = self._resume_or_409(
             payload.flow_name, run_id,
@@ -754,11 +725,11 @@ class FlowController:
         """
         if self.state_repo is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
-        from ..lease import LeaseLost
-        from ..models import Effect
-        from ..repository import EffectRepository
-        from ..types import Timestamp
-        from ..worker import DEFAULT_TIMEOUT
+        from flowlet.lease import LeaseLost
+        from flowlet.models import Effect
+        from flowlet.repository import EffectRepository
+        from flowlet.types import Timestamp
+        from flowlet.worker import DEFAULT_TIMEOUT
 
         lease = self._resume_or_409(
             payload.flow_name, run_id,
@@ -814,8 +785,8 @@ class FlowController:
         """
         if self.state_repo is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
-        from ..models import AttemptOutcome
-        from ..worker import DEFAULT_TIMEOUT, conclude_attempt
+        from flowlet.models import AttemptOutcome
+        from flowlet.worker import DEFAULT_TIMEOUT, conclude_attempt
 
         lease = self._resume_or_409(
             payload.flow_name, run_id,
@@ -980,6 +951,3 @@ class FlowController:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-# ---
-# endregion

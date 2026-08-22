@@ -55,9 +55,9 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol
 
-from .events import RunEventLog
-from .lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
-from .models import (
+from flowlet.events import RunEventLog
+from flowlet.lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
+from flowlet.models import (
     AttemptOutcome,
     FlowJob,
     Obligation,
@@ -66,8 +66,8 @@ from .models import (
     Verdict,
     VerdictDecision,
 )
-from .queue import JobQueueProtocol
-from .repository import (
+from flowlet.queue import JobQueueProtocol
+from flowlet.repository import (
     AlreadyClosed,
     EffectRepository,
     SignalRepository,
@@ -75,8 +75,8 @@ from .repository import (
     StateView,
     Unclaimable,
 )
-from .repository.signals import CANCEL
-from .types import Timestamp
+from flowlet.repository.signals import CANCEL
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -104,32 +104,6 @@ class Executor(Protocol):
         """Run the attempt's work for *obligation*."""
         ...
 
-
-# region @worker.state
-# ---
-# role: computation
-# intent: Define JobState and the account evaluation that drives the worker
-# description: >
-#   Contains the JobState enum whose values drive the worker state machine
-#   (see module docstring for the full transition table) and
-#   existing_state_case(), which maps a StateView (or None) to a JobState.
-#   Liveness is judged from the lease envelope — holder and deadline —
-#   execution progress from the account (open attempt, budget), and
-#   closed-ness from the obligation's status.
-# rules:
-#   - existing_state_case() MUST be a pure function (no side-effects).
-#   - Liveness MUST be judged by the envelope's holder/deadline_at alone; a
-#     released or deadline-less lease is reclaimable, never busy forever.
-# dependencies:
-#   - models.account
-#   - state_repository
-# aliases:
-#   - job-state
-# triggers:
-#   - how is job state determined
-#   - what are the worker states
-#   - how does the lease work
-# ---
 
 class JobState(StrEnum):
     """JobState determines the worker's action for this job."""
@@ -170,50 +144,6 @@ def existing_state_case(
         return JobState.failed
     return JobState.ready
 
-
-# ---
-# endregion
-
-
-# region @worker.execute
-# ---
-# role: computation
-# intent: Execute one queued job — acquire the obligation, run, account the outcome
-# description: >
-#   Dequeues one job, early-outs on closed/busy via a plain read, then
-#   acquires the obligation's lease with a state_fn transition that does
-#   crash accounting for any dead in-flight attempt and appends this
-#   worker's attempt — atomically with the ownership transfer (or refuses
-#   via AlreadyClosed / short-circuits to abandoned for cancel and spent
-#   budgets).  Acks the message, runs the flow under a bound RunLease, then
-#   records the attempt's outcome plus its verdict and releases the lease.
-#   Every write is epoch-fenced: LeaseLost means the obligation was
-#   reclaimed and the outcome belongs to the new owner.
-# rules:
-#   - Ownership MUST be taken via state_repo.acquire's atomic transition.
-#   - MUST ack the queue message as soon as the obligation is resolved.
-#   - Every claim of an existing open obligation MUST append an attempt;
-#     crash accounting for the predecessor happens in the same transition.
-#   - On retryable failure MUST release with the rejected attempt recorded
-#     and self-enqueue with backoff.
-#   - MUST NOT execute when the obligation is closed, busy, or
-#     cancel-signalled.
-#   - MUST NOT write state after LeaseLost — the outcome belongs to the
-#     new owner.
-# dependencies:
-#   - worker.state
-#   - state_repository
-#   - signals_repository
-#   - models.account
-#   - lease
-#   - events.log
-# aliases:
-#   - execute-job
-# triggers:
-#   - how does a worker execute a job
-#   - how are retries handled
-#   - what happens when a job fails
-# ---
 
 def _ack_safely(queue: JobQueueProtocol, job: FlowJob) -> None:
     """Acknowledge a job, logging instead of raising on failure.
@@ -762,6 +692,3 @@ def _release_terminal(
         to_status=str(record.summary().status), **event_kwargs,
     )
     return True
-
-# ---
-# endregion

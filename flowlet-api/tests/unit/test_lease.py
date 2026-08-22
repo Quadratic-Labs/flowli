@@ -28,7 +28,7 @@ from flowlet.repository.signals import CANCEL
 from flowlet.serdes import from_json, to_json
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeExecutor, FakeQueue
+from unit.test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture

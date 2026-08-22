@@ -14,7 +14,7 @@ Available implementations:
 from typing import Protocol
 from uuid import UUID
 
-from .config import AzureQueueStorageConfig, InMemoryQueueConfig, QueueConfig
+from flowlet.queue.config import AzureQueueStorageConfig, InMemoryQueueConfig, QueueConfig
 
 __all__ = [
     "AzureQueueStorageConfig",

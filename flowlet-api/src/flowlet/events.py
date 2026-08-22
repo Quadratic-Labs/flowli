@@ -18,41 +18,10 @@ from uuid import UUID
 from attrs import define
 from cairndb.storage.base import BlobStorage
 
-from .storage import append_lines, read_lines, run_prefix
-from .types import Timestamp
+from flowlet.storage import append_lines, read_lines, run_prefix
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
-
-
-# region @events.log
-# ---
-# role: storage
-# intent: append run lifecycle transition events to the run folder
-# description: >
-#   RunEventLog.append() writes one JSON line per lifecycle event
-#   ({ts, event, actor, attempt, from/to status, cause, details}) into the
-#   run's events.jsonl under runs/, next to its span objects.  Appends go
-#   through the storage helper's compare-and-swap loop so local and blob
-#   backends behave identically.  The log has no correctness role: losing
-#   it loses history, never state, and every append failure is swallowed
-#   after logging.
-# rules:
-#   - append() MUST NOT raise; failures are logged and dropped.
-#   - Events MUST be appended, never rewritten — the object is append-only.
-#   - The event log MUST NOT be read to make execution decisions; the
-#     RunState snapshot remains the source of truth.  read() exists for
-#     display/audit only.
-# dependencies:
-#   - storage.keys
-#   - storage.append
-#   - types.time
-# aliases:
-#   - event-log
-#   - run-events
-# triggers:
-#   - where are run transitions recorded
-#   - how do I audit a run's lifecycle
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -142,6 +111,3 @@ class RunEventLog:
                     "run_event_parse_error", extra={"run_id": str(run_id)}
                 )
         return records
-
-# ---
-# endregion

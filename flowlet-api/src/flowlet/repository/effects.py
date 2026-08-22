@@ -25,36 +25,9 @@ from attrs import define
 from cairndb.engine.coordination import claim_sync
 from cairndb.storage.base import BlobStorage
 
-from ..types import Timestamp
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
-
-
-# region @effects_repository
-# ---
-# role: storage
-# intent: claim effect occurrences so side-effects record exactly once
-# description: >
-#   EffectRepository.memoize() computes the occurrence key from
-#   (obligation, effect name, occurrence), returns the recorded result when
-#   the key was already claimed (skipping the body), and otherwise runs the
-#   body and claims the result — losers of the claim race converge on the
-#   winner's result.  Deliberate repetitions pass a new occurrence.
-# rules:
-#   - The occurrence key MUST NOT include the attempt number — retries
-#     converge on the recorded effect.
-#   - Claims are immutable: an effect result is never overwritten.
-#   - Results MUST be JSON-serializable (or content-addressed refs).
-# dependencies:
-#   - types.time
-# aliases:
-#   - effects
-#   - effect-claims
-#   - idempotency-keys
-# triggers:
-#   - how are side effects made idempotent
-#   - how does exactly-once work
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -124,6 +97,3 @@ class EffectRepository:
             # A concurrent executor recorded first — converge on its result.
             return claim.value.get("result"), False
         return result, True
-
-# ---
-# endregion

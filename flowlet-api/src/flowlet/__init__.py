@@ -1,13 +1,13 @@
-from .app import Flowlet as Flowlet
-from .lease import (
+from flowlet.app import Flowlet as Flowlet
+from flowlet.lease import (
     LeaseLost as LeaseLost,
 )
-from .lease import (
+from flowlet.lease import (
     RunCancelled as RunCancelled,
 )
-from .lease import (
+from flowlet.lease import (
     effect as effect,
 )
-from .lease import (
+from flowlet.lease import (
     heartbeat as heartbeat,
 )

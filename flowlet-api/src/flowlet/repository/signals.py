@@ -19,7 +19,7 @@ from attrs import define
 from cairndb.engine.coordination import claim_sync
 from cairndb.storage.base import BlobStorage
 
-from ..types import Timestamp
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -32,40 +32,6 @@ PAUSE = "pause"
 SCOPE_GLOBAL = "signals/_scopes/global/"
 SCOPE_FLOW = "signals/_scopes/flow/"
 SCOPE_RUN = "signals/_scopes/run/"
-
-
-# region @signals_repository
-# ---
-# role: storage
-# intent: set and observe run-scoped signals at signals/<flow>/<run_id>/<name>
-# description: >
-#   SignalRepository.send() claims the signal object put-if-absent (first
-#   sender wins, duplicates converge — sending is idempotent); get() reads
-#   it; list() reads all of a run's pending signals (the heartbeat
-#   observation); clear() removes a run's signal prefix at archive time.
-#   Scoped *control* signals (pause at global / flow / obligation scope)
-#   live under signals/_scopes/ and are revocable modes: send_scoped /
-#   get_scoped / revoke_scoped; admission checks read them at dispatch.
-#   The cancel signal replaces the old cancel_requested CAS-conflict
-#   channel: the API sends it, the worker's heartbeat observes it, and the
-#   lease document stays single-writer.
-# rules:
-#   - Run-scoped signals MUST be immutable once set — send never
-#     overwrites; only archive-time clear removes them.
-#   - send MUST be idempotent: a duplicate send is a success, not an error.
-#   - Scope signals are modes: revocable, and MUST only be consulted for
-#     admission / delivery decisions, never stored as account facts.
-#   - Signals MUST NOT be written under the run's state/ key — the lease
-#     document is single-writer by design.
-# dependencies:
-#   - types.time
-# aliases:
-#   - signals
-#   - cancel-signal
-# triggers:
-#   - how does a cancel reach a running flow
-#   - how are signals delivered
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -263,6 +229,3 @@ class SignalRepository:
             except Exception:
                 logger.exception("signal_delete_error", extra={"key": key})
         self.revoke_scoped(f"run:{run_id}", PAUSE)
-
-# ---
-# endregion

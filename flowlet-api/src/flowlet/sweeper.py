@@ -34,8 +34,8 @@ from typing import TYPE_CHECKING
 
 from attrs import define
 
-from .events import RunEventLog
-from .models import (
+from flowlet.events import RunEventLog
+from flowlet.models import (
     AttemptOutcome,
     FlowJob,
     ObligationRecord,
@@ -43,18 +43,18 @@ from .models import (
     Verdict,
     VerdictDecision,
 )
-from .queue import JobQueueProtocol
-from .repository import (
+from flowlet.queue import JobQueueProtocol
+from flowlet.repository import (
     AlreadyClosed,
     SignalRepository,
     StateRepository,
     StateView,
     TimerRepository,
 )
-from .types import Timestamp
+from flowlet.types import Timestamp
 
 if TYPE_CHECKING:
-    from .history import RunHistory
+    from flowlet.history import RunHistory
 
 logger = logging.getLogger(__name__)
 
@@ -62,49 +62,6 @@ DEFAULT_PENDING_GRACE = 600    # seconds before a parked run is re-enqueued
 DEFAULT_ARCHIVE_GRACE = 3600   # seconds a closed run stays in state/
 
 SWEEPER_TTL = 60  # seconds — recovery transitions release immediately
-
-
-# region @sweeper
-# ---
-# role: computation
-# intent: recover expired leases and keep the active state directory small
-# description: >
-#   sweep() is the single crash-recovery mechanism of the account model: it
-#   steals expired leases and records the dead attempt as crashed (verdict
-#   rejected, by "auto") in the same fenced transition, releasing the
-#   obligation open (budget left) or abandoned (budget spent); re-enqueues
-#   parked obligations whose retry message was lost; and archives closed
-#   accounts (clearing their signals) after a grace window.  All ownership
-#   transfers go through the epoch-fenced acquire — safe to run
-#   concurrently with workers and other sweepers.  When a RunHistory is
-#   provided, archive candidates are group-committed to the history event
-#   log before any state document is removed; if recording fails, archiving
-#   is skipped for the pass and retried on the next sweep.
-# rules:
-#   - Ownership MUST be transferred only via the fenced lease acquisition,
-#     never by deletion or unguarded writes.
-#   - Crash accounting MUST record the dead attempt explicitly — an
-#     in-flight attempt is never silently erased.
-#   - MUST be idempotent: sweeping twice in a row changes nothing new.
-#   - MUST NOT raise on individual runs; log and continue the scan.
-#   - Expiry MUST be judged from the lease envelope, never the payload.
-#   - History recording MUST happen before archiving, never after.
-# dependencies:
-#   - worker.state
-#   - state_repository
-#   - signals_repository
-#   - models.account
-#   - models.job
-#   - history
-#   - events.log
-# aliases:
-#   - sweeper
-#   - crash-recovery
-# triggers:
-#   - how are crashed workers recovered
-#   - what re-enqueues expired runs
-#   - how is the state directory kept small
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -462,6 +419,3 @@ def _enqueue_wakeup(queue: JobQueueProtocol, record: ObligationRecord) -> None:
         )
     )
 
-
-# ---
-# endregion

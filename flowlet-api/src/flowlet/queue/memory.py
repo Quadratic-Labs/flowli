@@ -10,8 +10,8 @@ from uuid import UUID
 
 from attrs import define, field
 
-from ..models import FlowJob
-from .config import InMemoryQueueConfig
+from flowlet.models import FlowJob
+from flowlet.queue.config import InMemoryQueueConfig
 
 _DEFAULT_CLAIM_WINDOW = 60  # seconds a dequeued message stays invisible
 

@@ -18,47 +18,13 @@ from attrs import define, field
 from cairndb.engine.coordination import Lease, acquire_sync
 from cairndb.storage.base import BlobStorage
 
-from ..models import ObligationRecord, RunState
-from ..serdes import from_payload, to_payload
-from ..storage import run_prefix
-from ..types import Timestamp
+from flowlet.models import ObligationRecord, RunState
+from flowlet.serdes import from_payload, to_payload
+from flowlet.storage import run_prefix
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
 
-
-# region @state_repository
-# ---
-# role: storage
-# intent: own run lease documents at state/<flow_name>/<run_id>.json
-# description: >
-#   StateRepository wraps the cairndb lease primitive with
-#   ObligationRecord-typed payloads (the account model).  acquire() takes ownership and applies a state transition
-#   atomically with the acquisition itself (engine state_fn), returning a
-#   StateLease whose renew/write/release are epoch-fenced; a fenced holder
-#   gets LeaseLost and must discard its outcome.  read()/list_views() parse
-#   lease documents into StateView (payload + envelope) without touching
-#   ownership.  Terminal states are released (holder None) and archived by
-#   the sweeper into the run folder.
-# rules:
-#   - Ownership MUST only be taken via acquire(); never by direct writes.
-#   - acquire()'s state_fn MUST be pure — a lost CAS race re-runs it.
-#   - Expiry and ownership MUST be judged from the envelope (holder,
-#     deadline_at), never from payload fields.
-#   - MUST NOT raise on missing state objects; return None instead.
-#   - archive MUST write the ObligationRecord payload in the to_json wire
-#     format to runs/<flow>/<date>/<run_id>/state.json before deleting the
-#     document.
-# dependencies:
-#   - storage.keys
-#   - models.run
-#   - serdes.json
-# aliases:
-#   - state-repo
-#   - run-lease-documents
-# triggers:
-#   - where does run ownership live
-#   - how is a run claimed
-# ---
 
 class Unclaimable(Exception):
     """Raised by an acquire transition to refuse a lease on an obligation
@@ -418,6 +384,3 @@ class StateRepository:
     def list_states(self, flow_name: str | None = None) -> list[RunState]:
         """List RunState projections of the active accounts — read surface."""
         return [view.state for view in self.list_views(flow_name)]
-
-# ---
-# endregion

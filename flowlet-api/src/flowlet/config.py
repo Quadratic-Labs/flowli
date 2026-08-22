@@ -20,35 +20,6 @@ if TYPE_CHECKING:
     from cairndb.storage.base import BlobStorage
 
 
-# region @config
-# ---
-# role: core
-# intent: single source of application-level configuration resolving to one blob store
-# description: >
-#   FlowletConfig holds the storage backend (cairndb's StorageConfig,
-#   verbatim — dicts go through StorageConfig.from_dict, so the backend
-#   catalog, field names, and validation are cairndb's), the optional queue
-#   backend, and the history toggle.  The store property exposes the one
-#   cairndb BlobStorage every component consumes: state CAS writes,
-#   dispatch claims, span/event streams, signals, timers, resources, and
-#   the history commit log.
-# rules:
-#   - Flowlet MUST NOT define storage backends or their config types; the
-#     storage field is cairndb's StorageConfig, nothing else.
-#   - storage MUST be a single backend or None; never a list.
-#   - SQLite MUST NOT appear in storage configuration; it is internal to
-#     the CacheRepository.
-# dependencies:
-#   - queue.config
-# aliases:
-#   - flowlet-config
-# triggers:
-#   - how to configure flowlet
-#   - storage configuration
-#   - queue configuration
-# ---
-
-
 def _to_storage_config(value: Any) -> Any:
     """Dispatch dict input through cairndb's backend catalog."""
     if isinstance(value, dict):
@@ -140,6 +111,3 @@ class FlowletConfig(BaseSettings):
         if self.storage is None:
             return None
         return self.storage.create_storage()
-
-# ---
-# endregion

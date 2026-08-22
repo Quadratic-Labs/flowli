@@ -21,35 +21,9 @@ from attrs import define
 from cairndb.engine.coordination import claim_sync
 from cairndb.storage.base import BlobStorage
 
-from ..types import Timestamp
+from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
-
-
-# region @dispatch_repository
-# ---
-# role: storage
-# intent: map caller dispatch keys to run ids with claim (put-if-absent) semantics
-# description: >
-#   DispatchKeyRepository.resolve_or_create() claims
-#   dispatch/<flow_name>/<sha256(key)>.json for a candidate run_id via
-#   cairndb's claim primitive: one winner, losers read back the winner's
-#   value — so concurrent duplicate submits all converge on one run.  The
-#   same code path serves the local filesystem and every blob backend.
-# rules:
-#   - resolve_or_create MUST be atomic: exactly one caller per key creates.
-#   - Mapping objects MUST be immutable once written — never overwritten.
-#   - The key on disk MUST be the sha256 of the dispatch key (safe path
-#     charset, bounded length); the raw key is stored inside for audit.
-# dependencies:
-#   - types.time
-# aliases:
-#   - dispatch-keys
-#   - idempotent-submit
-# triggers:
-#   - how are duplicate submissions deduplicated
-#   - what is a dispatch key
-# ---
 
 
 @define(slots=True, kw_only=True)
@@ -93,6 +67,3 @@ class DispatchKeyRepository:
             },
         )
         return UUID(result.value["run_id"]), result.won
-
-# ---
-# endregion

@@ -19,61 +19,16 @@ from uuid import UUID
 from sqlalchemy import Select, bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .. import analysis
-from ..models import RunState
-from ..repository.log import LogRepository
-from ..serdes import destructure
-from .cache import CacheRepository, Run as RunRow
+from flowlet import analysis
+from flowlet.models import RunState
+from flowlet.repository.log import LogRepository
+from flowlet.serdes import destructure
+from flowlet.api.cache import CacheRepository, Run as RunRow
 
 if TYPE_CHECKING:
-    from ..history import RunHistory
+    from flowlet.history import RunHistory
 
 logger = logging.getLogger(__name__)
-
-
-# region @query
-# ---
-# role: api
-# intent: query RunState rows from SQLite and reconstruct full Run details from log files
-# description: >
-#   RunQuery is the read-side of the Flowlet API query layer.  Three query
-#   patterns are served:
-#   1. list_recent_states — last N RunState rows per registered flow; the
-#      the cache's distinct flow names are used when flow_names is None
-#      is covered.  Flows never run produce no rows.  When a RunHistory is
-#      configured, its durable projection is merged in — additively, by
-#      run_id, cache rows winning on conflict — so flows that aged out of
-#      the ephemeral cache (a cold process start) still surface their last
-#      archived runs.
-#   2. list_states        — paginated, filterable RunState query for list views.
-#   3. get_run            — full run detail: logs loaded recursively from
-#      storage (subflows / subtasks included), summarised into a RunSummary
-#      tree, returned as a dict compatible with RunDTO.model_validate.
-#   SQLite queries use CacheRepository's engine; every async query method
-#   awaits cache.refresh() first (TTL-throttled scan of state files).
-#   Log loading is synchronous (the store's *_sync methods are primitive).
-# rules:
-#   - MUST NOT write to the database; this is a read-only component.
-#   - list_recent_states MUST cover every flow in the cache when
-#     flow_names is None (the kernel knows no registry).
-#   - Merged history rows MUST NOT shadow a cache row for the same run_id —
-#     the cache is live and always wins.
-#   - get_run MUST read spans via LogRepository.get_spans (one folder per run).
-#   - Timestamps MUST be serialised as plain datetime (UTC) in dicts returned by get_run.
-# dependencies:
-#   - analysis
-#   - models.run
-#   - log_repository
-#   - cache.repository
-#   - cache.schema
-#   - history
-# aliases:
-#   - run-query
-# triggers:
-#   - how to query recent runs
-#   - how to get run details with logs
-#   - paginate run states
-# ---
 
 
 class RunQuery:
@@ -348,6 +303,3 @@ class RunQuery:
         if with_logs:
             result["logs"] = destructure(logs)
         return result
-
-# ---
-# endregion

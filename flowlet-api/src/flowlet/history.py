@@ -30,8 +30,8 @@ from cairndb.client.replay import ReplayEngine
 from cairndb.engine.logs import Log
 from cairndb.storage.base import BlobStorage
 
-from .models import RunState
-from .serdes import from_json, to_json
+from flowlet.models import RunState
+from flowlet.serdes import from_json, to_json
 
 logger = logging.getLogger(__name__)
 
@@ -39,38 +39,6 @@ RUN_ARCHIVED = "run.archived"
 HISTORY_SCHEMA_VERSION = "1.0.0"
 HISTORY_LOG_NAME = "history"
 DEFAULT_TTL_SECONDS = 5.0
-
-
-# region @history
-# ---
-# role: storage
-# intent: record archived runs to the cairndb history log and project them into SQLite
-# description: >
-#   RunHistory appends one run.archived event per archived run to the
-#   cairndb named log "history" (group-committed, durable once record_many
-#   returns).  history_registry projects those events into a flat runs
-#   table via INSERT OR REPLACE keyed on run_id, so re-recording a run —
-#   possible when a sweep crashes between recording and archiving — is
-#   idempotent.  refresh() (TTL-throttled, mirrors CacheRepository) calls
-#   refresh_history_db() to replay only the log tail using the last-applied
-#   sequence cairndb tracks inside the projection database; list_states()
-#   refreshes then reads the projection back into RunState objects, giving
-#   RunQuery a queryable long-horizon source beyond the ephemeral cache.
-# rules:
-#   - Events MUST be recorded before the state file is archived, never after.
-#   - The projection handler MUST be idempotent per run_id (INSERT OR REPLACE).
-#   - MUST NOT be used for live run state; the control plane owns liveness.
-# dependencies:
-#   - models.run
-#   - serdes.json
-# aliases:
-#   - run-history
-#   - history-projection
-# triggers:
-#   - where are archived runs recorded
-#   - how to query old runs
-#   - run history dashboard
-# ---
 
 
 history_registry = HandlerRegistry()
@@ -303,6 +271,3 @@ async def refresh_history_db(store: BlobStorage, db_path: str) -> None:
     last = await engine.get_last_applied_sequence(db_path)
     await engine.replay(db_path, after=last.commit if last else 0)
 
-
-# ---
-# endregion

@@ -19,8 +19,6 @@ class Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# region @api.models.time
-
 def humanize_timedelta(td: timedelta) -> str:
     """Convert a timedelta into a human-friendly relative time string.
 
@@ -75,10 +73,6 @@ timezone-aware ``datetime``, or an ISO 8601 string.  Always validates to
 a UTC-aware ``datetime`` and serialises as a standard datetime string.
 """
 
-# endregion
-
-
-# region @api.models.request
 
 class FlowArguments(Base):
     """API model for flow execution request.
@@ -343,10 +337,6 @@ class LogQueryRequest(Base):
     run_id: UUID = Field(description="UUID of the run to fetch")
     with_logs: bool = Field(True, description="Include log entries in the response")
 
-# endregion
-
-
-# region @api.models.dto
 
 class SpanEventDTO(Base):
     """API DTO for a log event recorded inside a span.
@@ -473,4 +463,3 @@ class RunStateDTO(Base):
     attempt: int
     max_retries: int
 
-# endregion

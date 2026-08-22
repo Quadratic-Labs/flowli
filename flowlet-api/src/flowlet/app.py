@@ -10,57 +10,23 @@ from typing import TYPE_CHECKING, TypedDict
 
 logger = logging.getLogger(__name__)
 
-from .config import FlowletConfig
+from flowlet.config import FlowletConfig
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
 
-    from .api.cache import CacheRepository
-    from .api.controller import FlowController
-    from .api.query import RunQuery
-    from .events import RunEventLog
-    from .history import RunHistory
-    from .queue import JobQueueProtocol
-    from .repository.dispatch import DispatchKeyRepository
-    from .repository.log import LogRepository
-    from .repository.resources import ResourceLeaseRepository
-    from .repository.signals import SignalRepository
-    from .repository.state import StateRepository
-    from .repository.timers import TimerRepository
-
-
-# region @app
-# ---
-# role: orchestration
-# intent: framework façade — expose flow/task decorators and the configure() factory
-# description: >
-#   Flowlet is the kernel façade: it wires the account repositories, the
-#   FlowController (account surface), and the kernel router from a
-#   FlowletConfig.  It owns no registry and no authoring surface — those
-#   are layer-2 concerns (taskflow's Taskflow facade wraps this one and
-#   injects validate_kwargs / gate_policy plus its own routes).
-#     - configure()  — classmethod building the dependency graph.
-#     - get_router() — the account-surface APIRouter.
-#   configure() accumulates a deps dict sequentially and passes it to each
-#   component constructor.  Every constructor accepts **_ to absorb unknowns
-#   so configure() does not need to cherry-pick arguments.
-#   FlowletDeps documents the keys and their construction order.
-# rules:
-#   - MUST NOT implement execution or query logic; delegate to FlowController.
-#   - configure() MUST set up context logging before constructing repositories.
-#   - configure() MUST guard all storage-dependent components behind configs.storage.
-# dependencies:
-#   - controller
-#   - config
-#   - logger
-# aliases:
-#   - flowlet-app
-#   - configure
-# triggers:
-#   - how to set up flowlet
-#   - configure flowlet
-#   - register a flow
-# ---
+    from flowlet.api.cache import CacheRepository
+    from flowlet.api.controller import FlowController
+    from flowlet.api.query import RunQuery
+    from flowlet.events import RunEventLog
+    from flowlet.history import RunHistory
+    from flowlet.queue import JobQueueProtocol
+    from flowlet.repository.dispatch import DispatchKeyRepository
+    from flowlet.repository.log import LogRepository
+    from flowlet.repository.resources import ResourceLeaseRepository
+    from flowlet.repository.signals import SignalRepository
+    from flowlet.repository.state import StateRepository
+    from flowlet.repository.timers import TimerRepository
 
 
 class FlowletDeps(TypedDict, total=False):
@@ -198,7 +164,7 @@ class Flowlet:
 
         # Route 'flowlet.log' records into span events so user logging inside
         # flows lands in the run record.
-        from .tracing import configure_run_logging, configure_tracing
+        from flowlet.tracing import configure_run_logging, configure_tracing
         configure_run_logging()
 
         deps["querier"] = None
@@ -212,7 +178,7 @@ class Flowlet:
         # it up via its own named parameter.
         deps["history"] = None
         if configs.history and configs.store is not None:
-            from .history import RunHistory
+            from flowlet.history import RunHistory
 
             deps["history"] = RunHistory(
                 store=configs.store, db_path=configs.history_db_path
@@ -220,9 +186,9 @@ class Flowlet:
             logger.info("flowlet_history_configured")
 
         if configs.storage is not None:
-            from .api.cache import CacheRepository
-            from .api.query import RunQuery
-            from .repository.log import LogRepository
+            from flowlet.api.cache import CacheRepository
+            from flowlet.api.query import RunQuery
+            from flowlet.repository.log import LogRepository
 
             store = configs.store
             assert store is not None  # guaranteed: configs.storage is not None
@@ -234,13 +200,13 @@ class Flowlet:
 
             # LogRepository and CacheRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
-            from .events import RunEventLog
-            from .repository.dispatch import DispatchKeyRepository
-            from .repository.signals import SignalRepository
-            from .repository.state import StateRepository
+            from flowlet.events import RunEventLog
+            from flowlet.repository.dispatch import DispatchKeyRepository
+            from flowlet.repository.signals import SignalRepository
+            from flowlet.repository.state import StateRepository
             deps["log_repo"] = LogRepository(store=store)
-            from .repository.resources import ResourceLeaseRepository
-            from .repository.timers import TimerRepository
+            from flowlet.repository.resources import ResourceLeaseRepository
+            from flowlet.repository.timers import TimerRepository
             deps["state_repo"] = StateRepository(store=store)
             deps["signals"] = SignalRepository(store=store)
             deps["timers"] = TimerRepository(store=store)
@@ -252,9 +218,9 @@ class Flowlet:
 
         deps["queue"] = None
         if configs.queue is not None:
-            from .queue.azure import AzureQueueStorage
-            from .queue.config import AzureQueueStorageConfig, InMemoryQueueConfig
-            from .queue.memory import InMemoryQueue
+            from flowlet.queue.azure import AzureQueueStorage
+            from flowlet.queue.config import AzureQueueStorageConfig, InMemoryQueueConfig
+            from flowlet.queue.memory import InMemoryQueue
 
             if isinstance(configs.queue, AzureQueueStorageConfig):
                 deps["queue"] = AzureQueueStorage.setup(configs.queue)
@@ -266,7 +232,7 @@ class Flowlet:
                     extra={"queue_type": type(deps["queue"]).__name__},
                 )
 
-        from .api.controller import FlowController
+        from flowlet.api.controller import FlowController
         deps["controller"] = FlowController(
             querier=deps["querier"],
             queue=deps["queue"],
@@ -278,7 +244,7 @@ class Flowlet:
             gate_policy=deps.get("gate_policy"),
         )
 
-        from .api.router import build_router
+        from flowlet.api.router import build_router
         deps["router"] = build_router(**deps)
 
         logger.info("flowlet_configured")
@@ -315,6 +281,3 @@ class Flowlet:
                 self.stop()
 
         return _lifespan
-
-# ---
-# endregion

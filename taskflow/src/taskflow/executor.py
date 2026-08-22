@@ -12,7 +12,7 @@ import logging
 from flowlet import tracing
 from flowlet.models import Obligation
 
-from .registry import Registry
+from taskflow.registry import Registry
 
 logger = logging.getLogger(__name__)
 

@@ -8,9 +8,9 @@ from uuid import UUID
 
 from attrs import define, field
 
-from ..models import FlowJob
-from ..serdes import from_json, to_json
-from .config import AzureQueueStorageConfig
+from flowlet.models import FlowJob
+from flowlet.serdes import from_json, to_json
+from flowlet.queue.config import AzureQueueStorageConfig
 
 
 @define

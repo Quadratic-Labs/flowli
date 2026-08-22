@@ -30,36 +30,16 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from ..models import RunState
-from ..repository.state import StateRepository
-from ..serdes import from_json
+from flowlet.models import RunState
+from flowlet.repository.state import StateRepository
+from flowlet.serdes import from_json
 
 if TYPE_CHECKING:
-    from ..history import RunHistory
+    from flowlet.history import RunHistory
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 5.0
-
-
-# region @cache.schema
-# ---
-# role: storage
-# intent: ORM schema and upsert helpers for the cache's ephemeral SQLite index
-# description: >
-#   Base/Run define the one-table schema CacheRepository indexes RunState
-#   rows into; ensure_snapshot_schema/upsert_run_state are the create/write
-#   primitives it calls on refresh.  This is NOT durable storage — cairndb
-#   owns that (state/ leases, runs/ archives) — it is a disposable, rebuild-
-#   from-storage-anytime SQL mirror that exists only because cairndb's blob
-#   store has no query/filter/index capability of its own.
-# rules:
-#   - Run rows MUST be derivable from storage alone — never a write target
-#     for anything but CacheRepository.refresh().
-# aliases:
-#   - cache-schema
-#   - run-snapshot-schema
-# ---
 
 
 class Base(DeclarativeBase):
@@ -139,46 +119,6 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
             ),
         )
     )
-
-# ---
-# endregion
-
-
-# region @cache.repository
-# ---
-# role: domain data access
-# intent: TTL-refreshed local SQLite index over state files and archived runs
-# description: >
-#   CacheRepository owns the API's only SQLite engine (in-memory).  refresh()
-#   is called by the query layer before reads: within the TTL it is a no-op;
-#   otherwise it re-reads every active state file and any archived state.json
-#   not yet seen, upserting them into the runs table.  Archived states are
-#   immutable so they are ingested exactly once per process lifetime.  When a
-#   RunHistory is configured, newly-seen archived run_ids are looked up in
-#   its projection first (a handful of local SQLite reads) instead of one
-#   blob GET per run — the expensive part of a cold seed at scale; only
-#   run_ids history doesn't have (archived before history was enabled, or a
-#   replay gap) fall back to reading state.json directly, so coverage is
-#   identical either way — history is purely a cost optimisation here, never
-#   a correctness dependency.
-# rules:
-#   - The cache MUST be reconstructible from storage alone (no correctness role).
-#   - refresh() MUST be cheap within the TTL (single timestamp check).
-#   - MUST only be used from a single event loop (the API's) — no threads.
-#   - Archived state.json files MUST be treated as immutable.
-#   - A run_id absent from history's projection MUST still be read directly
-#     — history coverage gaps must never become cache coverage gaps.
-# dependencies:
-#   - state_repository
-#   - cache.schema
-#   - storage.keys
-#   - history
-# aliases:
-#   - run-cache
-# triggers:
-#   - how does the api see run states
-#   - how is the dashboard data refreshed
-# ---
 
 
 @define(slots=False, kw_only=True)
@@ -310,11 +250,8 @@ def _parse_archived_state(raw: str) -> RunState:
     """
     import json
 
-    from ..models import ObligationRecord
+    from flowlet.models import ObligationRecord
 
     if "obligation" in json.loads(raw):
         return from_json(ObligationRecord)(raw).summary()
     return from_json(RunState)(raw)
-
-# ---
-# endregion

@@ -23,7 +23,7 @@ from flowlet.repository import SignalRepository, StateRepository
 from flowlet.sweeper import sweep
 from flowlet.worker import execute_job
 
-from .test_worker_layer import FakeExecutor, FakeQueue
+from unit.test_worker_layer import FakeExecutor, FakeQueue
 
 
 @pytest.fixture

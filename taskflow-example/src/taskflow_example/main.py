@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from . import flows
+from taskflow_example import flows
 from flowlet.queue.memory import InMemoryQueue
 from flowlet.worker import execute_job
 from taskflow import RegistryExecutor
