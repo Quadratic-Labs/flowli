@@ -8,8 +8,18 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 from pydantic.functional_validators import BeforeValidator
 
-from ..models import RunStatus, RunType
+from flowlet.models import RunStatus, RunType
 
+
+class Base(BaseModel):
+    """Base Pydantic model with common configuration.
+
+    Enables automatic conversion from SQLAlchemy ORM objects.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+
+# region @api.models.time
 
 def humanize_timedelta(td: timedelta) -> str:
     """Convert a timedelta into a human-friendly relative time string.
@@ -65,29 +75,10 @@ timezone-aware ``datetime``, or an ISO 8601 string.  Always validates to
 a UTC-aware ``datetime`` and serialises as a standard datetime string.
 """
 
-
-class Base(BaseModel):
-    """Base Pydantic model with common configuration.
-
-    Enables automatic conversion from SQLAlchemy ORM objects.
-    """
-    model_config = ConfigDict(from_attributes=True)
+# endregion
 
 
 # region @api.models.request
-# ---
-# role: api
-# intent: define request and response envelope models for the API boundary
-# description: >
-#   Incoming request bodies and outgoing submission envelopes.
-#   Validated by Pydantic at the FastAPI boundary before reaching the domain.
-# rules:
-#   - MUST validate all external inputs via Pydantic
-#   - SHOULD use Field() for descriptions exposed in the OpenAPI schema
-# dependencies:
-#   - models.run
-#   - models.job
-# ---
 
 class FlowArguments(Base):
     """API model for flow execution request.
@@ -352,30 +343,10 @@ class LogQueryRequest(Base):
     run_id: UUID = Field(description="UUID of the run to fetch")
     with_logs: bool = Field(True, description="Include log entries in the response")
 
-# ---
 # endregion
 
 
 # region @api.models.dto
-# ---
-# role: api
-# intent: define read DTOs that mirror domain models for API responses
-# description: >
-#   Pydantic models returned by GET endpoints. Each DTO mirrors a domain
-#   model from models.py, mapping domain types (Timestamp, JsonData) to
-#   JSON-serialisable primitives (datetime, dict, list).
-#   TimestampDTO is the annotated datetime type that coerces Timestamp attrs
-#   objects by unwrapping .value, so domain objects can be validated directly
-#   without a manual serialisation step.
-#   RunSummaryDTO nests children recursively, matching RunSummary's tree
-#   structure. RunStateDTO exposes worker-owned execution state.
-# rules:
-#   - Fields MUST match their domain counterpart in name and nullability
-#   - All timestamp fields MUST use TimestampDTO (not bare datetime)
-#   - Extra log metadata MUST be forwarded as dict[str, str]
-# dependencies:
-#   - models.run
-# ---
 
 class SpanEventDTO(Base):
     """API DTO for a log event recorded inside a span.
@@ -502,5 +473,4 @@ class RunStateDTO(Base):
     attempt: int
     max_retries: int
 
-# ---
 # endregion

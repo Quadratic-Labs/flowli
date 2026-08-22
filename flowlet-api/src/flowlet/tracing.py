@@ -45,8 +45,8 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import Status, StatusCode
 
-from .models import RunType
-from .storage import append_lines, run_prefix
+from flowlet.models import RunType
+from flowlet.storage import append_lines, run_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -54,38 +54,6 @@ FLOW_NAME_KEY = "flowlet.flow_name"
 ATTEMPT_KEY = "flowlet.attempt"
 SPAN_TYPE_KEY = "flowlet.span_type"
 
-
-# region @tracing
-# ---
-# role: core
-# intent: OTel tracer setup, run-scoped context, and the blob JSONL span exporter
-# description: >
-#   Owns the process TracerProvider (module-managed, not the OTel global, so
-#   tests can reconfigure freely).  run_root() binds a run's identity
-#   (run_id → trace_id, flow_name, attempt) into context; instrument() wraps
-#   flow/task callables in spans that inherit that identity as attributes.
-#   BlobSpanExporter groups finished spans by trace and appends them as JSON
-#   lines to runs/<flow>/<date>/<run_id>/spans-<attempt>.jsonl — the durable
-#   run record.  SpanEventHandler bridges stdlib logging into span events.
-# rules:
-#   - run_id MUST equal the OTel trace_id (uuid7, 128-bit).
-#   - Every span MUST carry flowlet.flow_name and flowlet.attempt attributes.
-#   - The blob exporter MUST be non-throwing: export errors are logged and
-#     reported as FAILURE, never raised.
-#   - Workers MUST force_flush() before their terminal state write.
-# dependencies:
-#   - models.run
-#   - storage.keys
-#   - types.time
-# aliases:
-#   - tracing
-#   - otel
-#   - span-exporter
-# triggers:
-#   - how are spans recorded
-#   - where do traces get written
-#   - how is the tracer configured
-# ---
 
 # Trace id to use for the next root span (worker/controller sets the run_id
 # here); consumed once by FlowletIdGenerator.
@@ -369,6 +337,3 @@ def _dumps(record: dict) -> str:
     import json
 
     return json.dumps(record, default=str)
-
-# ---
-# endregion

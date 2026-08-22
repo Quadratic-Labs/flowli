@@ -14,61 +14,17 @@ from uuid import UUID
 
 from attrs import define, field
 
-# region @types.std
-# ---
-# role: datatype
-# intent: alias standard types for typechecking clarity.
-# description: >
-#   SchemaVersion: opaque string that carries a semantic-version tag for
-#   serialized payloads, preventing silent schema mismatches.
-#   JsonAtom: leaf-level JSON scalar (None | bool | int | float | str).
-#   JsonData: fully recursive JSON value type used at serialisation boundaries.
-# rules:
-#   - Not used for application specific models. See models.
-# dependencies:
-# aliases:
-#   - json
-#   - schema version
-# triggers:
-#   - what is JsonData
-#   - how is schema version typed
-# ---
 
 SchemaVersion = NewType("SchemaVersion", str)
 JsonAtom: TypeAlias = None | bool | int | float | str
 JsonData: TypeAlias =  JsonAtom | dict[str, "JsonData"] | list["JsonData"]
 
-# ---
-# endregion
 
-# region @types.time
-# ---
-# role: datatype
-# intent: UTC-aware time primitives and their UUIDv7 representations
-# description: >
-#   Timestamp wraps datetime, enforces UTC, and is the single source of truth
-#   for wall-clock time. Period is an optional [start, end] Timestamp range.
-#   PeriodUUID is the UUIDv7-encoded form of Period used as a query key in
-#   storage paths and database range scans.
-#   Primary conversion API — Timestamp.to_uuid() / Timestamp.from_uuid() —
-#   uses standard UUIDv7 (RFC 9562, ascending lexicographic ordering, so a
-#   newer timestamp maps to a larger UUID value).
-# rules:
-#   - Timestamps MUST be timezone-aware and MUST be in UTC.
-#   - to_uuid / from_uuid MUST use standard UUIDv7 (ascending ordering).
-#   - PeriodUUID MUST only be constructed from UUIDv7 values.
-#   - Period.covers() compares datetime values; PeriodUUID.covers() compares UUID values.
-# dependencies:
-# aliases:
-#   - timestamp
-#   - period
-#   - period uuid
-# triggers:
-#   - how to convert a timestamp to a UUID
-#   - what is PeriodUUID
-#   - how does covers work
-#   - how to filter runs by time range
-# ---
+T = TypeVar("T")
+R = TypeVar("R")
+def map_or_none(value: T | None, func: Callable[[T], R]) -> R | None:
+    return func(value) if value is not None else None
+
 
 @define(slots=True)
 class Timestamp:
@@ -259,12 +215,3 @@ class PeriodUUID:
             (self.start is None or uid > self.start)
             and (self.end is None or uid < self.end)
         )
-
-# ---
-# endregion
-
-
-T = TypeVar("T")
-R = TypeVar("R")
-def map_or_none(value: T | None, func: Callable[[T], R]) -> R | None:
-    return func(value) if value is not None else None
