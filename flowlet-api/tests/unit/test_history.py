@@ -122,6 +122,65 @@ class TestRunHistory:
         assert [e.event_type for e in commit.events] == [RUN_ARCHIVED]
 
 
+@pytest.fixture
+def history_db_path(tmp_path):
+    return str(tmp_path / "history.db")
+
+
+@pytest.fixture
+def readable_history(store, history_db_path):
+    """RunHistory pointed at a tmp_path projection file, TTL disabled."""
+    return RunHistory(store=store, db_path=history_db_path, ttl=0.0)
+
+
+@pytest.mark.unit
+class TestRunHistoryQuerying:
+    """RunHistory's read side: refresh() + list_states()/known_flow_names()."""
+
+    def test_list_states_reflects_recorded_runs(self, readable_history, make_run_state):
+        states = [_closed(make_run_state, flow_name="etl") for _ in range(2)]
+        readable_history.record_many(states)
+
+        rows = asyncio.run(readable_history.list_states(["etl"]))
+        assert {r.run_id for r in rows} == {s.run_id for s in states}
+        assert all(r.status == RunStatus.completed for r in rows)
+
+    def test_list_states_respects_last_n(self, readable_history, make_run_state):
+        readable_history.record_many(
+            [_closed(make_run_state, flow_name="etl") for _ in range(3)]
+        )
+        rows = asyncio.run(readable_history.list_states(["etl"], last_n=2))
+        assert len(rows) == 2
+
+    def test_known_flow_names_covers_every_recorded_flow(
+        self, readable_history, make_run_state
+    ):
+        readable_history.record_many([_closed(make_run_state, flow_name="a")])
+        readable_history.record_many([_closed(make_run_state, flow_name="b")])
+
+        assert asyncio.run(readable_history.known_flow_names()) == ["a", "b"]
+
+    def test_list_states_with_no_flow_names_covers_all(
+        self, readable_history, make_run_state
+    ):
+        readable_history.record_many([_closed(make_run_state, flow_name="etl")])
+        rows = asyncio.run(readable_history.list_states())
+        assert len(rows) == 1
+
+    def test_refresh_is_ttl_throttled(self, store, history_db_path, make_run_state):
+        history = RunHistory(store=store, db_path=history_db_path, ttl=3600)
+        history.record_many([_closed(make_run_state, flow_name="etl")])
+        asyncio.run(history.refresh())
+        assert asyncio.run(history.known_flow_names()) == ["etl"]
+
+        history.record_many([_closed(make_run_state, flow_name="other")])
+        asyncio.run(history.refresh())  # within TTL — must not replay the new commit
+        assert asyncio.run(history.known_flow_names()) == ["etl"]
+
+        asyncio.run(history.refresh(force=True))
+        assert asyncio.run(history.known_flow_names()) == ["etl", "other"]
+
+
 @pytest.mark.unit
 class TestSweeperHistoryIntegration:
     class _FakeQueue:

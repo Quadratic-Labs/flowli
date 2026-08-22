@@ -81,8 +81,9 @@ class FlowletDeps(TypedDict, total=False):
             submissions; present only when storage is configured.
         events: Run lifecycle event-log writer; present only when storage
             is configured.
-        history: Run-history event-log writer; None unless configs.history
-            is enabled with storage configured.
+        history: Run-history event-log writer and durable-projection reader
+            (merged into RunQuery.list_recent_states); None unless
+            configs.history is enabled with storage configured.
         queue: Async job queue; None when not configured.
         controller: FastAPI controller wiring all endpoint handlers.
     """
@@ -206,6 +207,18 @@ class Flowlet:
         deps["timers"] = None
         deps["resources"] = None
         deps["events"] = None
+
+        # Built before the storage block below so RunQuery(**deps) can pick
+        # it up via its own named parameter.
+        deps["history"] = None
+        if configs.history and configs.store is not None:
+            from .history import RunHistory
+
+            deps["history"] = RunHistory(
+                store=configs.store, db_path=configs.history_db_path
+            )
+            logger.info("flowlet_history_configured")
+
         if configs.storage is not None:
             from .api.cache import CacheRepository
             from .api.query import RunQuery
@@ -236,13 +249,6 @@ class Flowlet:
             deps["events"] = RunEventLog(store=store)
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
-
-        deps["history"] = None
-        if configs.history and configs.store is not None:
-            from .history import RunHistory
-
-            deps["history"] = RunHistory(store=configs.store)
-            logger.info("flowlet_history_configured")
 
         deps["queue"] = None
         if configs.queue is not None:

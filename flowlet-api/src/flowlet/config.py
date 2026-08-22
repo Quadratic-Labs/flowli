@@ -71,6 +71,7 @@ class FlowletConfig(BaseSettings):
         queue: Optional queue backend for asynchronous flow submission. When
             absent only synchronous execution via ``POST /execute`` is available.
         history: Record archived runs to the durable history log.
+        history_db_path: Local path for the history log's SQLite projection.
 
     Example:
         >>> # Filesystem storage with in-memory queue
@@ -116,6 +117,15 @@ class FlowletConfig(BaseSettings):
             "(logs/history/ on the storage backend) so long-horizon run "
             "queries do not depend on rescanning state files. Requires "
             "storage."
+        ),
+    )
+    history_db_path: str = Field(
+        default="./flowlet_history.sqlite",
+        description=(
+            "Local filesystem path for the history log's SQLite projection. "
+            "Disposable — fully rebuildable by replaying the history log from "
+            "scratch — but persisting it lets refresh() replay only the tail "
+            "instead of the whole log on every process start."
         ),
     )
 

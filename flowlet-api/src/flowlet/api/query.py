@@ -13,15 +13,20 @@ Three query patterns are served:
    :func:`~flowlet.analysis.summarise`.
 """
 import logging
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import Select, bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .. import analysis
+from ..models import RunState
 from ..repository.log import LogRepository
 from ..serdes import destructure
 from .cache import CacheRepository, Run as RunRow
+
+if TYPE_CHECKING:
+    from ..history import RunHistory
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,11 @@ logger = logging.getLogger(__name__)
 #   patterns are served:
 #   1. list_recent_states — last N RunState rows per registered flow; the
 #      the cache's distinct flow names are used when flow_names is None
-#      is covered.  Flows never run produce no rows.
+#      is covered.  Flows never run produce no rows.  When a RunHistory is
+#      configured, its durable projection is merged in — additively, by
+#      run_id, cache rows winning on conflict — so flows that aged out of
+#      the ephemeral cache (a cold process start) still surface their last
+#      archived runs.
 #   2. list_states        — paginated, filterable RunState query for list views.
 #   3. get_run            — full run detail: logs loaded recursively from
 #      storage (subflows / subtasks included), summarised into a RunSummary
@@ -47,6 +56,8 @@ logger = logging.getLogger(__name__)
 #   - MUST NOT write to the database; this is a read-only component.
 #   - list_recent_states MUST cover every flow in the cache when
 #     flow_names is None (the kernel knows no registry).
+#   - Merged history rows MUST NOT shadow a cache row for the same run_id —
+#     the cache is live and always wins.
 #   - get_run MUST read spans via LogRepository.get_spans (one folder per run).
 #   - Timestamps MUST be serialised as plain datetime (UTC) in dicts returned by get_run.
 # dependencies:
@@ -55,6 +66,7 @@ logger = logging.getLogger(__name__)
 #   - log_repository
 #   - cache.repository
 #   - cache.schema
+#   - history
 # aliases:
 #   - run-query
 # triggers:
@@ -69,6 +81,8 @@ class RunQuery:
 
     Combines the run cache (RunState rows, pull-refreshed from state files)
     with span-file data to serve all read operations required by the API.
+    When a RunHistory is configured, its durable SQLite projection is an
+    additive long-horizon source, merged into ``list_recent_states``.
 
     Attributes:
         cache: CacheRepository providing the local SQLite engine, refreshed
@@ -76,6 +90,7 @@ class RunQuery:
         cache: Also enumerates known flow names when no explicit filter is
             given to ``list_recent_states``.
         log_repo: Loads span files from run folders.
+        history: Optional RunHistory; None when ``configs.history`` is off.
     """
     SQL_RECENT_STATES = (
         select(RunRow)
@@ -93,6 +108,7 @@ class RunQuery:
         *,
         cache_repo: CacheRepository,
         log_repo: LogRepository,
+        history: "RunHistory | None" = None,
         **_,
     ):
         """Initialise the query object.
@@ -100,10 +116,13 @@ class RunQuery:
         Args:
             cache_repo: CacheRepository owning the local SQLite engine.
             log_repo: LogRepository for reading span files from storage.
+            history: Optional RunHistory providing the durable long-horizon
+                projection; None when ``configs.history`` is off.
             **_: Unused keyword arguments accepted for dependency-injection
                 compatibility.
         """
         self.cache = cache_repo
+        self.history = history
         self.log_repo = log_repo
 
     def _session_factory(self) -> async_sessionmaker[AsyncSession]:
@@ -142,37 +161,60 @@ class RunQuery:
         flow_names: list[str] | None = None,
         *,
         last_n: int = 5,
-    ) -> list[RunRow]:
+    ) -> list[RunRow | RunState]:
         """Fetch the most recent *last_n* RunState rows for each flow.
 
-        When *flow_names* is ``None`` the cache's distinct flow names are
-        used, so every flow that ever produced a run is represented.
+        When *flow_names* is ``None`` the cache's and (if configured) the
+        history projection's distinct flow names are used, so every flow
+        that ever produced a run is represented — including one whose only
+        runs have aged out of the ephemeral cache since the last cold start.
+
+        When a RunHistory is configured, its rows are merged in per flow,
+        additively: a run_id already present from the cache is never
+        duplicated or overwritten (the cache is live and always wins), and
+        the merged list per flow is still capped at *last_n*.
 
         Args:
             flow_names: Flows to include, or ``None`` for all known flows.
             last_n: Maximum number of rows to return per flow.
 
         Returns:
-            ``Run`` ORM rows, ordered newest-first within each flow.  Rows
-            support attribute access and are compatible with
-            :class:`~flowlet.api.models.RunStateDTO` via
-            ``RunStateDTO.model_validate(row)``.
+            ``Run`` ORM rows and/or ``RunState`` objects, ordered
+            newest-first within each flow.  Both support attribute access
+            and are compatible with :class:`~flowlet.api.models.RunStateDTO`
+            via ``RunStateDTO.model_validate(row)``.
         """
         await self.cache.refresh()
-        names = (
-            flow_names
-            if flow_names is not None
-            else await self._known_flow_names()
-        )
+        cache_names = await self._known_flow_names()
+        if flow_names is not None:
+            names = flow_names
+        elif self.history is not None:
+            names = sorted(set(cache_names) | set(await self.history.known_flow_names()))
+        else:
+            names = cache_names
         if not names:
             return []
 
         stmt = self.SQL_RECENT_STATES
-        rows: list[RunRow] = []
+        rows: list[RunRow | RunState] = []
+        cache_counts: dict[str, int] = {}
         async with self._session_factory()() as session:
             for name in names:
                 result = await session.execute(stmt, {"flow_name": name, "last_n": last_n})
-                rows.extend(result.scalars().all())
+                flow_rows = result.scalars().all()
+                cache_counts[name] = len(flow_rows)
+                rows.extend(flow_rows)
+
+        if self.history is not None:
+            seen = {row.run_id for row in rows}
+            for name in names:
+                remaining = last_n - cache_counts.get(name, 0)
+                if remaining <= 0:
+                    continue
+                for state in await self.history.list_states([name], last_n=remaining):
+                    if state.run_id not in seen:
+                        rows.append(state)
+                        seen.add(state.run_id)
 
         logger.debug(
             "list_recent_states",
