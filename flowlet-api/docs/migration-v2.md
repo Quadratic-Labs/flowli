@@ -34,6 +34,9 @@ API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on deman
   here on terminal transition). One folder = one run, self-contained.
 - **Queue**: pure wake-up. `enqueue / dequeue / ack`. No retry_count, no
   backoff, no renew/release. Message acked immediately after a successful claim.
+  Since then made optional per deployment: `queue: {"type": "account"}` replaces
+  it with the account-backed job source (submissions recorded directly as
+  obligations, workers poll the state directory) — see the deployment guide.
 - **Reads**: API rebuilds/refreshes an ephemeral local SQLite from
   `state/` (active) + recent `runs/` partitions (history), TTL a few seconds.
   No pubsub, no subscriber, no snapshot rollout/partition machinery.

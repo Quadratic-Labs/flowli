@@ -205,6 +205,14 @@ handle retries nicely.
 Use PubSub for PubSub as is. We require only QoS 0 (quality of service), i.e.
 fire and forget.
 
+The queue is a latency optimization, never a correctness component: every
+guarantee (ownership, retry accounting, dedup, exactly-once effects) lives
+in the account store. Deployments that can accept poll-interval dispatch
+latency may drop the queue entirely with `queue: {"type": "account"}` — the
+account-backed job source records submissions directly as obligations and
+workers poll the active state directory for claimable work. Trade-offs are
+documented in `flowlet/queue/account.py` and the deployment guide.
+
 ### Run History (optional)
 
 Archived runs are immutable facts, so long-horizon run queries are served by

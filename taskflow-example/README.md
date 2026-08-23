@@ -15,7 +15,8 @@ configured with:
 - **storage**: `filesystem`, rooted at `./storage` (relative to wherever the
   process is started — see "Running" below for why that matters)
 - **queue**: `memory` (in-process `InMemoryQueue`, dev/demo only — see the
-  caveat under "Multi-process topology")
+  caveat under "Multi-process topology"; `{"type": "account"}` is the
+  queue-less alternative that works across processes)
 
 ## Project structure
 
@@ -143,11 +144,17 @@ to a `work` process started separately (`flowlet sweep`'s scan of `state/` is
 unaffected since that's shared filesystem state, but nothing ever claims the
 job to create a state document in the first place). This topology only
 demonstrates independent scaling/deployment shape, not actual cross-process
-job handoff or sweeper-driven crash recovery. For a real multi-process demo
-(e.g. to see the sweeper reclaim a run after `kill -9`-ing a worker), swap
-`queue` in `flows.py` for `{"type": "azure_queue", ...}` against an Azurite
-emulator, or run everything through the single embedded-worker process from
-step 2, which has no such split.
+job handoff or sweeper-driven crash recovery.
+
+For a real multi-process demo (e.g. to see the sweeper reclaim a run after
+`kill -9`-ing a worker), swap `queue` in `flows.py` for
+`{"type": "account"}`: the queue-less account-backed job source records
+submissions directly in the shared `./storage` state directory, so the
+separately-started `work` process discovers them by polling
+(`--poll-interval` sets the dispatch latency). No extra infrastructure —
+this is the intended dev topology. An `{"type": "azure_queue", ...}` against
+an Azurite emulator also works if you specifically want to exercise the
+queue path.
 
 ## Tests
 

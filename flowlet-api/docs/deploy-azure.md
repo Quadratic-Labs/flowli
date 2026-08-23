@@ -78,6 +78,39 @@ from the environment:
 > `DefaultAzureCredential` in `storage/config.py` and `queue/config.py` —
 > a known follow-up, not yet implemented.
 
+### Queue-less mode
+
+The queue is a wake-up signal, never a correctness component — so it is
+optional. `queue: {"type": "account"}` drops the Azure Queue entirely:
+submissions are recorded directly in the account store (the obligation *is*
+the submission) and workers poll the active state directory for claimable
+obligations. Requires a storage backend; nothing else changes — worker,
+sweeper, and API run as-is.
+
+```python
+flowlet = Flowlet.configure({
+    "storage": {"type": "azure_blob", "container_name": "flowlet"},
+    "queue":   {"type": "account"},
+})
+```
+
+When to choose it:
+
+- **Take it** for dev, tests, and small deployments: one less resource to
+  provision, and cross-process job handoff works over any shared store
+  (including the local filesystem).
+- **Keep the queue** when you want sub-second dispatch latency, KEDA
+  scale-from-zero (the queue scaler in §5 needs a queue to measure — in
+  account mode run the worker as a continuously-running app with
+  `--min-replicas 1`), or many workers (pollers race on the head obligation;
+  the lease CAS arbitrates, but the losers' reads are wasted storage
+  transactions).
+
+Dispatch latency becomes the worker's poll interval (`taskflow work
+--poll-interval`, default 2 s), each poll lists and reads the active state
+documents, and retry backoff is enforced from the account at claim time —
+correctness is identical in both modes.
+
 ## 3. Container image
 
 One image, three entrypoints (`flowlet work | sweep | api`):

@@ -20,6 +20,12 @@ worker (KEDA queue-scaled job), and sweeper (cron job).  See
 guide, configuration reference, and cost notes.  Architecture background:
 [docs/migration-v2.md](docs/migration-v2.md).
 
+The queue is optional per deployment: `queue: {"type": "account"}` runs the
+same three roles with no queue infrastructure at all — submissions are
+recorded directly in the account store and workers poll for claimable
+obligations (dispatch latency = the worker's poll interval).  See
+"Queue-less mode" in the deployment guide.
+
 > ⚠️ Parts of this README predate the v2 architecture (leases + OTel spans +
 > pull-based reads) and are being updated; the docs linked above are current.
 
