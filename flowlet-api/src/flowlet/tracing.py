@@ -198,7 +198,7 @@ def run_root(run_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[
         flow_name: Root flow name, used for the storage path.
         attempt: Execution attempt number (1-based).
     """
-    id_token = _pending_trace_id.set(run_id.int)
+    id_token = _pending_trace_id.set(int(run_id))
     meta_token = _run_meta.set((flow_name, attempt))
     try:
         yield
