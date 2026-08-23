@@ -27,6 +27,7 @@ classifiers = [
 
 dependencies = [
     "attrs>=25.4.0",
+    "cattrs>=24.1.0",
     "click>=8.0.0",
     "isodate>=0.7.2",
     "fastapi>=0.104.0",

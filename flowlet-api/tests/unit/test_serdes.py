@@ -1,10 +1,9 @@
 """
 Unit tests for the serdes module.
 
-Covers three anchor regions:
-- @valuedispatch: ValueDispatch curried dispatch on type values and generic aliases
-- @serdes.dict:   destructure / structure round-trips (lossless, no type coercion)
-- @serdes.json:   to_json / from_json round-trips (with full type coercion)
+Covers two anchor regions:
+- @serdes.dict: destructure / structure round-trips over JSON-safe trees
+- @serdes.json: to_json / from_json round-trips (the wire format)
 """
 import json
 from uuid import UUID
@@ -13,7 +12,6 @@ import pytest
 
 from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
 from flowlet.serdes import (
-    ValueDispatch,
     destructure,
     from_json,
     structure,
@@ -22,71 +20,13 @@ from flowlet.serdes import (
 from flowlet.types import Timestamp
 
 # =============================================================================
-# @valuedispatch — ValueDispatch
-# =============================================================================
-
-
-@pytest.mark.unit
-class TestValueDispatch:
-    """Curried dispatch on type values and generic aliases."""
-
-    def test_registered_type_returns_handler_result(self):
-        dispatch = ValueDispatch(default=lambda x: x)
-        dispatch.register(int)(lambda data: data * 2)
-
-        assert dispatch(int)(3) == 6
-
-    def test_unregistered_type_returns_default(self):
-        sentinel = object()
-        dispatch = ValueDispatch(default=lambda x: sentinel)
-
-        assert dispatch(str)("hello") is sentinel
-
-    def test_default_callable_is_used_as_fallback(self):
-        dispatch = ValueDispatch(default=lambda x: x)
-
-        assert dispatch(float)(3.14) == 3.14
-
-    def test_generic_alias_resolved_via_origin_and_args(self):
-        dispatch = ValueDispatch(default=lambda x: x)
-        # register list origin: takes an element deserializer, returns a list handler
-        dispatch.register(list)(lambda elem_deser: lambda data: [elem_deser(x) for x in data])
-        dispatch.register(int)(lambda data: data + 1)
-
-        handler = dispatch(list[int])
-        assert handler([1, 2, 3]) == [2, 3, 4]
-
-    def test_generic_alias_falls_back_to_default_when_origin_unregistered(self):
-        dispatch = ValueDispatch(default=lambda x: x)
-        # list[int] origin (list) not registered
-        handler = dispatch(list[int])
-        assert handler is dispatch._default
-
-    def test_nested_generic_alias(self):
-        dispatch = ValueDispatch(default=lambda x: x)
-        dispatch.register(list)(lambda elem_deser: lambda data: [elem_deser(x) for x in data])
-        dispatch.register(int)(lambda data: data * 10)
-
-        handler = dispatch(list[list[int]])
-        assert handler([[1, 2], [3]]) == [[10, 20], [30]]
-
-    def test_multiple_types_registered_independently(self):
-        dispatch = ValueDispatch(default=lambda x: None)
-        dispatch.register(int)(lambda data: "int")
-        dispatch.register(str)(lambda data: "str")
-
-        assert dispatch(int)(0) == "int"
-        assert dispatch(str)("") == "str"
-
-
-# =============================================================================
 # @serdes.dict — destructure / structure
 # =============================================================================
 
 
 @pytest.mark.unit
 class TestDestructure:
-    """destructure converts domain models to plain dicts preserving typed values."""
+    """destructure converts domain models to JSON-safe trees."""
 
     def test_passthrough_for_primitives(self):
         assert destructure(42) == 42
@@ -99,16 +39,17 @@ class TestDestructure:
     def test_dict_is_mapped_recursively(self):
         assert destructure({"a": 1, "b": 2}) == {"a": 1, "b": 2}
 
-    def test_span_record_preserves_typed_values(self, make_span_record):
+    def test_span_record_tree_is_json_safe(self, make_span_record):
         record = make_span_record()
         d = destructure(record)
 
-        assert isinstance(d["run_id"], UUID)      # UUID preserved, NOT str
+        assert d["run_id"] == str(record.run_id)
         assert isinstance(d["span_id"], str)      # OTel hex span id
-        assert isinstance(d["start_ts"], Timestamp)
-        assert d["span_type"] is record.span_type  # StrEnum preserved
-        assert d["status"] is record.status
+        assert d["start_ts"] == record.start_ts.to_iso()
+        assert d["span_type"] == str(record.span_type)
+        assert d["status"] == str(record.status)
         assert d["name"] == record.name
+        json.dumps(d)  # must not raise: the tree is the wire format as data
 
     def test_span_record_events_destructured(self, make_span_record, make_ts):
         ts = make_ts()
@@ -118,13 +59,13 @@ class TestDestructure:
         d = destructure(record)
 
         assert d["events"] == [
-            {"ts": ts, "message": "hello", "attributes": {"log.level": "INFO"}}
+            {"ts": ts.to_iso(), "message": "hello", "attributes": {"log.level": "INFO"}}
         ]
 
 
 @pytest.mark.unit
 class TestStructure:
-    """structure reconstructs domain models from dicts (typed values assumed)."""
+    """structure reconstructs domain models from JSON-safe trees."""
 
     def test_span_record_round_trip(self, make_span_record):
         original = make_span_record()
@@ -209,11 +150,6 @@ class TestToJson:
         parsed = json.loads(to_json(record))
 
         assert parsed["span_type"] == "task"
-    def test_json_default_raises_for_unserializable_type(self):
-        from flowlet.serdes import _json_default
-
-        with pytest.raises(TypeError, match="not JSON serialisable"):
-            _json_default(object())
 
 
 @pytest.mark.unit
@@ -302,5 +238,5 @@ class TestFromJson:
         raw = json.dumps({"key": "value"})
         result = from_json(dict)(raw)
 
-        # default handler: json.loads
+        # plain containers structure as themselves
         assert result == {"key": "value"}
