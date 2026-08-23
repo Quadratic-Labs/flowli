@@ -15,7 +15,7 @@ from datetime import datetime
 from uuid import UUID
 
 from attrs import define, field
-from cairndb.engine.coordination import Lease, acquire_sync
+from cairndb.engine.coordination import Lease, acquire_sync, claim_sync
 from cairndb.storage.base import BlobStorage
 
 from flowlet.models import ObligationRecord, RunState
@@ -193,6 +193,39 @@ class StateRepository:
                 extra={"flow_name": flow_name, "run_id": str(run_id)},
             )
             return None
+
+    def create(
+        self, flow_name: str, run_id: UUID, record: ObligationRecord
+    ) -> bool:
+        """Record a new obligation unheld — the account as the submission.
+
+        Writes the lease document put-if-absent with no holder (epoch 0),
+        so the obligation is on the books before any worker claims it.
+        Used by the account-backed job source, where submitting *is*
+        creating the obligation; the first claim acquires the lease and
+        appends its attempt without re-creating the obligation.
+
+        Args:
+            flow_name: Name of the flow.
+            run_id: The obligation's id.
+            record: The fresh account (open obligation, no attempts).
+
+        Returns:
+            True when this call created the document; False when one
+            already exists (a duplicate submission — harmless, the
+            accounts converge on whoever won).
+        """
+        result = claim_sync(
+            self.store,
+            self._key(flow_name, run_id),
+            {
+                "epoch": 0,
+                "holder": None,
+                "deadline_at": Timestamp.now().to_iso(),
+                "state": to_payload(record),
+            },
+        )
+        return result.won
 
     def acquire(
         self,

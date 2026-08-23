@@ -166,18 +166,6 @@ def _ack_safely(queue: JobQueueProtocol, job: FlowJob) -> None:
         )
 
 
-def _retry_backoff(attempt: int) -> int:
-    """Exponential backoff delay before the next attempt's wake-up message.
-
-    Args:
-        attempt: The attempt number that just failed (1-based).
-
-    Returns:
-        Delay in seconds: 2, 4, 8, ... capped at 300.
-    """
-    return min(2 ** attempt, 300)
-
-
 def _emit(
     events: RunEventLog | None,
     record: ObligationRecord,
@@ -391,9 +379,7 @@ def conclude_attempt(
                 caused_by=f"retry_of_attempt:{len(record.attempts)}",
             )
             try:
-                queue.enqueue(
-                    retry_job, delay=_retry_backoff(len(record.attempts))
-                )
+                queue.enqueue(retry_job, delay=record.backoff_seconds())
             except Exception:
                 # The account already shows a rejected attempt with budget
                 # left; the sweeper re-enqueues the parked obligation.

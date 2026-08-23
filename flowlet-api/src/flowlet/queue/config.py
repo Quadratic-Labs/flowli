@@ -97,6 +97,32 @@ class AzureQueueStorageConfig(BaseSettings):
         return client
 
 
+class AccountQueueConfig(BaseSettings):
+    """Configuration for the account-backed job source (queue-less mode).
+
+    No queue infrastructure: submissions are recorded directly in the
+    account store and workers poll the active state directory for
+    claimable obligations.  Requires a storage backend; dispatch latency
+    is the worker's poll interval.
+
+    Attributes:
+        type: Queue type identifier, always "account".
+
+    Example:
+        >>> config = FlowletConfig(
+        ...     storage={"type": "filesystem", "path": "./storage"},
+        ...     queue={"type": "account"},
+        ... )
+    """
+    model_config = SettingsConfigDict(
+        env_prefix='FLOWLET_QUEUE_ACCOUNT_',
+        env_nested_delimiter='_',
+        env_nested_max_split=1
+    )
+
+    type: Literal["account"] = "account"
+
+
 class InMemoryQueueConfig(BaseSettings):
     """Configuration for in-memory queue (development/testing).
 
@@ -129,7 +155,7 @@ class InMemoryQueueConfig(BaseSettings):
 
 # Discriminated union for queue configurations
 QueueConfig = Annotated[
-    Union[AzureQueueStorageConfig, InMemoryQueueConfig],
+    Union[AzureQueueStorageConfig, InMemoryQueueConfig, AccountQueueConfig],
     Discriminator('type'),
 ]
 """Discriminated union type for all queue configurations.

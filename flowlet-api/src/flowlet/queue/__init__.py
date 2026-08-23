@@ -10,13 +10,21 @@ by the worker state machine.
 Available implementations:
 - AzureQueueStorage: Azure Queue Storage backend for production
 - InMemoryQueue: In-memory queue for development and testing
+- AccountJobSource: queue-less mode — submissions are recorded directly in
+  the account store and workers poll for claimable obligations
 """
 from typing import Protocol
 from uuid import UUID
 
-from flowlet.queue.config import AzureQueueStorageConfig, InMemoryQueueConfig, QueueConfig
+from flowlet.queue.config import (
+    AccountQueueConfig,
+    AzureQueueStorageConfig,
+    InMemoryQueueConfig,
+    QueueConfig,
+)
 
 __all__ = [
+    "AccountQueueConfig",
     "AzureQueueStorageConfig",
     "InMemoryQueueConfig",
     "JobQueueProtocol",

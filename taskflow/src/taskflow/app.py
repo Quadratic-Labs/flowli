@@ -105,10 +105,14 @@ class Taskflow:
         def gate_policy(flow_name):
             return registry.get_flow_options(flow_name).gate
 
+        def adjudication_for(flow_name):
+            return "gated" if registry.get_flow_options(flow_name).gated else "auto"
+
         kernel = Flowlet.configure(
             configs,
             prepare_submission=prepare_submission,
             gate_policy=gate_policy,
+            adjudication_for=adjudication_for,
         )
         return cls(kernel, registry)
 

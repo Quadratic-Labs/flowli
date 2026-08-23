@@ -219,13 +219,30 @@ class Flowlet:
         deps["queue"] = None
         if configs.queue is not None:
             from flowlet.queue.azure import AzureQueueStorage
-            from flowlet.queue.config import AzureQueueStorageConfig, InMemoryQueueConfig
+            from flowlet.queue.config import (
+                AccountQueueConfig,
+                AzureQueueStorageConfig,
+                InMemoryQueueConfig,
+            )
             from flowlet.queue.memory import InMemoryQueue
 
             if isinstance(configs.queue, AzureQueueStorageConfig):
                 deps["queue"] = AzureQueueStorage.setup(configs.queue)
             elif isinstance(configs.queue, InMemoryQueueConfig):
                 deps["queue"] = InMemoryQueue.setup(configs.queue)
+            elif isinstance(configs.queue, AccountQueueConfig):
+                if deps.get("state_repo") is None:
+                    raise ValueError(
+                        "queue type 'account' requires a storage backend: "
+                        "the account store is the queue."
+                    )
+                from flowlet.queue.account import AccountJobSource
+
+                deps["queue"] = AccountJobSource(
+                    state_repo=deps["state_repo"],
+                    signals=deps["signals"],
+                    adjudication_for=deps.get("adjudication_for"),
+                )
             if deps["queue"] is not None:
                 logger.info(
                     "flowlet_queue_configured",

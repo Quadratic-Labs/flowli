@@ -15,6 +15,7 @@ from attrs import Factory, define, field
 
 from flowlet.types import JsonData, Timestamp
 
+
 class RunType(StrEnum):
     flow = "flow"
     task = "task"
@@ -341,6 +342,15 @@ class ObligationRecord:
     def retries_left(self) -> bool:
         """Whether the attempt budget allows another attempt."""
         return len(self.attempts) < self.obligation.max_retries
+
+    def backoff_seconds(self) -> int:
+        """Retry backoff before the next attempt: 2, 4, 8, ... capped at 300.
+
+        Derived from the account (the attempt count), never from a message,
+        so every wake-up channel — queue delay, sweeper grace, account
+        polling — applies the same window.
+        """
+        return min(2 ** len(self.attempts), 300)
 
     # -- account transitions -------------------------------------------------
 
