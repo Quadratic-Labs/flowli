@@ -11,6 +11,22 @@ events.  On each (TTL-throttled) refresh it scans
 and upserts both into a local in-memory SQLite the query layer reads.  The
 cache has no correctness role: it can be dropped and rebuilt from storage at
 any time, which is what makes the API scale-to-zero safe.
+
+Why scan storage instead of reading a CairnDB projection?  CairnDB
+projections read a *log* and can always catch up to its tail (``refresh``/
+``wait_for`` — snapshot lag only affects bootstrap cost, never read
+freshness), but *active* run state is deliberately not in any log: it lives
+in the lease document at ``state/{run_id}.json``, mutated in place under
+CAS, because the lease is the correctness mechanism (ownership, fencing,
+takeover).  Logging every transition would serialize runs through one log
+sequencer or need a log per run, and would duplicate the source of truth.
+So the cache bridges the two planes on the read side: re-read the mutable
+object plane in full (cheap — the active set is small by construction) and
+fold the immutable archive plane incrementally.  Archived runs *are* logged
+(``run.archived`` in the ``history`` named log), which is why history can
+serve as a cold-seed fast path below.  Reads are at most one TTL behind
+storage; ``refresh(force=True)`` closes the gap on demand.  See
+``docs/architecture.md`` § "Why the pull cache scans storage".
 """
 import logging
 import time

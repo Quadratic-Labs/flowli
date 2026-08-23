@@ -9,11 +9,17 @@ dashboard queries without rescanning state objects.
 This is strictly additive to the control plane: leases and the worker
 state machine are untouched.  CacheRepository's archived-run scan consults
 it (get_states()) to avoid a blob GET per archived run on a cold seed, but
-falls back to reading state.json directly for any run history doesn't
+falls back to reading state.json directly for any run history it doesn't
 have — the cache never depends on history being enabled.  The history log
 is the CairnDB **named log** ``history`` (keys under ``logs/history/``) on
 the same store as everything else, so it never collides with the ``runs/``
 and ``state/`` planes.
+
+History covers only the log plane: *active* run state stays in mutable
+lease documents and is never logged, which is why live reads go through
+the pull-based cache scan rather than a projection — see
+``docs/architecture.md`` § "Why the pull cache scans storage" for the
+full rationale.
 """
 import asyncio
 import json

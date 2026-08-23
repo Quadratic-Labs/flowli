@@ -232,6 +232,58 @@ an event-sourced projection instead of rescanning state files. With
 The live control plane is untouched: leases, the worker state machine, and
 the pull-based cache never depend on the history log.
 
+### Why the pull cache scans storage (the two storage planes)
+
+A natural question: CairnDB has SQLite projections — why does Flowlet's
+`CacheRepository` scan `state/` and `runs/` itself instead of reading a
+CairnDB projection that is always fresh? The answer is that run state lives
+on two different CairnDB planes, and only one of them is projectable.
+
+**The log plane (immutable events).** CairnDB projections read a *log*, not
+snapshots: `proj.refresh()` replays to the current tail on demand, and
+`wait_for(seq)` gives read-your-writes. Snapshots only bound the cost of a
+cold bootstrap — snapshot lag never causes stale reads. So for anything that
+is in a log, CairnDB freshness is a solved problem, and Flowlet uses it:
+archived runs are immutable facts, recorded as `run.archived` events in the
+`history` named log and projected into durable SQLite (see Run History
+above).
+
+**The object plane (mutable, CAS-guarded documents).** *Active* run state is
+deliberately **not** in any log. It lives in the lease document at
+`state/{run_id}.json`, mutated in place under ETag compare-and-swap —
+because the lease *is* the correctness mechanism (ownership, fencing,
+heartbeats, takeover). Appending every heartbeat and transition to a log
+instead would either serialize all runs through one log's sequencer
+(CairnDB logs are totally ordered per log, with a corresponding append-rate
+ceiling) or require a log per run, and it would create a second source of
+truth beside the lease. There is therefore no log for a projection to tail:
+the freshness gap is a domain-modeling choice, not a missing CairnDB
+feature.
+
+`CacheRepository` bridges the two planes on the read side: per TTL it
+re-reads the small active-runs directory in full (mutable, so always
+re-read) and folds in newly archived `state.json` objects exactly once
+(immutable, so read once, with the history log as an optional fast path for
+cold seeds). This is cheap because the active set is small by construction —
+runs leave `state/` when the sweeper archives them.
+
+Two invariants make this design sound:
+
+- **The cache has no correctness role.** It can be dropped and rebuilt from
+  storage at any moment, which is what makes the API scale-to-zero safe.
+  Storage is the arbiter; the cache is a disposable read optimization. A
+  server-maintained "always fresh" view would invert this: the view would
+  become a correctness-bearing component that must be kept alive.
+- **Bounded staleness is explicit.** Reads are at most one TTL (default 5 s)
+  behind storage, and `refresh(force=True)` closes the gap on demand.
+
+If a second client (CodeFlow, Taskflow) ends up hand-rolling the same
+"fold a storage prefix into local SQLite" pattern, the *mechanism* (prefix
+scanning, mutable-vs-immutable handling, TTL throttling) is generic and
+could move down into CairnDB as an object-plane sibling of `projection`;
+the *policy* (schema, parsing, which prefixes) stays domain-owned either
+way.
+
 ## Local Deployments
 Local deployments are simple, and are a good fit for development and testing.
 
