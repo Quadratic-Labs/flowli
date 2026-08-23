@@ -115,10 +115,7 @@ class StateLease:
     @property
     def deadline_at(self) -> Timestamp:
         """The lease's current expiry."""
-        # The engine's deadline is a cairndb Timestamp (a datetime in
-        # older engine versions) — normalize to the flowlet Timestamp.
-        raw = self._lease.deadline_at
-        return Timestamp.from_datetime(getattr(raw, "value", raw))
+        return self._lease.deadline_at
 
     def renew(self) -> None:
         """Extend the lease deadline by its ttl. Raises LeaseLost if fenced."""
@@ -294,15 +291,13 @@ class StateRepository:
         payload = doc.get("state")
         if payload is None:
             return None
-        from cairndb.core.types import Timestamp as CairnTimestamp
-
         lease = Lease(
             self.store,
             self._key(flow_name, run_id),
             ttl=ttl,
             epoch=epoch,
             holder=holder,
-            deadline_at=CairnTimestamp.from_iso(doc["deadline_at"]),
+            deadline_at=Timestamp.from_iso(doc["deadline_at"]),
             state=payload,
             etag=obj.etag,
         )
