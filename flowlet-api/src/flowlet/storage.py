@@ -17,9 +17,6 @@ from flowlet.types import Timestamp
 logger = logging.getLogger(__name__)
 
 
-_APPEND_ATTEMPTS = 8
-
-
 def run_prefix(flow_name: str, run_id: UUID) -> str:
     """Key prefix of a run's record folder, computed from its identity.
 
@@ -41,6 +38,10 @@ def run_prefix(flow_name: str, run_id: UUID) -> str:
 def append_lines(store: BlobStorage, key: str, lines: str) -> bool:
     """Append *lines* (newline-terminated) to object *key*, atomically.
 
+    Delegates to :meth:`~cairndb.storage.base.BlobStorage.append_object_sync`
+    — a true O(len) append on backends with a native primitive (filesystem,
+    Azure Append Blobs), a compare-and-swap rewrite loop elsewhere.
+
     Args:
         store: The blob store.
         key: Object key of the .jsonl stream.
@@ -51,16 +52,9 @@ def append_lines(store: BlobStorage, key: str, lines: str) -> bool:
         a storage error (logged, never raised — callers are observability
         writers that must not disturb execution).
     """
-    data = lines.encode("utf-8")
     try:
-        for _ in range(_APPEND_ATTEMPTS):
-            obj = store.get_object_sync(key)
-            if obj is None:
-                if store.put_object_sync(key, data, if_absent=True) is not None:
-                    return True
-            else:
-                if store.put_object_sync(key, obj.data + data, if_match=obj.etag) is not None:
-                    return True
+        if store.append_object_sync(key, lines.encode("utf-8")):
+            return True
     except Exception:
         logger.warning("append_lines_failed", extra={"key": key}, exc_info=True)
         return False
