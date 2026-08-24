@@ -10,7 +10,15 @@ from uuid import UUID
 
 import pytest
 
-from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
+from flowlet.models import (
+    FlowJob,
+    RunState,
+    RunStatus,
+    RunSummary,
+    RunType,
+    SpanEvent,
+    SpanRecord,
+)
 from flowlet.serdes import (
     destructure,
     from_json,
@@ -49,6 +57,29 @@ class TestDestructure:
         assert d["span_type"] == str(record.span_type)
         assert d["status"] == str(record.status)
         assert d["name"] == record.name
+        json.dumps(d)  # must not raise: the tree is the wire format as data
+
+    def test_run_summary_with_children_is_json_safe(self):
+        # Regression: RunSummary.children is self-referential; under lazy
+        # annotations the attrs field type was an unhashable ForwardRef,
+        # which broke cattrs' hook cache ("cannot use 'types.GenericAlias'
+        # as a dict key").
+        child = RunSummary(
+            span_id="00f067aa0ba902b7",
+            span_name="fetch_data",
+            span_type=RunType.task,
+            status=RunStatus.completed,
+        )
+        root = RunSummary(
+            span_id="c2e23227ee137844",
+            span_name="simple_etl",
+            span_type=RunType.flow,
+            status=RunStatus.completed,
+            children=[child],
+        )
+        d = destructure(root)
+
+        assert d["children"][0]["span_id"] == child.span_id
         json.dumps(d)  # must not raise: the tree is the wire format as data
 
     def test_span_record_events_destructured(self, make_span_record, make_ts):

@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid7
 
-from attrs import Factory, define, field
+from attrs import Factory, define, field, resolve_types
 
 from flowlet.types import JsonData, Timestamp
 
@@ -143,6 +143,14 @@ class Run(RunSummary):
         logs: All log entries for this run, in chronological order.
     """
     logs: JsonData
+
+
+# `children: list[RunSummary]` is self-referential: under lazy annotations the
+# name is unbound while @define runs, so the field type is captured as
+# list[ForwardRef(...)] — unhashable on 3.14, which breaks cattrs' hook cache.
+# Resolving eagerly replaces it with the real class on both fields tuples.
+resolve_types(RunSummary)
+resolve_types(Run)
 
 
 @define(slots=True, kw_only=True)
