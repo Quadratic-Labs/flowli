@@ -17,6 +17,7 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, Request, Response
+from pydantic import ValidationError
 
 from flowlet.models import FlowJob
 from flowlet.queue import JobQueueProtocol
@@ -259,7 +260,7 @@ class FlowController:
         return FlowSubmissionResponse(
             job_id=job.job_id,
             run_id=job.run_id,
-            submitted_at=job.submitted_at.value,
+            submitted_at=job.submitted_at,
             deduplicated=deduplicated,
         )
 
@@ -676,7 +677,7 @@ class FlowController:
         return ExecutorClaimResponse(
             run_id=run_id,
             epoch=lease.epoch,
-            deadline_at=lease.deadline_at.to_iso(),
+            deadline_at=lease.deadline_at,
             attempt=len(record.attempts),
             kwargs=record.obligation.kwargs,
             adjudication=record.obligation.adjudication,
@@ -707,7 +708,7 @@ class FlowController:
             raise HTTPException(status_code=409, detail="Lease fenced during renewal")
         return ExecutorRenewResponse(
             run_id=run_id,
-            deadline_at=lease.deadline_at.to_iso(),
+            deadline_at=lease.deadline_at,
             signals=self.signals.list(payload.flow_name, run_id),
         )
 
@@ -882,6 +883,9 @@ class FlowController:
                 last_n=request.last_n,
             )
             return [RunStateDTO.model_validate(row) for row in rows]
+        except ValidationError as e:
+            logger.exception("run_state_dto_validation_failed")
+            raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query failed: {e}")
 
@@ -906,6 +910,8 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
+            HTTPException: 500 when the run loads but violates the response
+                contract (server bug, never "not found").
             HTTPException: 404 if the run cannot be found.
             HTTPException: 400 on any other failure.
         """
@@ -914,6 +920,11 @@ class FlowController:
         try:
             result = await self.querier.get_run_by_run_id(run_id, with_logs)
             dto = RunDTO.model_validate(result)
+        # ValidationError extends ValueError: without its own clause a broken
+        # response contract would masquerade as a 404 (run not found).
+        except ValidationError as e:
+            logger.exception("run_dto_validation_failed", extra={"run_id": str(run_id)})
+            raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
@@ -935,6 +946,8 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
+            HTTPException: 500 when the run loads but violates the response
+                contract (server bug, never "not found").
             HTTPException: 404 if the run cannot be found.
             HTTPException: 400 on any other failure.
         """
@@ -947,6 +960,13 @@ class FlowController:
                 request.with_logs,
             )
             return RunDTO.model_validate(result)
+        # ValidationError extends ValueError: without its own clause a broken
+        # response contract would masquerade as a 404 (run not found).
+        except ValidationError as e:
+            logger.exception(
+                "run_dto_validation_failed", extra={"run_id": str(request.run_id)}
+            )
+            raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:

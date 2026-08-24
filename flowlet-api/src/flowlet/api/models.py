@@ -1,14 +1,23 @@
 """
 FastAPI DTO models for API boundary.
 """
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    WithJsonSchema,
+    computed_field,
+)
 from pydantic.functional_validators import BeforeValidator
 
 from flowlet.models import RunStatus, RunType
+from flowlet.types import Timestamp
 
 
 class Base(BaseModel):
@@ -56,21 +65,30 @@ HumanDuration = Annotated[timedelta, AfterValidator(humanize_timedelta)]
 """Type alias for timedelta that is automatically humanized when validated."""
 
 
-def _coerce_timestamp(v: object) -> datetime:
-    """Extract a UTC datetime from a Timestamp attrs object or pass through a datetime."""
-    if hasattr(v, "value") and isinstance(getattr(v, "value", None), datetime):
-        v = v.value  # type: ignore[assignment]
-    if not isinstance(v, datetime):
-        raise ValueError(f"Expected Timestamp or datetime, got {type(v).__name__!r}")
-    return v if v.tzinfo is not None else v.replace(tzinfo=UTC)
+def _coerce_timestamp(v: object) -> Timestamp:
+    """Coerce boundary input into a :class:`Timestamp` — the server's
+    contractually-UTC time type — as early as possible."""
+    if isinstance(v, Timestamp):
+        return v
+    if isinstance(v, str):
+        return Timestamp.from_iso(v)
+    if isinstance(v, datetime):
+        return Timestamp(v)
+    raise ValueError(f"Expected Timestamp, datetime or ISO string, got {type(v).__name__!r}")
 
 
-TimestampDTO = Annotated[datetime, BeforeValidator(_coerce_timestamp)]
-"""Pydantic-compatible mirror of :class:`~flowlet.types.Timestamp`.
+TimestampDTO = Annotated[
+    Timestamp,
+    BeforeValidator(_coerce_timestamp),
+    PlainSerializer(Timestamp.to_iso, return_type=str),
+    WithJsonSchema({"type": "string", "format": "date-time"}),
+]
+"""Pydantic boundary type for :class:`~flowlet.types.Timestamp`.
 
-Accepts a ``Timestamp`` attrs object (unwrapping ``.value``), a
-timezone-aware ``datetime``, or an ISO 8601 string.  Always validates to
-a UTC-aware ``datetime`` and serialises as a standard datetime string.
+Accepts a ``Timestamp``, a ``datetime`` (naive assumed UTC), or an ISO 8601
+string (the serdes wire format), and validates to a ``Timestamp`` so
+everything past the API boundary carries the UTC contract.  Serialises to
+the canonical RFC 3339 form via ``Timestamp.to_iso``.
 """
 
 
@@ -145,7 +163,7 @@ class ExecutorClaimResponse(Base):
         epoch: Fence token — pass it to every subsequent call; a 409 on a
             later call means the lease was stolen and the outcome must be
             discarded.
-        deadline_at: Current lease expiry (ISO).
+        deadline_at: Current lease expiry.
         attempt: This attempt's number.
         kwargs: The obligation's contract inputs.
         adjudication: ``auto`` or ``gated`` — a gated obligation suspends
@@ -154,7 +172,7 @@ class ExecutorClaimResponse(Base):
     """
     run_id: UUID
     epoch: int
-    deadline_at: str
+    deadline_at: TimestampDTO
     attempt: int
     kwargs: dict[str, Any]
     adjudication: str
@@ -172,7 +190,7 @@ class ExecutorRenewRequest(Base):
 class ExecutorRenewResponse(Base):
     """Renewal outcome: new deadline and pending signals."""
     run_id: UUID
-    deadline_at: str
+    deadline_at: TimestampDTO
     signals: dict[str, Any]
 
 

@@ -120,3 +120,15 @@ class TestQueryLogs:
                 LogQueryRequest(flow_name="f", run_id=uuid7())
             )
         assert exc.value.status_code == 400
+
+    def test_dto_validation_failure_raises_500_not_404(
+        self, controller_with_querier, mock_querier
+    ):
+        # ValidationError extends ValueError: a response-contract violation
+        # must surface as a server bug, never masquerade as "run not found".
+        mock_querier.get_run = Mock(return_value={"span_id": "not-a-valid-run"})
+        with pytest.raises(HTTPException) as exc:
+            controller_with_querier.query_logs(
+                LogQueryRequest(flow_name="f", run_id=uuid7())
+            )
+        assert exc.value.status_code == 500
