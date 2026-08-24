@@ -194,16 +194,27 @@ export default function RunDetail() {
 
   // A 404 is not an error here: spans export only when a span completes and
   // the read cache only learns about a run after a worker claims it, so a
-  // freshly submitted run legitimately has nothing to show yet.  Poll until
-  // the record appears instead of failing.
+  // freshly submitted run legitimately has nothing to show yet.  Model that
+  // as *data* (null) rather than a query error: React Query drops an
+  // errored data-less query back to pending on every interval refetch,
+  // which would flip isLoading and remount the whole page twice per poll.
+  // With null the state is referentially stable and idle polls render nothing.
+  const fetchRunOrNull = async (id: string) => {
+    try {
+      return await api.getRunById(id);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  };
   const { data: run, isLoading, error } = useQuery({
     queryKey: ['run', runId],
-    queryFn: () => api.getRunById(runId),
+    queryFn: () => fetchRunOrNull(runId),
     retry: false,
     refetchInterval: (q) => (q.state.data ? false : 2500),
   });
   const { data: parent } = useQuery({
-    queryKey: ['run', parentId], queryFn: () => api.getRunById(parentId!),
+    queryKey: ['run', parentId], queryFn: () => fetchRunOrNull(parentId!),
     enabled: !!parentId,
   });
   // Lifecycle events are optional: older runs (pre event log) have none and
@@ -229,7 +240,7 @@ export default function RunDetail() {
     if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['run', runId] });
   }, [eventCount, runId, queryClient]);
 
-  const runNotFoundYet = !run && error instanceof ApiError && error.status === 404;
+  const runNotFoundYet = run === null;
 
   const attempts = useMemo(() => groupAttempts(run?.logs ?? []), [run]);
   const [selectedAttempt, setSelectedAttempt] = useState<number | null>(null);
@@ -261,10 +272,10 @@ export default function RunDetail() {
   return (
     <div className="p-6">
       {isLoading && <div className="flex justify-center p-10"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
-      {error && !runNotFoundYet && <div className="text-red-600 bg-red-50 p-4 rounded">{String(error)}</div>}
+      {error != null && <div className="text-red-600 bg-red-50 p-4 rounded mb-4">{String(error)}</div>}
 
       {runNotFoundYet && (
-        <>
+        <div className="fade-in">
           <div className="bg-white rounded shadow p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -289,17 +300,11 @@ export default function RunDetail() {
           </div>
 
           {eventToStatus(lastEvent) === 'gated' && <AdjudicateRunPanel runId={runId} />}
-
-          {events.length > 0 && (
-            <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen>
-              <EventTimeline events={events} />
-            </Section>
-          )}
-        </>
+        </div>
       )}
 
-      {run && view && !isLoading && (
-        <>
+      {run && view && (
+        <div className="fade-in">
           <div className="bg-white rounded shadow p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -353,13 +358,20 @@ export default function RunDetail() {
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
             <RunFlamegraph runData={view} />
           </Section>
+        </div>
+      )}
 
-          {events.length > 0 && (
-            <Section title="Lifecycle Events" icon={<span>🧭</span>}>
-              <EventTimeline events={events} />
-            </Section>
-          )}
+      {/* Shared slot: rendered in both the waiting and the full-record view,
+          so the branch swap neither remounts the timeline nor resets the
+          section's open/closed state. */}
+      {events.length > 0 && (
+        <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen={!run}>
+          <EventTimeline events={events} />
+        </Section>
+      )}
 
+      {run && view && (
+        <div className="fade-in">
           <Section title="Logs" icon={<span>📄</span>}>
             {logs.length === 0
               ? <div className="bg-blue-50 text-blue-700 p-4 rounded">No logs found for this run.</div>
@@ -393,7 +405,7 @@ export default function RunDetail() {
               </table>
             </Section>
           )}
-        </>
+        </div>
       )}
     </div>
   );
