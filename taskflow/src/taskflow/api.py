@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from flowlet.api.models import FlowArguments
 from flowlet.lease import RunCancelled, RunLease, bind_lease, unbind_lease
 from flowlet.models import AttemptOutcome, Obligation, ObligationRecord
-from flowlet.repository import EffectRepository
+from flowlet.repository import EffectRepository, MessageRepository
 from flowlet.types import Timestamp
 from flowlet.worker import DEFAULT_TIMEOUT, conclude_attempt
 
@@ -73,6 +73,7 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
         lease=lease,
         signals=tf.signals,
         effects=EffectRepository(store=state_repo.store),
+        messages=MessageRepository(store=state_repo.store),
     )
     token = bind_lease(run_lease)
     outcome, error = AttemptOutcome.returned, None

@@ -1,6 +1,8 @@
 from flowlet.repository.dispatch import DispatchKeyRepository as DispatchKeyRepository
 from flowlet.repository.effects import EffectRepository as EffectRepository
 from flowlet.repository.log import LogRepository as LogRepository
+from flowlet.repository.messages import MessageDoc as MessageDoc
+from flowlet.repository.messages import MessageRepository as MessageRepository
 from flowlet.repository.resources import ResourceLease as ResourceLease
 from flowlet.repository.resources import ResourceLeaseRepository as ResourceLeaseRepository
 from flowlet.repository.signals import SignalRepository as SignalRepository

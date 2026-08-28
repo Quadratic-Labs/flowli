@@ -78,6 +78,7 @@ from flowlet.queue import JobQueueProtocol
 from flowlet.repository import (
     AlreadyClosed,
     EffectRepository,
+    MessageRepository,
     SignalRepository,
     StateRepository,
     StateView,
@@ -254,6 +255,7 @@ def _claim_transition(
             obligation=Obligation(
                 id=job.run_id,
                 flow_name=job.flow_name,
+                flow_version=job.flow_version,
                 kwargs=job.kwargs,
                 parent_id=job.parent_id,
                 root_id=job.root_id,
@@ -644,6 +646,7 @@ def execute_job(
         lease=lease,
         signals=signals,
         effects=EffectRepository(store=state_repo.store),
+        messages=MessageRepository(store=state_repo.store),
     )
     flow_exc: Exception | None = None
     cancelled = False

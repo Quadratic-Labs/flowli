@@ -333,9 +333,15 @@ class Obligation:
             ``max_retries_exceeded``, ``rejected``).
         cancel_requested: Whether cancellation was requested (record; the
             live channel is the cancel signal object).
+        flow_version: Version of the flow's code/config the obligation was
+            created against (a release tag, git sha, or harness config
+            hash) — provenance for replay legibility: later attempts may
+            run newer code, and the account shows against what the
+            obligation was minted.  Recording only; matching is policy.
     """
     id: UUID
     flow_name: str
+    flow_version: str | None = field(default=None)
     kwargs: dict[str, Any] = Factory(dict)
     parent_id: UUID | None = field(default=None)
     root_id: UUID | None = field(default=None)
@@ -379,6 +385,29 @@ class Effect:
 
 
 @define(slots=True, kw_only=True)
+class Consumption:
+    """A recorded message consumption — the recv checkpoint.
+
+    Identity derives from the obligation, the topic, and the consumption's
+    ordinal within that topic — never from the attempt that happened to
+    execute the recv — so a retried attempt *replays* recorded consumptions
+    in order (receiving identical messages) before consuming fresh ones:
+    the effect discipline applied to the message channel.
+
+    Attributes:
+        topic: Channel the message was consumed from.
+        message_id: The consumed message's id (uuid7 hex — the topic's
+            ordering key; the last entry per topic is the topic's cursor).
+        attempt_n: Which attempt recorded the consumption.
+        consumed_at: When it was recorded.
+    """
+    topic: str
+    message_id: str
+    attempt_n: int
+    consumed_at: Timestamp
+
+
+@define(slots=True, kw_only=True)
 class ObligationRecord:
     """The account of one obligation: intent plus the record of its discharge.
 
@@ -390,10 +419,13 @@ class ObligationRecord:
         obligation: The unit of intent.
         attempts: Every execution attempt, in order, outcomes explicit.
         effects: Recorded side-effects, idempotent by occurrence key.
+        consumptions: Recorded message consumptions, in recv order — the
+            per-topic cursor and replay log of the message channel.
     """
     obligation: Obligation
     attempts: list[Attempt] = Factory(list)
     effects: list[Effect] = Factory(list)
+    consumptions: list[Consumption] = Factory(list)
 
     # -- reading the account ------------------------------------------------
 
@@ -572,6 +604,25 @@ class ObligationRecord:
         """Append a recorded side-effect to the account."""
         self.effects.append(effect)
 
+    def consumptions_for(self, topic: str) -> list[Consumption]:
+        """The topic's recorded consumptions, in recv order."""
+        return [c for c in self.consumptions if c.topic == topic]
+
+    def record_consumption(self, topic: str, message_id: str) -> Consumption:
+        """Append a message consumption — the recv checkpoint.
+
+        Written under the lease fence by whoever holds the attempt, so only
+        the current attempt can advance a topic's cursor.
+        """
+        entry = Consumption(
+            topic=topic,
+            message_id=message_id,
+            attempt_n=len(self.attempts),
+            consumed_at=Timestamp.now(),
+        )
+        self.consumptions.append(entry)
+        return entry
+
     def discharge(self) -> None:
         """Close the obligation as discharged (its contract was met)."""
         self.obligation.status = ObligationStatus.discharged
@@ -633,6 +684,8 @@ class FlowJob:
         job_id: Unique job identifier in the queue (one per message).
         run_id: Pre-generated obligation id for tracking execution.
         flow_name: Name of the flow to execute.
+        flow_version: Version of the flow's code/config, stamped on the
+            obligation at creation (provenance; see Obligation).
         kwargs: Validated keyword arguments to pass to the flow.
         submitted_at: Timestamp when job was submitted to queue.
         max_retries: Budget of consuming attempts allowed (``raised`` /
@@ -656,6 +709,7 @@ class FlowJob:
     job_id: UUID = Factory(uuid7)
     run_id: UUID = Factory(uuid7)
     flow_name: str
+    flow_version: str | None = field(default=None)
     kwargs: dict[str, Any] = Factory(dict)
     submitted_at: Timestamp = Factory(Timestamp.now)
     max_retries: int = 3

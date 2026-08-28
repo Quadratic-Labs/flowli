@@ -163,6 +163,16 @@ class FlowArguments(Base):
             "verdict'. Requires storage."
         ),
     )
+    flow_version: str | None = Field(
+        None,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Version of the flow's code/config this obligation is minted "
+            "against (release tag, git sha, harness config hash) — "
+            "recorded on the obligation for replay provenance"
+        ),
+    )
 
 
 class ExecutorClaimRequest(Base):
@@ -198,6 +208,10 @@ class ExecutorClaimResponse(Base):
         adjudication: ``auto`` or ``gated`` — a gated obligation suspends
             on a returned outcome instead of self-discharging.
         signals: Signals already pending at claim time.
+        messages: Unconsumed message counts per topic at claim time —
+            consume them via POST /runs/{run_id}/recv.
+        flow_version: The version the obligation was minted against, when
+            recorded (see FlowArguments.flow_version).
     """
     run_id: UUID
     epoch: int
@@ -206,6 +220,8 @@ class ExecutorClaimResponse(Base):
     kwargs: dict[str, Any]
     adjudication: str
     signals: dict[str, Any]
+    messages: dict[str, int] = Field(default_factory=dict)
+    flow_version: str | None = None
 
 
 class ExecutorRenewRequest(Base):
@@ -217,10 +233,12 @@ class ExecutorRenewRequest(Base):
 
 
 class ExecutorRenewResponse(Base):
-    """Renewal outcome: new deadline and pending signals."""
+    """Renewal outcome: new deadline, pending signals, and unconsumed
+    message counts per topic (consume via POST /runs/{run_id}/recv)."""
     run_id: UUID
     deadline_at: TimestampDTO
     signals: dict[str, Any]
+    messages: dict[str, int] = Field(default_factory=dict)
 
 
 class ExecutorEffectRequest(Base):
@@ -269,6 +287,83 @@ class ExecutorOutcomeResponse(Base):
     """The route the account took: completed/gated/pending/failed/canceled."""
     run_id: UUID
     status: str
+
+
+class RunMessageRequest(Base):
+    """Send an ordered message to a run's topic (the message channel).
+
+    Unlike a signal (a single-shot latch), messages queue: every send
+    appends one, and the run's executor consumes them in send order via
+    recv.  A ``dedup_key`` makes the send idempotent — duplicate sends with
+    the same key converge on one message.
+
+    Attributes:
+        flow_name: Flow the run belongs to (part of its key).
+        actor: Who sends the message — recorded in it.
+        body: JSON-safe message payload.
+        dedup_key: Optional idempotency key (webhook delivery id, event id).
+    """
+    flow_name: str = Field(min_length=1)
+    actor: str = Field(min_length=1, max_length=256)
+    body: Any = None
+    dedup_key: str | None = Field(None, min_length=1, max_length=512)
+
+
+class RunMessageResponse(Base):
+    """The appended (or converged-on) message.
+
+    ``deduplicated`` is True when the dedup_key resolved to a message an
+    earlier send created.
+    """
+    run_id: UUID
+    topic: str
+    message_id: str
+    deduplicated: bool = False
+
+
+class ExecutorRecvRequest(Base):
+    """Consume one message from a topic, checkpointed in the account.
+
+    ``seq`` is the executor's recv ordinal for this topic within this
+    attempt (1-based).  While it is within the account's recorded
+    consumptions the call *replays* — returning the identical message a
+    prior attempt consumed at that ordinal — and at exactly one past them
+    it consumes the next fresh message; anything further is a 409 (a
+    skipped ordinal would break replay determinism).
+
+    Attributes:
+        flow_name: Flow the run belongs to.
+        executor: The lease holder (same as claimed).
+        epoch: The fence token from the claim.
+        topic: Channel to consume from.
+        seq: This attempt's recv ordinal on the topic, starting at 1.
+    """
+    flow_name: str = Field(min_length=1)
+    executor: str = Field(min_length=1, max_length=256)
+    epoch: int = Field(ge=1)
+    topic: str = Field(min_length=1, max_length=128)
+    seq: int = Field(ge=1)
+
+
+class ExecutorRecvResponse(Base):
+    """The consumed (or replayed) message, or None when nothing is pending.
+
+    Attributes:
+        run_id: The obligation.
+        topic: Channel consumed from.
+        seq: The recv ordinal answered.
+        message: ``{"id", "body", "actor", "sent_at"}``, or None when no
+            unconsumed message is pending (retry later, or park the run).
+        replayed: True when the ordinal was already recorded and the same
+            message was returned again.
+        pending: Unconsumed messages left on the topic after this call.
+    """
+    run_id: UUID
+    topic: str
+    seq: int
+    message: dict[str, Any] | None = None
+    replayed: bool = False
+    pending: int = 0
 
 
 class AdjudicationRequest(Base):

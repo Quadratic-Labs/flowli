@@ -33,10 +33,14 @@ from flowlet.api.models import (
     ExecutorEffectResponse,
     ExecutorOutcomeRequest,
     ExecutorOutcomeResponse,
+    ExecutorRecvRequest,
+    ExecutorRecvResponse,
     ExecutorRenewRequest,
     ExecutorRenewResponse,
     FlowArguments,
     FlowSubmissionResponse,
+    RunMessageRequest,
+    RunMessageResponse,
     LogQueryRequest,
     RunDTO,
     RunQueryRequest,
@@ -232,6 +236,7 @@ class FlowController:
 
         job = FlowJob(
             flow_name=flow_name,
+            flow_version=payload.flow_version,
             kwargs=kwargs,
             timeout_seconds=payload.timeout_seconds,
             max_retries=payload.max_retries if payload.max_retries is not None else 3,
@@ -308,6 +313,7 @@ class FlowController:
                 obligation=Obligation(
                     id=job.run_id,
                     flow_name=flow_name,
+                    flow_version=job.flow_version,
                     kwargs=kwargs,
                     parent_id=parent_id,
                     root_id=root_id,
@@ -896,6 +902,7 @@ class FlowController:
         synthetic = FlowJob(
             run_id=run_id,
             flow_name=flow_name,
+            flow_version=view.record.obligation.flow_version,
             kwargs=view.record.obligation.kwargs,
             max_retries=view.record.obligation.max_retries,
         )
@@ -979,6 +986,8 @@ class FlowController:
             kwargs=record.obligation.kwargs,
             adjudication=record.obligation.adjudication,
             signals=self.signals.list(flow_name, run_id),
+            messages=self._pending_messages(flow_name, run_id, record),
+            flow_version=record.obligation.flow_version,
         )
 
     def renew_run(
@@ -1007,6 +1016,9 @@ class FlowController:
             run_id=run_id,
             deadline_at=lease.deadline_at,
             signals=self.signals.list(payload.flow_name, run_id),
+            messages=self._pending_messages(
+                payload.flow_name, run_id, lease.record
+            ),
         )
 
     def record_run_effect(
@@ -1066,6 +1078,199 @@ class FlowController:
             occurrence=payload.occurrence,
             result=result,
             produced=produced,
+        )
+
+    def _pending_messages(self, flow_name, run_id, record) -> dict[str, int]:
+        """Unconsumed message counts per topic, from the store and account."""
+        assert self.state_repo is not None
+        from flowlet.repository import MessageRepository
+
+        repo = MessageRepository(store=self.state_repo.store)
+        pending: dict[str, int] = {}
+        for topic, total in repo.counts(flow_name, run_id).items():
+            remaining = total - len(record.consumptions_for(topic))
+            if remaining > 0:
+                pending[topic] = remaining
+        return pending
+
+    def send_run_message(
+        self, run_id: UUID, topic: str, payload: RunMessageRequest
+    ) -> RunMessageResponse:
+        """Append a message to a run's topic — the ordered channel.
+
+        Senders never touch the lease: the message is an immutable object
+        beside the run, and only the owning attempt consumes it (recv).
+        A ``dedup_key`` makes the send idempotent.
+
+        Raises:
+            HTTPException: 503 without storage; 404 unknown run; 409 when
+                the obligation is closed; 422 for an unsafe topic name.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        from flowlet.repository import MessageRepository
+
+        view = self.state_repo.read(payload.flow_name, run_id)
+        if view is None:
+            raise HTTPException(
+                status_code=404, detail="Run not found among active runs"
+            )
+        if view.record.obligation.status.is_closed():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Run is closed "
+                    f"({view.record.obligation.status}) — nothing will consume"
+                ),
+            )
+        repo = MessageRepository(store=self.state_repo.store)
+        try:
+            message_id, created = repo.send(
+                payload.flow_name,
+                run_id,
+                topic,
+                payload.body,
+                actor=payload.actor,
+                dedup_key=payload.dedup_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if created and self.events is not None:
+            self.events.append(
+                flow_name=payload.flow_name,
+                run_id=run_id,
+                event="message_sent",
+                actor=payload.actor,
+                details={"topic": topic, "message_id": message_id},
+            )
+        logger.info(
+            "run_message_sent",
+            extra={
+                "run_id": str(run_id),
+                "topic": topic,
+                "message_id": message_id,
+                "deduplicated": not created,
+            },
+        )
+        return RunMessageResponse(
+            run_id=run_id,
+            topic=topic,
+            message_id=message_id,
+            deduplicated=not created,
+        )
+
+    def recv_run_message(
+        self, run_id: UUID, payload: ExecutorRecvRequest
+    ) -> ExecutorRecvResponse:
+        """Consume one message from a topic, checkpointed in the account.
+
+        The recv checkpoint: while ``seq`` is within the account's recorded
+        consumptions the call replays the identical message; at exactly one
+        past them it consumes the next fresh message under the lease fence.
+        A further ``seq`` is refused — a skipped ordinal would break replay
+        determinism.
+
+        Raises:
+            HTTPException: 503 without storage; 409 when fenced, when
+                ``seq`` skips past the next fresh ordinal, or when a
+                recorded message object is missing; 422 for an unsafe
+                topic name.
+        """
+        if self.state_repo is None:
+            raise HTTPException(status_code=503, detail="Storage not configured")
+        from flowlet.lease import LeaseLost
+        from flowlet.repository import MessageRepository
+        from flowlet.repository.messages import validate_topic
+        from flowlet.worker import DEFAULT_TIMEOUT
+
+        try:
+            validate_topic(payload.topic)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        lease = self._resume_or_409(
+            payload.flow_name, run_id,
+            executor=payload.executor, epoch=payload.epoch,
+            ttl=DEFAULT_TIMEOUT,
+        )
+        record = lease.record
+        repo = MessageRepository(store=self.state_repo.store)
+        consumed = record.consumptions_for(payload.topic)
+
+        def _respond(message, *, replayed: bool) -> ExecutorRecvResponse:
+            total = repo.counts(payload.flow_name, run_id).get(payload.topic, 0)
+            return ExecutorRecvResponse(
+                run_id=run_id,
+                topic=payload.topic,
+                seq=payload.seq,
+                message=message,
+                replayed=replayed,
+                pending=max(
+                    total - len(record.consumptions_for(payload.topic)), 0
+                ),
+            )
+
+        if payload.seq <= len(consumed):
+            entry = consumed[payload.seq - 1]
+            doc = repo.read(
+                payload.flow_name, run_id, payload.topic, entry.message_id
+            )
+            if doc is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Recorded message {entry.message_id} is missing "
+                        "from the store — cannot replay"
+                    ),
+                )
+            return _respond(
+                {
+                    "id": doc.id, "body": doc.body,
+                    "actor": doc.actor, "sent_at": doc.sent_at,
+                },
+                replayed=True,
+            )
+
+        if payload.seq > len(consumed) + 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"seq {payload.seq} skips ahead: {len(consumed)} "
+                    "consumptions are recorded on this topic — replay them "
+                    "in order first"
+                ),
+            )
+
+        after = consumed[-1].message_id if consumed else None
+        fresh = repo.list_topic(
+            payload.flow_name, run_id, payload.topic, after=after
+        )
+        if not fresh:
+            return _respond(None, replayed=False)
+        head = fresh[0]
+        record.record_consumption(payload.topic, head.id)
+        try:
+            lease.write(record)
+        except LeaseLost:
+            raise HTTPException(
+                status_code=409,
+                detail="Lease fenced while recording the consumption",
+            )
+        logger.info(
+            "run_message_consumed",
+            extra={
+                "run_id": str(run_id),
+                "topic": payload.topic,
+                "message_id": head.id,
+                "executor": payload.executor,
+            },
+        )
+        return _respond(
+            {
+                "id": head.id, "body": head.body,
+                "actor": head.actor, "sent_at": head.sent_at,
+            },
+            replayed=False,
         )
 
     def record_run_outcome(

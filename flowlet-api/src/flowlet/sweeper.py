@@ -350,11 +350,15 @@ def _archive_all(
                 extra={"count": len(to_archive)},
             )
             return  # keep state files; retry recording on the next sweep
+    from flowlet.repository import MessageRepository
+
+    messages = MessageRepository(store=state_repo.store)
     for record in to_archive:
         obligation = record.obligation
         state_repo.archive(obligation.flow_name, obligation.id)
         if signals is not None:
             signals.clear(obligation.flow_name, obligation.id)
+        messages.clear(obligation.flow_name, obligation.id)
         stats.archived += 1
 
 

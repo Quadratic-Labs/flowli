@@ -19,9 +19,11 @@ from flowlet.api.models import (
     ExecutorClaimResponse,
     ExecutorEffectResponse,
     ExecutorOutcomeResponse,
+    ExecutorRecvResponse,
     ExecutorRenewResponse,
     FlowSubmissionResponse,
     RunDTO,
+    RunMessageResponse,
     RunStateDTO,
     TransitionPageResponse,
 )
@@ -199,6 +201,49 @@ _RUN_EFFECT = RouteSpec(
     requires_state=True,
 )
 
+_SEND_MESSAGE = RouteSpec(
+    path="/runs/{run_id}/messages/{topic}",
+    method="POST",
+    summary="Send an ordered message to a run's topic",
+    description=(
+        "Append one message to the run's message channel. Unlike a signal "
+        "(a single-shot latch), messages queue in send order and the run's "
+        "executor consumes them exactly once via recv. A dedup_key makes "
+        "the send idempotent. Senders never touch the run's lease."
+    ),
+    tags=["Execution"],
+    response_model=RunMessageResponse,
+    responses={
+        200: {"description": "Message appended (or converged via dedup_key)"},
+        404: {"description": "Run not found among active runs"},
+        409: {"description": "Run is closed — nothing will consume"},
+        422: {"description": "Unsafe topic name"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_RUN_RECV = RouteSpec(
+    path="/runs/{run_id}/recv",
+    method="POST",
+    summary="Consume one message from a topic, checkpointed",
+    description=(
+        "Fenced consumption from the run's message channel: seq within the "
+        "recorded consumptions replays the identical message (retry "
+        "determinism), exactly one past them consumes the next fresh "
+        "message and records it in the account under the lease fence."
+    ),
+    tags=["Executor"],
+    response_model=ExecutorRecvResponse,
+    responses={
+        200: {"description": "Message consumed, replayed, or none pending"},
+        409: {"description": "Fenced, seq skipped ahead, or record unreadable"},
+        422: {"description": "Unsafe topic name"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
 _RUN_OUTCOME = RouteSpec(
     path="/runs/{run_id}/outcome",
     method="POST",
@@ -327,6 +372,8 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _CLAIM_RUN, controller.claim_run)
         _wire(router, _RENEW_RUN, controller.renew_run)
         _wire(router, _RUN_EFFECT, controller.record_run_effect)
+        _wire(router, _SEND_MESSAGE, controller.send_run_message)
+        _wire(router, _RUN_RECV, controller.recv_run_message)
         _wire(router, _RUN_OUTCOME, controller.record_run_outcome)
     if not _RUNS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _RUNS_QUERY, controller.query_runs)

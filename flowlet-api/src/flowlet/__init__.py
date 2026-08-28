@@ -11,3 +11,6 @@ from flowlet.lease import (
 from flowlet.lease import (
     heartbeat as heartbeat,
 )
+from flowlet.lease import (
+    recv as recv,
+)
