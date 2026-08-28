@@ -136,7 +136,32 @@ class FlowArguments(Base):
     )
     max_retries: int | None = Field(
         None, ge=1, le=100,
-        description="Attempt budget; None uses the kernel default (3)",
+        description=(
+            "Budget of consuming attempts (raised outcomes / rejected "
+            "verdicts; crashed and interrupted attempts are free); "
+            "None uses the kernel default (3)"
+        ),
+    )
+    admission: str | None = Field(
+        None,
+        pattern="^(auto|gated)$",
+        description=(
+            "Entry gate: 'gated' records the obligation durably but born "
+            "held — not claimable until POST /runs/{run_id}/admit releases "
+            "it. Requires storage. Default 'auto' (claimable immediately)."
+        ),
+    )
+    adjudicates: UUID | None = Field(
+        None,
+        description=(
+            "Submit this obligation as the adjudicator of the given run "
+            "(which must be awaiting_adjudication): its job is to render "
+            "the verdict, its terminal effect a call to that run's "
+            "adjudication endpoint. Stamps caused_by 'adjudicate:<run_id>' "
+            "and records this obligation's id as the target's "
+            "adjudicator_id — the parked account answers 'who owes me the "
+            "verdict'. Requires storage."
+        ),
     )
 
 
@@ -149,10 +174,14 @@ class ExecutorClaimRequest(Base):
             session id) — recorded as the attempt's executor and required
             for every subsequent fenced call.
         ttl_seconds: Lease duration per renewal; renew well within it.
+        resumed_from: Prior attempt number whose substrate (session,
+            worktree, resume artifact) this attempt continues; omit for a
+            fresh start.  Must reference a recorded attempt (409 otherwise).
     """
     flow_name: str = Field(min_length=1)
     executor: str = Field(min_length=1, max_length=256)
     ttl_seconds: int | None = Field(None, ge=10, le=86400)
+    resumed_from: int | None = Field(None, ge=1)
 
 
 class ExecutorClaimResponse(Base):
@@ -251,10 +280,57 @@ class AdjudicationRequest(Base):
         actor: Principal rendering the verdict — recorded in the account
             and checked against the flow's gate policy.
         reason: Optional short ground for the decision.
+        evidence_ref: JSON-safe reference to the grounds of the decision
+            (review findings, gate evidence) — a content-addressed ref or
+            small JSON, never the body itself.  A rejecting verdict's
+            evidence is what seeds the next attempt's envelope.
+        extend_budget: Extra attempts granted with a ``rejected`` verdict —
+            the resume path for an obligation gated on exhaustion (fix the
+            environment, then reject with a fresh budget to re-run).
     """
     decision: str = Field(pattern="^(accepted|rejected)$")
     actor: str = Field(min_length=1, max_length=256)
     reason: str | None = Field(None, max_length=1024)
+    evidence_ref: Any = None
+    extend_budget: int = Field(0, ge=0, le=100)
+
+
+class AdmissionRequest(Base):
+    """API model for releasing a held obligation's admission.
+
+    Attributes:
+        actor: Who releases the hold — a principal, or a controller acting
+            on a completion event (e.g. ``dep-controller``); recorded in
+            the account as ``admitted_by``.
+        reason: Optional short ground for the release (e.g.
+            ``dependency_discharged:<run_id>``); carried in the event log.
+    """
+    actor: str = Field(min_length=1, max_length=256)
+    reason: str | None = Field(None, max_length=1024)
+
+
+class AdmissionResponse(Base):
+    """API model for the admission outcome.
+
+    Attributes:
+        run_id: The admitted obligation.
+        status: Projection status after the release (normally ``pending``).
+    """
+    run_id: UUID
+    status: str
+
+
+class TransitionPageResponse(Base):
+    """One page of the account-transition feed.
+
+    Attributes:
+        entries: Lifecycle event records in log order (run_id, flow_name,
+            event, actor, attempt, from/to, cause, plus ``seq``).
+        cursor: Pass back as ``after`` to continue; unchanged when the
+            page is empty (the tail was reached).
+    """
+    entries: list[dict[str, Any]]
+    cursor: int
 
 
 class AdjudicationResponse(Base):
@@ -280,7 +356,8 @@ class FlowSubmissionResponse(Base):
         job_id: Unique job identifier in the queue.
         run_id: Identifier of the run this submission maps to — the
             pre-existing run when ``deduplicated`` is True.
-        status: Initial status, always ``RunStatus.pending``.
+        status: Initial status — ``pending``, or ``held`` when the
+            submission declared ``admission: gated``.
         submitted_at: Timestamp when job was submitted.
         deduplicated: True when a dispatch_key resolved to a run created by
             an earlier submission; no new run was created.

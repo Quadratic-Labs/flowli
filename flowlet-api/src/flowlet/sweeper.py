@@ -9,7 +9,8 @@ sweep lists the active state directory and:
    dead attempt's outcome is recorded as ``crashed`` (auto-verdict
    rejected).  With budget left the obligation is released open and a fresh
    wake-up message is enqueued (kwargs come from the account, not the
-   original message); with the budget spent it is abandoned.
+   original message); with the budget spent it is abandoned — except a
+   gated obligation, which parks awaiting adjudication instead.
 2. **Stuck parked obligations** — released and open long past their backoff
    window (their retry message was lost, or the failing worker died before
    enqueueing).  Re-enqueued; a duplicate message is harmless because the
@@ -142,8 +143,9 @@ def sweep(
                 _maybe_requeue_parked(
                     queue, view, now, pending_grace, stats, events
                 )
-            # awaiting_adjudication: waits passively for a verdict signal —
-            # never re-enqueued; a wake-up could not execute anything.
+            # awaiting_adjudication and held: wait passively for a verdict /
+            # an admission — never re-enqueued; a wake-up could not execute
+            # anything.
         except Exception:
             stats.errors += 1
             logger.exception(
@@ -197,9 +199,16 @@ def _recover_crashed(
         if existing.obligation.status.is_closed():
             raise AlreadyClosed(existing)
         if existing.open_attempt is not None:
+            # A crash never spends the budget (crashed attempts are free);
+            # on an already-exhausted gated obligation it keeps its verdict
+            # pending — the human gate adjudicates it below.
+            parks = (
+                not existing.retries_left()
+                and existing.obligation.adjudication == "gated"
+            )
             existing.record_outcome(
                 AttemptOutcome.crashed,
-                verdict=Verdict(
+                verdict=None if parks else Verdict(
                     decision=VerdictDecision.rejected,
                     by="auto",
                     rendered_at=Timestamp.now(),
@@ -207,7 +216,11 @@ def _recover_crashed(
                 ),
             )
         if not existing.retries_left():
-            existing.abandon("max_retries_exceeded")
+            if existing.obligation.adjudication == "gated":
+                # Exhaustion is a judgment point: park for adjudication.
+                existing.suspend_for_adjudication()
+            else:
+                existing.abandon("max_retries_exceeded")
         return existing
 
     try:
@@ -231,6 +244,22 @@ def _recover_crashed(
         _emit(events, recovered, "failed", cause="lease_expired_max_retries")
         logger.warning(
             "sweep_run_failed_permanently",
+            extra={
+                "run_id": str(recovered.obligation.id),
+                "attempt": len(recovered.attempts),
+            },
+        )
+        return
+
+    if recovered.obligation.status == ObligationStatus.awaiting_adjudication:
+        # Gated obligation exhausted by the crash: parked for human
+        # judgment, never re-enqueued (a wake-up could not execute).
+        _emit(
+            events, recovered, "awaiting_adjudication",
+            cause="lease_expired_max_retries",
+        )
+        logger.warning(
+            "sweep_run_gated_on_exhaustion",
             extra={
                 "run_id": str(recovered.obligation.id),
                 "attempt": len(recovered.attempts),

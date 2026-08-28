@@ -119,11 +119,25 @@ class TestExistingStateCase:
         assert existing_state_case(view) == JobState.expired
 
     def test_expired_with_exhausted_retries_is_failed(self, make_record):
+        # attempt=4: three consuming (raised/rejected) attempts spend the
+        # budget; the dead in-flight attempt is a crash and bills nothing.
+        view = _view(
+            make_record(status=RunStatus.running, attempt=4, max_retries=3),
+            holder="dead-worker", deadline=_ts_in(-1),
+        )
+        assert existing_state_case(view) == JobState.failed
+
+    def test_expired_with_crash_spent_attempts_is_still_expired(
+        self, make_record
+    ):
+        """Crashed attempts are free (v0.3 delta 1): a dead holder on a
+        budget spent only by prior real failures short of the cap is a
+        takeover, not a permanent failure."""
         view = _view(
             make_record(status=RunStatus.running, attempt=3, max_retries=3),
             holder="dead-worker", deadline=_ts_in(-1),
         )
-        assert existing_state_case(view) == JobState.failed
+        assert existing_state_case(view) == JobState.expired
 
 
 # ============================================================================
@@ -354,12 +368,14 @@ class TestExecuteJobTakeover:
         self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
     ):
         job = make_flow_job()
+        # Three consuming attempts spend the budget; the dead in-flight
+        # fourth is a free crash — exhaustion comes from the real failures.
         expired = make_run_state(
             run_id=job.run_id,
             flow_name=job.flow_name,
             status=RunStatus.running,
             worker_id="dead-worker",
-            attempt=3,
+            attempt=4,
             max_retries=3,
         )
         seed_lease(

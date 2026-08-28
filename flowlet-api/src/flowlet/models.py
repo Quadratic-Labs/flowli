@@ -31,6 +31,7 @@ class RunStatus(StrEnum):
     pending = "pending"
     running = "running"
     gated = "gated"
+    held = "held"
     retry = "retry"
     failed = "failed"
     completed = "completed"
@@ -170,7 +171,8 @@ class RunState:
         started_at: When the obligation was created.
         ended_at: When the obligation closed (discharged/abandoned).
         attempt: Number of attempts recorded so far.
-        max_retries: Maximum number of execution attempts allowed.
+        max_retries: Budget of consuming attempts allowed (``raised`` /
+            ``rejected``; crashed and interrupted attempts are free).
         kwargs: Flow keyword arguments.
         cancel_requested: Whether cancellation was requested.
     """
@@ -187,7 +189,15 @@ class RunState:
 
 
 class ObligationStatus(StrEnum):
-    """Lifecycle of an obligation — the unit of intent."""
+    """Lifecycle of an obligation — the unit of intent.
+
+    ``held`` is the entry gate, symmetric to ``awaiting_adjudication`` on
+    the exit (abstractions v0.3, delta 4): the obligation is durably on the
+    books but not claimable until a fenced admission releases it.  The
+    kernel records the state "not yet eligible"; *when* to release is
+    controller logic (a dependency completing, a human approving).
+    """
+    held = "held"
     open = "open"
     awaiting_adjudication = "awaiting_adjudication"
     discharged = "discharged"
@@ -221,11 +231,17 @@ class Verdict:
             accepted), a gate name, or a principal for human adjudication.
         rendered_at: When the verdict was recorded.
         reason: Optional short machine-readable ground for the decision.
+        evidence_ref: JSON-safe reference to the grounds of the decision
+            (review findings, gate evidence) — a content-addressed ref or
+            small JSON, never the body itself; symmetric to
+            :attr:`Effect.result_ref`.  A rejecting verdict's evidence is
+            what seeds the next attempt's envelope.
     """
     decision: VerdictDecision
     by: str = "auto"
     rendered_at: Timestamp
     reason: str | None = field(default=None)
+    evidence_ref: Any = field(default=None)
 
 
 @define(slots=True, kw_only=True)
@@ -240,6 +256,10 @@ class Attempt:
         outcome: Explicit end of execution; None while in flight.
         error: Exception type name when the outcome is ``raised``.
         verdict: The adjudication of this attempt's outcome, when rendered.
+        resumed_from: Prior attempt number whose substrate (session,
+            worktree, resume artifact) this attempt continued; None for a
+            fresh start.  Cost/provenance legibility — the account shows
+            continuation instead of faking fresh starts.
     """
     n: int
     executor: str
@@ -248,6 +268,28 @@ class Attempt:
     outcome: AttemptOutcome | None = field(default=None)
     error: str | None = field(default=None)
     verdict: Verdict | None = field(default=None)
+    resumed_from: int | None = field(default=None)
+
+    def consumes_budget(self) -> bool:
+        """Whether this attempt bills the obligation's attempt budget.
+
+        ``raised`` consumes; ``returned`` consumes once its verdict is
+        ``rejected``; ``crashed``/``interrupted`` attempts (and in-flight
+        ones) are free — infrastructure death and deliberate suspension are
+        not failures of the work, so crash, interrupt/resume, and rework
+        must not bill identically (abstractions v0.3, delta 1).  This holds
+        regardless of any verdict recorded on a crashed attempt (crash
+        accounting stamps ``rejected``/``lease_expired`` as a fact of
+        adjudication, not as a budget event).
+        """
+        if self.outcome == AttemptOutcome.raised:
+            return True
+        if self.outcome == AttemptOutcome.returned:
+            return (
+                self.verdict is not None
+                and self.verdict.decision == VerdictDecision.rejected
+            )
+        return False
 
 
 @define(slots=True, kw_only=True)
@@ -261,14 +303,29 @@ class Obligation:
         kwargs: Validated flow arguments — the contract's inputs.
         parent_id: Parent obligation for sub-obligations; None for roots.
         root_id: Root of the obligation tree; None for roots.
-        max_retries: Attempt budget.
+        max_retries: Attempt budget, counted over *consuming* attempts —
+            ``raised`` outcomes and ``rejected`` verdicts on returned
+            attempts; ``crashed``/``interrupted`` attempts are free.
         adjudication: How done-ness is decided — ``auto`` applies the
             default policy (returned ⇒ accepted) at the end of each attempt;
             ``gated`` suspends the obligation as awaiting_adjudication until
             an authorized verdict arrives through the adjudication API.
+        admission: How eligibility to run is decided — ``auto`` obligations
+            are claimable from creation; ``gated`` obligations are born
+            ``held`` and become claimable only when a fenced admission
+            releases them (the entry gate, mirror of ``adjudication``).
+        admitted_at: When a held obligation's admission was released.
+        admitted_by: Who released it — a principal, or a controller acting
+            on a completion event.
         caused_by: Provenance of this obligation — what event or decision
-            spawned it (e.g. ``dispatch:<key>``, ``plan:<delta>``); account
+            spawned it (e.g. ``dispatch:<key>``, ``plan:<delta>``,
+            ``adjudicate:<run_id>`` for an adjudicator obligation); account
             data, never scheduling data.
+        adjudicator_id: While ``awaiting_adjudication``, the obligation
+            minted to render this one's verdict — the parked account
+            answers "who owes me the verdict", not just "I'm waiting"
+            (abstractions v0.3, delta 5).  Cleared when a verdict lands;
+            re-minting after an abandoned adjudicator overwrites it.
         created_at: When the obligation was recorded.
         closed_at: When it was discharged or abandoned.
         status: Current lifecycle state.
@@ -284,6 +341,10 @@ class Obligation:
     root_id: UUID | None = field(default=None)
     max_retries: int = 3
     adjudication: str = "auto"
+    admission: str = "auto"
+    admitted_at: Timestamp | None = field(default=None)
+    admitted_by: str | None = field(default=None)
+    adjudicator_id: UUID | None = field(default=None)
     caused_by: str | None = field(default=None)
     created_at: Timestamp
     closed_at: Timestamp | None = field(default=None)
@@ -347,27 +408,61 @@ class ObligationRecord:
         last = self.last_attempt
         return last if last is not None and last.outcome is None else None
 
+    def consumed_attempts(self) -> int:
+        """The number of attempts that consumed the budget.
+
+        Counts ``raised`` outcomes and ``rejected`` verdicts on returned
+        attempts (see :meth:`Attempt.consumes_budget`); ``crashed`` and
+        ``interrupted`` attempts are free.
+        """
+        return sum(1 for attempt in self.attempts if attempt.consumes_budget())
+
     def retries_left(self) -> bool:
-        """Whether the attempt budget allows another attempt."""
-        return len(self.attempts) < self.obligation.max_retries
+        """Whether the budget allows another attempt.
+
+        The budget is counted over *consuming* attempts only, so a
+        resumption-heavy healthy obligation (crashes recovered, suspensions
+        resumed) never reads as a retry storm.  Crash-loop protection is
+        policy (pause/escalate), never budget; :meth:`backoff_seconds`
+        still paces every attempt.
+        """
+        return self.consumed_attempts() < self.obligation.max_retries
 
     def backoff_seconds(self) -> int:
         """Retry backoff before the next attempt: 2, 4, 8, ... capped at 300.
 
         Derived from the account (the attempt count), never from a message,
         so every wake-up channel — queue delay, sweeper grace, account
-        polling — applies the same window.
+        polling — applies the same window.  Deliberately counts every
+        attempt, consuming or not: free crashed attempts must still back
+        off, or a crash loop spins at full speed.
         """
         return min(2 ** len(self.attempts), 300)
 
     # -- account transitions -------------------------------------------------
 
-    def begin_attempt(self, executor: str) -> Attempt:
-        """Append a fresh in-flight attempt for *executor*."""
+    def begin_attempt(
+        self, executor: str, *, resumed_from: int | None = None
+    ) -> Attempt:
+        """Append a fresh in-flight attempt for *executor*.
+
+        Args:
+            executor: Who runs the attempt.
+            resumed_from: Prior attempt whose substrate this attempt
+                continues; must reference a recorded attempt.
+
+        Raises:
+            ValueError: *resumed_from* does not reference a prior attempt.
+        """
+        if resumed_from is not None and not 1 <= resumed_from <= len(self.attempts):
+            raise ValueError(
+                f"resumed_from={resumed_from} does not reference a prior attempt"
+            )
         attempt = Attempt(
             n=len(self.attempts) + 1,
             executor=executor,
             started_at=Timestamp.now(),
+            resumed_from=resumed_from,
         )
         self.attempts.append(attempt)
         return attempt
@@ -404,23 +499,74 @@ class ObligationRecord:
         """
         self.obligation.status = ObligationStatus.awaiting_adjudication
 
-    def adjudicate(self, verdict: Verdict) -> None:
+    def assign_adjudicator(self, adjudicator_id: UUID) -> None:
+        """Record which obligation owes this one its verdict.
+
+        The adjudication-as-work linkage: ``awaiting_adjudication`` is the
+        lock; the adjudicator obligation is the job.  The parked account
+        should answer "who owes me the verdict", not just "I'm waiting".
+        Overwriting is allowed — re-minting after an abandoned adjudicator
+        replaces the debt-holder; the event log keeps the history.
+
+        Args:
+            adjudicator_id: The obligation minted to render the verdict.
+
+        Raises:
+            ValueError: The obligation is not awaiting adjudication.
+        """
+        if self.obligation.status != ObligationStatus.awaiting_adjudication:
+            raise ValueError(
+                "obligation is not awaiting adjudication "
+                f"(status: {self.obligation.status})"
+            )
+        self.obligation.adjudicator_id = adjudicator_id
+
+    def adjudicate(self, verdict: Verdict, *, extend_budget: int = 0) -> None:
         """Record an external verdict on the pending attempt and route it.
 
-        Accepted discharges the obligation.  Rejected reopens it when the
-        attempt budget allows another attempt, and abandons it (cause
-        ``rejected``) otherwise.
+        Accepted discharges the obligation.  Rejected first grants
+        *extend_budget* extra attempts (the resume path for an obligation
+        gated on exhaustion: fix the environment, extend, re-run), then
+        reopens the obligation when the budget allows another attempt, and
+        abandons it (cause ``rejected``) otherwise.  Either way the verdict
+        settles the debt: ``adjudicator_id`` is cleared.
         """
         attempt = self.pending_verdict_attempt
         if attempt is None:
             raise ValueError("no attempt is awaiting adjudication")
         attempt.verdict = verdict
+        self.obligation.adjudicator_id = None
         if verdict.decision == VerdictDecision.accepted:
             self.discharge()
-        elif self.retries_left():
+            return
+        self.obligation.max_retries += extend_budget
+        if self.retries_left():
             self.obligation.status = ObligationStatus.open
         else:
             self.abandon("rejected")
+
+    def admit(self, by: str) -> None:
+        """Release a held obligation's admission — the entry-gate mirror of
+        :meth:`adjudicate`.
+
+        The kernel records the state change and who caused it; *why* now is
+        the right moment (a dependency discharged, a human approved) is the
+        caller's — a controller's — knowledge, carried in the event log.
+
+        Args:
+            by: Who released the hold — a principal, or a controller acting
+                on a completion event.
+
+        Raises:
+            ValueError: The obligation is not held.
+        """
+        if self.obligation.status != ObligationStatus.held:
+            raise ValueError(
+                f"obligation is not held (status: {self.obligation.status})"
+            )
+        self.obligation.status = ObligationStatus.open
+        self.obligation.admitted_at = Timestamp.now()
+        self.obligation.admitted_by = by
 
     def record_effect(self, effect: Effect) -> None:
         """Append a recorded side-effect to the account."""
@@ -452,6 +598,8 @@ class ObligationRecord:
             )
         elif obligation.status == ObligationStatus.awaiting_adjudication:
             status = RunStatus.gated
+        elif obligation.status == ObligationStatus.held:
+            status = RunStatus.held
         elif self.open_attempt is not None:
             status = RunStatus.running
         else:
@@ -487,7 +635,8 @@ class FlowJob:
         flow_name: Name of the flow to execute.
         kwargs: Validated keyword arguments to pass to the flow.
         submitted_at: Timestamp when job was submitted to queue.
-        max_retries: Maximum number of execution attempts allowed.
+        max_retries: Budget of consuming attempts allowed (``raised`` /
+            ``rejected``; crashed and interrupted attempts are free).
         timeout_seconds: Per-attempt lease duration; None uses the worker's
             default.
         parent_id: Parent obligation when submitting a sub-obligation.

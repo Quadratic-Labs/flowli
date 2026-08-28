@@ -38,6 +38,7 @@ to one of the ``JobState`` values:
     busy      Lease actively held (unexpired holder)           Ack — another worker owns it
     expired   In-flight attempt, lease expired, budget left    Acquire (crash + new attempt) → execute
     failed    In-flight attempt, lease expired, budget spent   Acquire → crash + abandon → release
+                                                               (gated: crash + park for adjudication)
     ready     Released open obligation (parked after failure)  Acquire (new attempt) → execute
 
 The classification is advisory (early-outs without churning the lease
@@ -49,6 +50,13 @@ obligation that closed in between, which aborts the acquisition via
 On flow failure with budget left, the worker releases the lease with the
 rejected attempt recorded and the obligation still open, then self-enqueues
 a fresh wake-up message with exponential backoff.
+
+Exhaustion is a judgment point: when the last attempt spends a *gated*
+obligation's budget, the obligation parks ``awaiting_adjudication`` with
+the final outcome recorded and its verdict pending — a human can extend the
+budget through the adjudication endpoint (fix the environment, resume) or
+close it with a rejected verdict.  Only auto-adjudicated obligations
+abandon themselves (``max_retries_exceeded``).
 """
 import logging
 from collections.abc import Callable
@@ -114,6 +122,7 @@ class JobState(StrEnum):
     expired = "expired"
     closed = "closed"
     gated = "gated"
+    held = "held"
 
 
 def existing_state_case(
@@ -135,6 +144,8 @@ def existing_state_case(
         return JobState.closed
     if record.obligation.status == ObligationStatus.awaiting_adjudication:
         return JobState.gated
+    if record.obligation.status == ObligationStatus.held:
+        return JobState.held
     if view.held(now):
         return JobState.busy
     if record.open_attempt is not None:
@@ -198,6 +209,7 @@ class _ClaimCase(StrEnum):
     execute = "execute"
     canceled = "canceled"
     exhausted = "exhausted"
+    gated = "gated"  # budget spent on a gated obligation: parked for judgment
 
 
 def _claim_transition(
@@ -208,6 +220,7 @@ def _claim_transition(
     cancel_pending: bool,
     gated: bool,
     decision: dict,
+    resumed_from: int | None = None,
 ) -> ObligationRecord:
     """Pure transition applied atomically with the lease acquisition.
 
@@ -225,6 +238,9 @@ def _claim_transition(
         worker_id: The acquiring worker.
         cancel_pending: Whether the obligation's cancel signal was observed.
         decision: Out-parameter receiving {"case": _ClaimCase}.
+        resumed_from: Prior attempt whose substrate this attempt continues
+            (external executors resuming from a resume artifact); recorded
+            on the appended attempt, validated against the account.
 
     Returns:
         The account to write with the acquisition.
@@ -255,13 +271,26 @@ def _claim_transition(
     if record.obligation.status == ObligationStatus.awaiting_adjudication:
         # Nothing to execute — the obligation waits on a verdict, not a worker.
         raise Unclaimable(record)
+    if record.obligation.status == ObligationStatus.held:
+        # Entry gate: the obligation waits on an admission, not a worker.
+        raise Unclaimable(record)
 
     # Crash accounting: a dead holder's in-flight attempt ends here, judged
-    # by whoever discovers it — never silently overwritten.
+    # by whoever discovers it — never silently overwritten.  A crash never
+    # spends the budget (crashed attempts are free); when it lands on an
+    # already-exhausted gated obligation, its verdict stays pending: the
+    # crashed attempt is what the human gate below will adjudicate.
     if existing is not None and record.open_attempt is not None:
+        parks = (
+            not cancel_pending
+            and not record.retries_left()
+            and record.obligation.adjudication == "gated"
+        )
         record.record_outcome(
             AttemptOutcome.crashed,
-            verdict=_auto_verdict(VerdictDecision.rejected, reason="lease_expired"),
+            verdict=None if parks else _auto_verdict(
+                VerdictDecision.rejected, reason="lease_expired"
+            ),
         )
 
     if cancel_pending:
@@ -272,11 +301,18 @@ def _claim_transition(
         return record
 
     if not record.retries_left():
+        # Exhaustion is a judgment point: a gated obligation parks for
+        # human adjudication (extend the budget to resume, reject to
+        # close); only auto obligations close themselves.
+        if record.obligation.adjudication == "gated":
+            record.suspend_for_adjudication()
+            decision["case"] = _ClaimCase.gated
+            return record
         record.abandon("max_retries_exceeded")
         decision["case"] = _ClaimCase.exhausted
         return record
 
-    record.begin_attempt(worker_id)
+    record.begin_attempt(worker_id, resumed_from=resumed_from)
     decision["case"] = _ClaimCase.execute
     return record
 
@@ -352,11 +388,27 @@ def conclude_attempt(
         return "lost"
 
     # raised — retry accounting lives in the account, never the queue.
-    record.record_outcome(
-        AttemptOutcome.raised,
-        error=error,
-        verdict=_auto_verdict(VerdictDecision.rejected, reason=error),
-    )
+    # Record the outcome first: a raised attempt consumes the budget by
+    # outcome alone, so exhaustion is only known once it is accounted.
+    attempt = record.open_attempt
+    record.record_outcome(AttemptOutcome.raised, error=error)
+    if not record.retries_left() and record.obligation.adjudication == "gated":
+        # Exhaustion is a judgment point, not an auto-verdict: the outcome
+        # is a fact, judgment is pending.  A human can extend the budget
+        # and resume (adjudicate rejected + extend_budget) or close it.
+        record.suspend_for_adjudication()
+        try:
+            lease.release(record)
+        except LeaseLost:
+            return "lost"
+        _emit(
+            events, record, "awaiting_adjudication", actor,
+            from_status="running", to_status="gated", cause=error,
+        )
+        return "gated"
+
+    if attempt is not None:
+        attempt.verdict = _auto_verdict(VerdictDecision.rejected, reason=error)
     if record.retries_left():
         try:
             lease.release(record)
@@ -483,11 +535,12 @@ def execute_job(
             },
         )
         return 0
-    if job_state in (JobState.busy, JobState.gated):
+    if job_state in (JobState.busy, JobState.gated, JobState.held):
         assert view is not None
-        # Duplicate wake-up for an actively-owned or adjudication-parked
-        # run: drop it.  Crashed owners are the sweeper's job; gated runs
-        # resume through the adjudication endpoint, never a wake-up.
+        # Duplicate wake-up for an actively-owned, adjudication-parked, or
+        # admission-held run: drop it.  Crashed owners are the sweeper's
+        # job; gated runs resume through the adjudication endpoint and held
+        # runs through the admission endpoint, never a wake-up.
         _ack_safely(queue, job)
         logger.info(
             "job_not_claimable",
@@ -562,6 +615,23 @@ def execute_job(
             extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
         )
         return 1
+
+    if case == _ClaimCase.gated:
+        # Budget spent on a gated obligation: parked for human judgment,
+        # resumable through the adjudication endpoint (extend_budget).
+        try:
+            lease.release(record)
+        except LeaseLost:
+            return 2
+        _emit(
+            events, record, "awaiting_adjudication", worker_id,
+            to_status="gated", cause="max_retries_exceeded",
+        )
+        logger.warning(
+            "job_gated_on_exhaustion",
+            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+        )
+        return 2
 
     _emit(
         events, record, "claimed", worker_id,
@@ -641,6 +711,12 @@ def execute_job(
             "job_requeued",
             extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
         )
+    elif route == "gated":
+        # Budget spent on a gated obligation: parked for human judgment.
+        logger.warning(
+            "job_gated_on_exhaustion",
+            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+        )
     elif route == "failed":
         logger.warning(
             "job_failed_permanently",
@@ -663,7 +739,7 @@ def _release_terminal(
     actor: str,
     **event_kwargs,
 ) -> bool:
-    """Release the lease with a closed account and emit the event.
+    """Release the lease with a routed (closed or parked) account and emit the event.
 
     Returns:
         True when the release landed; False when the lease was fenced (the

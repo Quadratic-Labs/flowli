@@ -334,6 +334,45 @@ class TestExternalExecutor:
         assert last.verdict.decision == VerdictDecision.accepted
         assert record.effects[0].result_ref == "commit:a1b2c3"
 
+    def test_claim_resumed_from_links_the_attempts(
+        self, state_repo, signals, make_run_state, seed_lease, store
+    ):
+        """v0.3 delta 2: a resuming executor records which attempt's
+        substrate it continues — continuation is account data."""
+        state = self._seed_ready(make_run_state, seed_lease, store, attempt=1)
+        controller = _controller(state_repo, signals)
+
+        claim = controller.claim_run(
+            state.run_id,
+            ExecutorClaimRequest(
+                flow_name=state.flow_name, executor="s2", resumed_from=1
+            ),
+        )
+
+        assert claim.attempt == 2
+        record = state_repo.read(state.flow_name, state.run_id).record
+        assert record.last_attempt.resumed_from == 1
+        assert record.attempts[0].resumed_from is None
+
+    def test_claim_resumed_from_unknown_attempt_is_refused(
+        self, state_repo, signals, make_run_state, seed_lease, store
+    ):
+        state = self._seed_ready(make_run_state, seed_lease, store, attempt=1)
+        controller = _controller(state_repo, signals)
+
+        with pytest.raises(HTTPException) as exc:
+            controller.claim_run(
+                state.run_id,
+                ExecutorClaimRequest(
+                    flow_name=state.flow_name, executor="s2", resumed_from=5
+                ),
+            )
+
+        assert exc.value.status_code == 409
+        # The transition aborted atomically — no attempt was appended.
+        record = state_repo.read(state.flow_name, state.run_id).record
+        assert len(record.attempts) == 1
+
     def test_duplicate_effect_report_converges(
         self, state_repo, signals, make_run_state, seed_lease, store
     ):

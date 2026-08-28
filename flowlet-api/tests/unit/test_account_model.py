@@ -82,6 +82,76 @@ class TestObligationRecord:
         record.record_outcome(AttemptOutcome.raised)
         assert record.retries_left() is False
 
+    def test_budget_counts_consuming_attempts_only(self):
+        """v0.3 delta 1: crashed/interrupted attempts are free; raised
+        outcomes and rejected verdicts on returned attempts consume."""
+        record = _record(max_retries=2)
+        record.begin_attempt("w1")
+        record.record_outcome(
+            AttemptOutcome.crashed,
+            verdict=Verdict(
+                decision=VerdictDecision.rejected,
+                rendered_at=Timestamp.now(),
+                reason="lease_expired",
+            ),
+        )
+        record.begin_attempt("w2")
+        record.record_outcome(AttemptOutcome.interrupted)
+        assert record.consumed_attempts() == 0
+        assert record.retries_left() is True
+
+        record.begin_attempt("w3")
+        record.record_outcome(AttemptOutcome.raised)
+        assert record.consumed_attempts() == 1
+        assert record.retries_left() is True
+
+        record.begin_attempt("w4")
+        record.record_outcome(
+            AttemptOutcome.returned,
+            verdict=Verdict(
+                decision=VerdictDecision.rejected, rendered_at=Timestamp.now()
+            ),
+        )
+        assert record.consumed_attempts() == 2
+        assert record.retries_left() is False
+
+    def test_returned_attempt_pending_or_accepted_is_free(self):
+        record = _record(max_retries=1)
+        record.begin_attempt("w1")
+        record.record_outcome(AttemptOutcome.returned)  # verdict pending
+        assert record.consumed_attempts() == 0
+        assert record.retries_left() is True
+        record.last_attempt.verdict = Verdict(
+            decision=VerdictDecision.accepted, rendered_at=Timestamp.now()
+        )
+        assert record.consumed_attempts() == 0
+
+    def test_begin_attempt_records_resumption(self):
+        """v0.3 delta 2: continuation is account data — attempt N records
+        which attempt's substrate it continued."""
+        record = _record()
+        record.begin_attempt("w1")
+        record.record_outcome(AttemptOutcome.interrupted)
+        resumed = record.begin_attempt("w1", resumed_from=1)
+        assert resumed.resumed_from == 1
+        assert record.attempts[0].resumed_from is None
+
+    def test_begin_attempt_rejects_unknown_resumption(self):
+        record = _record()
+        with pytest.raises(ValueError):
+            record.begin_attempt("w1", resumed_from=1)
+        assert record.attempts == []
+
+    def test_backoff_still_paces_free_attempts(self):
+        """Crashed attempts don't bill the budget but must still back off,
+        or a crash loop spins at full speed."""
+        record = _record(max_retries=3)
+        before = record.backoff_seconds()
+        record.begin_attempt("w1")
+        record.record_outcome(AttemptOutcome.crashed)
+        assert record.consumed_attempts() == 0
+        assert record.backoff_seconds() > before
+
     def test_discharge_and_abandon_close_with_metadata(self):
         record = _record()
         record.discharge()
@@ -157,9 +227,10 @@ class TestAccountSerdes:
                 decision=VerdictDecision.rejected,
                 rendered_at=Timestamp.now(),
                 reason="ValueError",
+                evidence_ref={"report": "sha256:abc123"},
             ),
         )
-        record.begin_attempt("w2")
+        record.begin_attempt("w2", resumed_from=1)
 
         restored = from_json(ObligationRecord)(to_json(record))
         assert restored.obligation.id == record.obligation.id
@@ -169,8 +240,30 @@ class TestAccountSerdes:
         assert restored.attempts[0].outcome == AttemptOutcome.raised
         assert restored.attempts[0].verdict.decision == VerdictDecision.rejected
         assert restored.attempts[0].verdict.reason == "ValueError"
+        assert restored.attempts[0].verdict.evidence_ref == {
+            "report": "sha256:abc123"
+        }
         assert restored.open_attempt is not None
         assert restored.open_attempt.executor == "w2"
+        assert restored.open_attempt.resumed_from == 1
+
+    def test_pre_delta2_wire_still_parses(self):
+        """Payloads written before evidence_ref/resumed_from default to None."""
+        record = _record()
+        record.begin_attempt("w1")
+        record.record_outcome(
+            AttemptOutcome.returned,
+            verdict=Verdict(
+                decision=VerdictDecision.accepted, rendered_at=Timestamp.now()
+            ),
+        )
+        tree = to_payload(record)
+        del tree["attempts"][0]["resumed_from"]
+        del tree["attempts"][0]["verdict"]["evidence_ref"]
+
+        restored = from_payload(ObligationRecord)(tree)
+        assert restored.last_attempt.resumed_from is None
+        assert restored.last_attempt.verdict.evidence_ref is None
 
     def test_payload_round_trip_matches_json_wire(self):
         record = _record()

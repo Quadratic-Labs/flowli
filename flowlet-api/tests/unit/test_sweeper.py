@@ -93,9 +93,11 @@ class TestLeaseRecovery:
     def test_expired_lease_with_exhausted_retries_failed(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
+        # attempt=4: the budget is spent by three consuming attempts; the
+        # dead in-flight attempt is a free crash (v0.3 delta 1).
         state = make_run_state(
             status=RunStatus.running,
-            attempt=3,
+            attempt=4,
             max_retries=3,
         )
         seed_lease(store, state, holder="dead-worker", deadline=_at(-10))

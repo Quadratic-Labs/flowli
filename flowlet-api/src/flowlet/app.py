@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from flowlet.api.query import RunQuery
     from flowlet.events import RunEventLog
     from flowlet.history import RunHistory
+    from flowlet.transitions import TransitionFeed
     from flowlet.queue import JobQueueProtocol
     from flowlet.repository.dispatch import DispatchKeyRepository
     from flowlet.repository.log import LogRepository
@@ -50,6 +51,9 @@ class FlowletDeps(TypedDict, total=False):
         history: Run-history event-log writer and durable-projection reader
             (merged into RunQuery.list_recent_states); None unless
             configs.history is enabled with storage configured.
+        transitions: Account-transition feed (ordered named log with a
+            cursor, fed through the event log); None unless
+            configs.transitions is enabled with storage configured.
         queue: Async job queue; None when not configured.
         controller: FastAPI controller wiring all endpoint handlers.
     """
@@ -62,6 +66,7 @@ class FlowletDeps(TypedDict, total=False):
     dispatch_repo: "DispatchKeyRepository | None"
     events: "RunEventLog | None"
     history: "RunHistory | None"
+    transitions: "TransitionFeed | None"
     queue: JobQueueProtocol | None
     controller: FlowController
     router: APIRouter
@@ -101,6 +106,7 @@ class Flowlet:
     history: "RunHistory | None"
     dispatch_repo: "DispatchKeyRepository | None"
     events: "RunEventLog | None"
+    transitions: "TransitionFeed | None"
 
     def __init__(self, **deps):
         """Initialise Flowlet from the accumulated dependency map.
@@ -118,6 +124,7 @@ class Flowlet:
         self.history = deps.get("history")
         self.dispatch_repo = deps.get("dispatch_repo")
         self.events = deps.get("events")
+        self.transitions = deps.get("transitions")
 
     @classmethod
     def configure(
@@ -173,6 +180,7 @@ class Flowlet:
         deps["timers"] = None
         deps["resources"] = None
         deps["events"] = None
+        deps["transitions"] = None
 
         # Built before the storage block below so RunQuery(**deps) can pick
         # it up via its own named parameter.
@@ -212,7 +220,12 @@ class Flowlet:
             deps["timers"] = TimerRepository(store=store)
             deps["resources"] = ResourceLeaseRepository(store=store)
             deps["dispatch_repo"] = DispatchKeyRepository(store=store)
-            deps["events"] = RunEventLog(store=store)
+            if configs.transitions:
+                from flowlet.transitions import TransitionFeed
+
+                deps["transitions"] = TransitionFeed(store=store)
+                logger.info("flowlet_transitions_configured")
+            deps["events"] = RunEventLog(store=store, feed=deps["transitions"])
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
 
@@ -257,8 +270,10 @@ class Flowlet:
             signals=deps.get("signals"),
             dispatch_repo=deps.get("dispatch_repo"),
             events=deps.get("events"),
+            transitions=deps.get("transitions"),
             prepare_submission=deps.get("prepare_submission"),
             gate_policy=deps.get("gate_policy"),
+            adjudication_for=deps.get("adjudication_for"),
         )
 
         from flowlet.api.router import build_router

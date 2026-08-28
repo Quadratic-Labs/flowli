@@ -19,6 +19,7 @@ from attrs import define
 from cairndb.storage.base import BlobStorage
 
 from flowlet.storage import append_lines, read_lines, run_prefix
+from flowlet.transitions import TransitionFeed
 from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,15 @@ class RunEventLog:
     Attributes:
         store: CairnDB blob store containing the ``runs/`` tree — the same
             store the span exporter writes to.
+        feed: Optional account-transition feed; when configured, every
+            appended event also lands on the ordered ``transitions`` named
+            log so reconcilers can tail lifecycle transitions with a cursor
+            instead of polling (abstractions v0.3, delta 3).  Both sinks
+            are non-throwing and neither gates the other.
     """
 
     store: BlobStorage
+    feed: "TransitionFeed | None" = None
 
     def append(
         self,
@@ -87,6 +94,8 @@ class RunEventLog:
                 "run_event_append_failed",
                 extra={"run_id": str(run_id), "event": event},
             )
+        if self.feed is not None:
+            self.feed.record(record)
 
     def read(self, flow_name: str, run_id: UUID) -> list[dict[str, Any]]:
         """Read a run's lifecycle events for display, in append order.

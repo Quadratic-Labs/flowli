@@ -99,6 +99,16 @@ class FlowletConfig(BaseSettings):
             "instead of the whole log on every process start."
         ),
     )
+    transitions: bool = Field(
+        default=False,
+        description=(
+            "Feed every run lifecycle event into the ordered cairndb commit "
+            "log logs/transitions/ so reconcilers can tail account "
+            "transitions with a cursor (GET /transitions) instead of polling "
+            "run states. A wake-up channel, never authority — appends are "
+            "best-effort after the account write. Requires storage."
+        ),
+    )
 
     @cached_property
     def store(self) -> "BlobStorage | None":

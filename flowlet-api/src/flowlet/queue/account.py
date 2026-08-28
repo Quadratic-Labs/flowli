@@ -45,7 +45,10 @@ def _claimable(view: StateView, now: Timestamp) -> bool:
     """
     record = view.record
     status = record.obligation.status
-    if status.is_closed() or status == ObligationStatus.awaiting_adjudication:
+    if status.is_closed() or status in (
+        ObligationStatus.awaiting_adjudication,
+        ObligationStatus.held,
+    ):
         return False
     if view.held(now):
         return False

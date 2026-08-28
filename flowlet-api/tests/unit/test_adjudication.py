@@ -6,21 +6,27 @@ verdicts, accept/reject routing), the sweeper's passivity toward gated
 runs, exactly-once effects across retries, and caused_by provenance.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 from fastapi import HTTPException
 
 import flowlet as flowlet_pkg
 from flowlet.api.controller import FlowController
-from flowlet.api.models import AdjudicationRequest
+from flowlet.api.models import AdjudicationRequest, FlowArguments
 from flowlet.models import (
     AttemptOutcome,
+    Obligation,
+    ObligationRecord,
     ObligationStatus,
     RunStatus,
+    Verdict,
     VerdictDecision,
 )
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.sweeper import sweep
+from flowlet.types import Timestamp
 from flowlet.worker import execute_job
 
 from unit.test_worker_layer import FakeExecutor, FakeQueue
@@ -51,6 +57,31 @@ def _run_gated(state_repo, signals, job, fn=lambda **kw: None):
         FakeQueue([job]), executor, state_repo, signals, "w1",
         adjudication_for=lambda _f: GATED,
     )
+
+
+def _exhausted_gated_record(job) -> ObligationRecord:
+    """A gated obligation whose budget was spent by a raised attempt.
+
+    Only consuming attempts (raised outcomes, rejected verdicts) bill the
+    budget, so exhaustion scenarios must seed a real failure — a crashed
+    in-flight attempt no longer spends anything.
+    """
+    record = ObligationRecord(
+        obligation=Obligation(
+            id=job.run_id, flow_name=job.flow_name, max_retries=1,
+            adjudication=GATED, created_at=Timestamp.now(),
+        )
+    )
+    record.begin_attempt("w0")
+    record.record_outcome(
+        AttemptOutcome.raised,
+        error="ValueError",
+        verdict=Verdict(
+            decision=VerdictDecision.rejected, by="auto",
+            rendered_at=Timestamp.now(), reason="ValueError",
+        ),
+    )
+    return record
 
 
 class _Controller:
@@ -181,6 +212,29 @@ class TestAdjudication:
         assert len(record.attempts) == 2
         assert record.obligation.status == ObligationStatus.awaiting_adjudication
 
+    def test_verdict_evidence_ref_lands_in_the_account(
+        self, state_repo, signals, make_flow_job
+    ):
+        """v0.3 delta 2: the verdict records the grounds of the decision as
+        a ref — the rejecting evidence is what seeds the next attempt."""
+        job = make_flow_job(max_retries=3)
+        _run_gated(state_repo, signals, job)
+        controller = _Controller(state_repo, signals)
+
+        controller.adjudicate_run(
+            job.run_id,
+            AdjudicationRequest(
+                decision="rejected", actor="reviewer-7",
+                reason="needs_rework",
+                evidence_ref={"report": "sha256:abc123"},
+            ),
+        )
+
+        record = state_repo.read(job.flow_name, job.run_id).record
+        verdict = record.last_attempt.verdict
+        assert verdict.decision == VerdictDecision.rejected
+        assert verdict.evidence_ref == {"report": "sha256:abc123"}
+
     def test_rejected_without_budget_abandons(
         self, state_repo, signals, make_flow_job
     ):
@@ -249,6 +303,224 @@ class TestAdjudication:
         record = state_repo.read(job.flow_name, job.run_id).record
         assert record.obligation.status == ObligationStatus.abandoned
         assert record.obligation.cause == "canceled"
+
+
+# ============================================================================
+# Exhaustion at the gate — a spent budget parks for judgment, never closes
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestGatedExhaustion:
+    def test_raised_exhaustion_parks_awaiting_adjudication(
+        self, state_repo, signals, make_flow_job
+    ):
+        """The last failed attempt suspends the gated obligation with its
+        verdict pending — exhaustion is a judgment point, not an auto-verdict."""
+        job = make_flow_job(max_retries=1)
+
+        def boom(**kw):
+            raise ValueError("boom")
+
+        rc = _run_gated(state_repo, signals, job, fn=boom)
+
+        assert rc == 1
+        view = state_repo.read(job.flow_name, job.run_id)
+        record = view.record
+        assert record.obligation.status == ObligationStatus.awaiting_adjudication
+        assert record.last_attempt.outcome == AttemptOutcome.raised
+        assert record.last_attempt.error == "ValueError"
+        assert record.last_attempt.verdict is None  # judgment pending
+        assert record.pending_verdict_attempt is not None
+        assert view.holder is None  # parked, passive
+        assert view.state.status == RunStatus.gated
+
+    def test_raised_with_budget_left_still_retries(
+        self, state_repo, signals, make_flow_job
+    ):
+        """The gate only enters at exhaustion — mid-budget failures keep the
+        auto-rejected verdict and the retry loop."""
+        job = make_flow_job(max_retries=2)
+
+        def boom(**kw):
+            raise ValueError("boom")
+
+        queue = FakeQueue([job])
+        rc = execute_job(
+            queue, FakeExecutor({job.flow_name: boom}), state_repo, signals, "w1",
+            adjudication_for=lambda _f: GATED,
+        )
+
+        assert rc == 1
+        record = state_repo.read(job.flow_name, job.run_id).record
+        assert record.obligation.status == ObligationStatus.open
+        assert record.last_attempt.verdict.decision == VerdictDecision.rejected
+        assert record.last_attempt.verdict.by == "auto"
+        assert len(queue.enqueued) == 1  # retry wake-up
+
+    def test_crashed_holder_on_exhausted_budget_parks_at_claim(
+        self, state_repo, signals, make_flow_job, seed_lease, store
+    ):
+        """A dead holder on an already-exhausted gated obligation parks it;
+        the crashed attempt is what the gate adjudicates.  The budget was
+        spent by the earlier raised attempt — the crash itself is free."""
+        job = make_flow_job(max_retries=1)
+        record = _exhausted_gated_record(job)
+        record.begin_attempt("dead-worker")
+        seed_lease(
+            store, record, holder="dead-worker",
+            deadline=datetime.now(UTC) - timedelta(seconds=10),
+        )
+
+        calls = []
+        rc = execute_job(
+            FakeQueue([job]),
+            FakeExecutor({job.flow_name: lambda **kw: calls.append(1)}),
+            state_repo, signals, "w2",
+        )
+
+        assert rc == 2
+        assert calls == []  # nothing executed — parked, not re-attempted
+        recovered = state_repo.read(job.flow_name, job.run_id).record
+        assert recovered.obligation.status == ObligationStatus.awaiting_adjudication
+        assert recovered.last_attempt.outcome == AttemptOutcome.crashed
+        assert recovered.last_attempt.verdict is None  # judgment pending
+
+    def test_crashed_holder_with_budget_untouched_re_attempts(
+        self, state_repo, signals, make_flow_job, seed_lease, store
+    ):
+        """Crashed attempts are free (v0.3 delta 1): a dead holder never
+        spends the budget, so the claim accounts the crash and re-runs."""
+        job = make_flow_job(max_retries=1)
+        obligation = Obligation(
+            id=job.run_id, flow_name=job.flow_name, max_retries=1,
+            adjudication=GATED, created_at=Timestamp.now(),
+        )
+        record = ObligationRecord(obligation=obligation)
+        record.begin_attempt("dead-worker")
+        seed_lease(
+            store, record, holder="dead-worker",
+            deadline=datetime.now(UTC) - timedelta(seconds=10),
+        )
+
+        calls = []
+        rc = execute_job(
+            FakeQueue([job]),
+            FakeExecutor({job.flow_name: lambda **kw: calls.append(1)}),
+            state_repo, signals, "w2",
+        )
+
+        assert rc == 0
+        assert calls == [1]  # the work re-ran
+        recovered = state_repo.read(job.flow_name, job.run_id).record
+        crashed = recovered.attempts[0]
+        assert crashed.outcome == AttemptOutcome.crashed
+        assert crashed.verdict.decision == VerdictDecision.rejected
+        assert crashed.verdict.reason == "lease_expired"
+        assert crashed.consumes_budget() is False
+        # The fresh attempt returned; the gated obligation parks as usual.
+        assert recovered.last_attempt.outcome == AttemptOutcome.returned
+        assert recovered.obligation.status == ObligationStatus.awaiting_adjudication
+
+    def test_sweeper_parks_exhausted_gated_crash(
+        self, state_repo, signals, make_flow_job, seed_lease, store
+    ):
+        job = make_flow_job(max_retries=1)
+        record = _exhausted_gated_record(job)
+        record.begin_attempt("dead-worker")
+        seed_lease(
+            store, record, holder="dead-worker",
+            deadline=datetime.now(UTC) - timedelta(seconds=10),
+        )
+
+        queue = FakeQueue([])
+        stats = sweep(state_repo, queue, signals=signals)
+
+        assert stats.failed == 0
+        assert stats.requeued == 0
+        assert queue.enqueued == []  # a wake-up could not execute anything
+        recovered = state_repo.read(job.flow_name, job.run_id).record
+        assert recovered.obligation.status == ObligationStatus.awaiting_adjudication
+        assert recovered.last_attempt.outcome == AttemptOutcome.crashed
+        assert recovered.last_attempt.verdict is None
+
+    def test_extend_budget_resumes_and_completes(
+        self, state_repo, signals, make_flow_job
+    ):
+        """The scenario-5 story: the environment broke, the budget spent,
+        a human fixes the environment and resumes with extra attempts."""
+        job = make_flow_job(max_retries=1)
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("env_broken")
+
+        executor = FakeExecutor({job.flow_name: flaky})
+        rc = execute_job(
+            FakeQueue([job]), executor, state_repo, signals, "w1",
+            adjudication_for=lambda _f: GATED,
+        )
+        assert rc == 1
+        record = state_repo.read(job.flow_name, job.run_id).record
+        assert record.obligation.status == ObligationStatus.awaiting_adjudication
+
+        queue = FakeQueue([])
+        controller = _Controller(state_repo, signals, queue=queue)
+        resp = controller.adjudicate_run(
+            job.run_id,
+            AdjudicationRequest(
+                decision="rejected", actor="human:tz",
+                reason="ssh key fixed", extend_budget=1,
+            ),
+        )
+
+        assert resp.status == "pending"
+        record = state_repo.read(job.flow_name, job.run_id).record
+        assert record.obligation.status == ObligationStatus.open
+        assert record.obligation.max_retries == 2  # budget extended
+        assert record.last_attempt.verdict.decision == VerdictDecision.rejected
+        assert record.last_attempt.verdict.by == "human:tz"
+
+        # The wake-up re-executes; the fixed environment succeeds and the
+        # obligation gates again on the returned outcome.
+        wake, _ = queue.enqueued[0]
+        queue.jobs = [wake]
+        rc = execute_job(queue, executor, state_repo, signals, "w2")
+        assert rc == 0
+        record = state_repo.read(job.flow_name, job.run_id).record
+        assert len(record.attempts) == 2
+        assert record.obligation.status == ObligationStatus.awaiting_adjudication
+
+        resp = controller.adjudicate_run(
+            job.run_id,
+            AdjudicationRequest(decision="accepted", actor="human:tz"),
+        )
+        assert resp.status == "completed"
+
+    def test_rejected_without_extension_closes(
+        self, state_repo, signals, make_flow_job
+    ):
+        """A plain rejected verdict on an exhausted obligation is the
+        explicit human close."""
+        job = make_flow_job(max_retries=1)
+
+        def boom(**kw):
+            raise ValueError("boom")
+
+        _run_gated(state_repo, signals, job, fn=boom)
+        controller = _Controller(state_repo, signals)
+
+        resp = controller.adjudicate_run(
+            job.run_id,
+            AdjudicationRequest(decision="rejected", actor="human:tz"),
+        )
+
+        assert resp.status == "failed"
+        record = state_repo.read(job.flow_name, job.run_id).record
+        assert record.obligation.status == ObligationStatus.abandoned
+        assert record.obligation.cause == "rejected"
 
 
 # ============================================================================
@@ -358,3 +630,147 @@ class TestProvenance:
 
         retry_job, _ = queue.enqueued[0]
         assert retry_job.caused_by == "retry_of_attempt:1"
+
+
+# ============================================================================
+# Adjudication as work — the linkage (abstractions v0.3, delta 5)
+# ============================================================================
+
+
+@pytest.mark.unit
+class TestAdjudicationAsWork:
+    def test_assign_adjudicator_requires_parked(self):
+        from uuid import uuid7
+
+        record = ObligationRecord(
+            obligation=Obligation(
+                id=uuid7(), flow_name="f", created_at=Timestamp.now()
+            )
+        )
+        with pytest.raises(ValueError):
+            record.assign_adjudicator(uuid7())
+
+        record.suspend_for_adjudication()
+        reviewer = uuid7()
+        record.assign_adjudicator(reviewer)
+        assert record.obligation.adjudicator_id == reviewer
+
+    def test_verdict_settles_the_debt(self, state_repo, signals, make_flow_job):
+        """adjudicator_id is 'who currently owes me the verdict' — cleared
+        when any verdict lands."""
+        from uuid import uuid7
+
+        job = make_flow_job()
+        _run_gated(state_repo, signals, job)
+        queue = FakeQueue([])
+        controller = _Controller(state_repo, signals, queue=queue)
+
+        review = controller.submit_flow(
+            "review_flow", FlowArguments(adjudicates=job.run_id)
+        )
+        parked = state_repo.read(job.flow_name, job.run_id).record
+        assert parked.obligation.adjudicator_id == review.run_id
+
+        controller.adjudicate_run(
+            job.run_id,
+            AdjudicationRequest(decision="accepted", actor="reviewer-flow"),
+        )
+        settled = state_repo.read(job.flow_name, job.run_id).record
+        assert settled.obligation.status == ObligationStatus.discharged
+        assert settled.obligation.adjudicator_id is None
+
+    def test_adjudicator_submission_stamps_provenance_and_links(
+        self, state_repo, signals, make_flow_job
+    ):
+        job = make_flow_job()
+        _run_gated(state_repo, signals, job)
+        queue = FakeQueue([])
+        controller = _Controller(state_repo, signals, queue=queue)
+
+        review = controller.submit_flow(
+            "review_flow",
+            FlowArguments(kwargs={"report": "sha256:abc"}, adjudicates=job.run_id),
+        )
+
+        # The wake-up carries the convention; the claim will land it on the
+        # reviewer obligation's account.
+        wake, _ = queue.enqueued[0]
+        assert wake.run_id == review.run_id
+        assert wake.caused_by == f"adjudicate:{job.run_id}"
+        # The parked parent records who owes it the verdict.
+        parent = state_repo.read(job.flow_name, job.run_id).record
+        assert parent.obligation.adjudicator_id == review.run_id
+
+    def test_adjudicates_requires_a_parked_target(
+        self, state_repo, signals, make_flow_job
+    ):
+        from uuid import uuid7
+
+        queue = FakeQueue([])
+        controller = _Controller(state_repo, signals, queue=queue)
+
+        with pytest.raises(HTTPException) as exc:
+            controller.submit_flow(
+                "review_flow", FlowArguments(adjudicates=uuid7())
+            )
+        assert exc.value.status_code == 404
+
+        # An open (not parked) target is refused.
+        job = make_flow_job()
+        executor = FakeExecutor({job.flow_name: lambda **kw: None})
+
+        def boom(**kw):
+            raise ValueError("boom")
+
+        failing = make_flow_job(max_retries=3)
+        execute_job(
+            FakeQueue([failing]),
+            FakeExecutor({failing.flow_name: boom}),
+            state_repo, signals, "w1",
+        )  # open, parked for retry — not awaiting adjudication
+        with pytest.raises(HTTPException) as exc:
+            controller.submit_flow(
+                "review_flow", FlowArguments(adjudicates=failing.run_id)
+            )
+        assert exc.value.status_code == 409
+        assert queue.enqueued == []  # neither submission was enqueued
+
+    def test_full_loop_verdict_as_effect_of_review_obligation(
+        self, state_repo, signals, make_flow_job
+    ):
+        """The delta-5 story end to end: the parent parks, a review
+        obligation is minted against it, a worker runs the review flow whose
+        terminal act is the verdict, and both accounts close."""
+        job = make_flow_job()
+        _run_gated(state_repo, signals, job)
+        queue = FakeQueue([])
+        controller = _Controller(state_repo, signals, queue=queue)
+
+        review = controller.submit_flow(
+            "review_flow", FlowArguments(adjudicates=job.run_id)
+        )
+
+        def review_flow(**kw):
+            controller.adjudicate_run(
+                job.run_id,
+                AdjudicationRequest(
+                    decision="accepted", actor="reviewer-flow",
+                    reason="claims verified",
+                ),
+            )
+
+        wake, _ = queue.enqueued[0]
+        queue.jobs = [wake]
+        rc = execute_job(
+            queue, FakeExecutor({"review_flow": review_flow}),
+            state_repo, signals, "w-review",
+        )
+
+        assert rc == 0
+        parent = state_repo.read(job.flow_name, job.run_id).record
+        assert parent.obligation.status == ObligationStatus.discharged
+        assert parent.obligation.adjudicator_id is None
+        assert parent.last_attempt.verdict.by == "reviewer-flow"
+        reviewer = state_repo.read("review_flow", review.run_id).record
+        assert reviewer.obligation.status == ObligationStatus.discharged
+        assert reviewer.obligation.caused_by == f"adjudicate:{job.run_id}"

@@ -14,6 +14,7 @@ from fastapi import APIRouter
 from flowlet.api.controller import FlowController
 from flowlet.api.models import (
     AdjudicationResponse,
+    AdmissionResponse,
     CancelRunResponse,
     ExecutorClaimResponse,
     ExecutorEffectResponse,
@@ -22,6 +23,7 @@ from flowlet.api.models import (
     FlowSubmissionResponse,
     RunDTO,
     RunStateDTO,
+    TransitionPageResponse,
 )
 
 
@@ -45,6 +47,8 @@ class RouteSpec:
             no state repository is configured on the controller.
         requires_events: When ``True`` the route is omitted from the router if
             no run event log is configured on the controller.
+        requires_transitions: When ``True`` the route is omitted from the
+            router if no transition feed is configured on the controller.
     """
     path: str
     method: str
@@ -57,6 +61,7 @@ class RouteSpec:
     requires_querier: bool = False
     requires_state: bool = False
     requires_events: bool = False
+    requires_transitions: bool = False
 
 
 _SUBMIT_FLOW = RouteSpec(
@@ -117,6 +122,28 @@ _ADJUDICATE_RUN = RouteSpec(
         403: {"description": "Actor not eligible under the gate policy"},
         404: {"description": "Run not found among active runs"},
         409: {"description": "Run is not awaiting adjudication"},
+        503: {"description": "Storage not configured"},
+    },
+    requires_state=True,
+)
+
+_ADMIT_RUN = RouteSpec(
+    path="/runs/{run_id}/admit",
+    method="POST",
+    summary="Release a held obligation's admission",
+    description=(
+        "The entry-gate mirror of adjudication: a gated-admission "
+        "obligation is born held — durably on the books, not claimable. "
+        "This fenced transition opens it (admitted_by/admitted_at recorded "
+        "in the account) and wakes a worker. When to admit is the caller's "
+        "knowledge — a dependency discharged, a human approved."
+    ),
+    tags=["Execution"],
+    response_model=AdmissionResponse,
+    responses={
+        200: {"description": "Admission released"},
+        404: {"description": "Run not found among active runs"},
+        409: {"description": "Run is not held"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
@@ -221,6 +248,24 @@ _RUN_BY_ID = RouteSpec(
     requires_querier=True,
 )
 
+_TRANSITIONS = RouteSpec(
+    path="/transitions",
+    method="GET",
+    summary="Tail the account-transition feed",
+    description=(
+        "Ordered lifecycle events for reconcilers, with a resume cursor: "
+        "pass the returned cursor back as ?after= to continue. A wake-up "
+        "channel, never authority — consumers confirm what they read "
+        "against the account and keep a reconciliation poll as fallback."
+    ),
+    tags=["Query"],
+    response_model=TransitionPageResponse,
+    responses={
+        503: {"description": "Transition feed not configured"},
+    },
+    requires_transitions=True,
+)
+
 _RUN_EVENTS = RouteSpec(
     path="/runs/{run_id}/events",
     method="GET",
@@ -278,6 +323,7 @@ def build_router(controller: FlowController, **_) -> APIRouter:
     if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
         _wire(router, _CANCEL_RUN, controller.cancel_run)
         _wire(router, _ADJUDICATE_RUN, controller.adjudicate_run)
+        _wire(router, _ADMIT_RUN, controller.admit_run)
         _wire(router, _CLAIM_RUN, controller.claim_run)
         _wire(router, _RENEW_RUN, controller.renew_run)
         _wire(router, _RUN_EFFECT, controller.record_run_effect)
@@ -290,6 +336,8 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _RUN_BY_ID, controller.get_run_by_run_id)
     if not _RUN_EVENTS.requires_events or controller.events is not None:
         _wire(router, _RUN_EVENTS, controller.get_run_events)
+    if not _TRANSITIONS.requires_transitions or controller.transitions is not None:
+        _wire(router, _TRANSITIONS, controller.list_transitions)
 
 
     return router
