@@ -1,11 +1,11 @@
-"""Append-only run event log — the audit trail of state transitions.
+"""Append-only obligation event log — the audit trail of state transitions.
 
-Every actor that moves a run through its lifecycle (API submit, worker
+Every actor that moves an obligation through its lifecycle (API submit, worker
 claim/finalize, sweeper recovery, cancel endpoint) appends one JSON line to
 
-    ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>/events.jsonl``
+    ``obligations/<flow_name>/<yyyy-mm-dd>/<obligation_id>/events.jsonl``
 
-colocated with the run's span files, so the run folder remains the complete
+colocated with the obligation's span files, so the obligation folder remains the complete
 durable record and archiving needs no extra step.  The state snapshot stays
 authoritative for execution; this log is an observability side-channel and
 its writes are strictly non-throwing.
@@ -18,7 +18,7 @@ from uuid import UUID
 from attrs import define
 from cairndb.storage.base import BlobStorage
 
-from flowlet.storage import append_lines, read_lines, run_prefix
+from flowlet.storage import append_lines, obligation_prefix, read_lines
 from flowlet.transitions import TransitionFeed
 from flowlet.types import Timestamp
 
@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 @define(slots=True, kw_only=True)
 class EventLog:
-    """Writer for per-run lifecycle event streams.
+    """Writer for per-obligation lifecycle event streams.
 
     Attributes:
-        store: CairnDB blob store containing the ``runs/`` tree — the same
+        store: CairnDB blob store containing the ``obligations/`` tree — the same
             store the span exporter writes to.
         feed: Optional account-transition feed; when configured, every
             appended event also lands on the ordered ``transitions`` named
@@ -55,18 +55,18 @@ class EventLog:
         cause: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        """Append one lifecycle event to the run's events file.
+        """Append one lifecycle event to the obligation's events file.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID (uuid7 — determines the date partition).
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID (uuid7 — determines the date partition).
             event: Event name, e.g. ``submitted``, ``claimed``, ``completed``,
                 ``retry_scheduled``, ``failed``, ``canceled``,
                 ``cancel_requested``, ``requeued``.
             actor: Who caused it — ``api``, a worker id, or ``sweeper``.
             attempt: Attempt number the event applies to, when meaningful.
-            from_status: Run status before the transition.
-            to_status: Run status after the transition.
+            from_status: Obligation status before the transition.
+            to_status: Obligation status after the transition.
             cause: Short machine-readable reason (e.g. ``max_retries_exceeded``).
             details: Extra structured context (kept small).
         """
@@ -88,35 +88,35 @@ class EventLog:
         if details:
             record["details"] = details
 
-        key = f"{run_prefix(flow_name, obligation_id)}/events.jsonl"
+        key = f"{obligation_prefix(flow_name, obligation_id)}/events.jsonl"
         if not append_lines(self.store, key, json.dumps(record, default=str) + "\n"):
             logger.warning(
-                "run_event_append_failed",
+                "obligation_event_append_failed",
                 extra={"obligation_id": str(obligation_id), "event": event},
             )
         if self.feed is not None:
             self.feed.record(record)
 
     def read(self, flow_name: str, obligation_id: UUID) -> list[dict[str, Any]]:
-        """Read a run's lifecycle events for display, in append order.
+        """Read an obligation's lifecycle events for display, in append order.
 
         Audit/display use only — never a source for execution decisions.
         Malformed lines are skipped; a missing file yields an empty list.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
 
         Returns:
             List of event records as plain dicts.
         """
-        key = f"{run_prefix(flow_name, obligation_id)}/events.jsonl"
+        key = f"{obligation_prefix(flow_name, obligation_id)}/events.jsonl"
         records: list[dict[str, Any]] = []
         for line in read_lines(self.store, key):
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError:
                 logger.warning(
-                    "run_event_parse_error", extra={"obligation_id": str(obligation_id)}
+                    "obligation_event_parse_error", extra={"obligation_id": str(obligation_id)}
                 )
         return records

@@ -2,7 +2,7 @@
 Unit tests for the cache's ORM schema (api/cache.py) — async snapshot functions.
 
 Covers:
-- ensure_snapshot_schema creates the runs table (no RunLink)
+- ensure_snapshot_schema creates the obligations table (no RunLink)
 - upsert_obligation_summary inserts a new row
 - upsert_obligation_summary updates an existing row (idempotent)
 """
@@ -16,12 +16,12 @@ from flowlet.models import ReportedStatus
 
 @pytest.mark.unit
 class TestEnsureSnapshotSchema:
-    """ensure_snapshot_schema creates the runs table."""
+    """ensure_snapshot_schema creates the obligations table."""
 
-    async def test_runs_table_exists(self, async_engine):
+    async def test_obligations_table_exists(self, async_engine):
         async with async_engine.connect() as conn:
             result = await conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'")
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='obligations'")
             )
             assert result.fetchone() is not None
 
@@ -35,11 +35,11 @@ class TestEnsureSnapshotSchema:
 
 
 @pytest.mark.unit
-class TestUpsertRunState:
+class TestUpsertObligationSummary:
     """upsert_obligation_summary inserts on first call and updates on re-call."""
 
-    async def test_insert(self, async_session: AsyncSession, make_run_state):
-        state = make_run_state(flow_name="flow_a")
+    async def test_insert(self, async_session: AsyncSession, make_obligation_summary):
+        state = make_obligation_summary(flow_name="flow_a")
         await upsert_obligation_summary(async_session, state)
         await async_session.flush()
 
@@ -48,8 +48,8 @@ class TestUpsertRunState:
         assert row.flow_name == "flow_a"
         assert row.status == ReportedStatus.running.value
 
-    async def test_update_is_idempotent(self, async_session: AsyncSession, make_run_state):
-        state = make_run_state(status=ReportedStatus.running)
+    async def test_update_is_idempotent(self, async_session: AsyncSession, make_obligation_summary):
+        state = make_obligation_summary(status=ReportedStatus.running)
         await upsert_obligation_summary(async_session, state)
         await async_session.flush()
 

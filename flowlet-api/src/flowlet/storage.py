@@ -4,7 +4,7 @@ Flowlet owns no storage machinery of its own: every read, conditional
 write, and listing goes through a cairndb
 :class:`~cairndb.storage.base.BlobStorage` (filesystem, Azure, S3, or GCS —
 one code path).  This module adds only the two pieces of glue the framework
-needs on top of that store: the run-folder key convention and an
+needs on top of that store: the obligation-folder key convention and an
 append-a-line compare-and-swap loop for the observability streams.
 """
 import logging
@@ -17,22 +17,22 @@ from flowlet.types import Timestamp
 logger = logging.getLogger(__name__)
 
 
-def run_prefix(flow_name: str, obligation_id: UUID) -> str:
-    """Key prefix of a run's record folder, computed from its identity.
+def obligation_prefix(flow_name: str, obligation_id: UUID) -> str:
+    """Key prefix of an obligation's record folder, computed from its identity.
 
     The date partition comes from the obligation_id's embedded uuid7 timestamp,
-    so no listing is needed to locate a known run.
+    so no listing is needed to locate a known obligation.
 
     Args:
-        flow_name: The flow the run belongs to.
-        obligation_id: The run's UUID (uuid7).
+        flow_name: The flow the obligation belongs to.
+        obligation_id: The obligation's UUID (uuid7).
 
     Returns:
-        Key prefix ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>`` (no trailing
+        Key prefix ``obligations/<flow_name>/<yyyy-mm-dd>/<obligation_id>`` (no trailing
         slash).
     """
     date = Timestamp.from_uuid7(obligation_id).value.strftime("%Y-%m-%d")
-    return f"runs/{flow_name}/{date}/{obligation_id}"
+    return f"obligations/{flow_name}/{date}/{obligation_id}"
 
 
 def append_lines(store: BlobStorage, key: str, lines: str) -> bool:

@@ -14,16 +14,16 @@ from fastapi import APIRouter
 from flowlet.api.controller import FlowController
 from flowlet.api.models import (
     AdmissionResponse,
-    CancelRunResponse,
+    CancelObligationResponse,
     ExecutorClaimResponse,
     ExecutorEffectResponse,
     ExecutorOutcomeResponse,
     ExecutorRecvResponse,
     ExecutorRenewResponse,
     FlowSubmissionResponse,
+    MessageResponse,
     ObligationSummaryDTO,
     ReviewResponse,
-    RunMessageResponse,
     TraceDTO,
     TransitionPageResponse,
 )
@@ -48,7 +48,7 @@ class RouteSpec:
         requires_state: When ``True`` the route is omitted from the router if
             no state repository is configured on the controller.
         requires_events: When ``True`` the route is omitted from the router if
-            no run event log is configured on the controller.
+            no obligation event log is configured on the controller.
         requires_transitions: When ``True`` the route is omitted from the
             router if no transition feed is configured on the controller.
     """
@@ -72,7 +72,7 @@ _SUBMIT_FLOW = RouteSpec(
     summary="Submit a flow for asynchronous execution",
     description=(
         "Enqueue a flow job and return immediately with tracking info.\n\n"
-        "Track execution status: POST /runs/query\n"
+        "Track execution status: POST /obligations/query\n"
         "Inspect the parameter schema first: GET /flows/{flow_name}/schema"
     ),
     tags=["Execution"],
@@ -86,32 +86,32 @@ _SUBMIT_FLOW = RouteSpec(
     requires_queue=True,
 )
 
-_CANCEL_RUN = RouteSpec(
-    path="/runs/{obligation_id}/cancel",
+_CANCEL_OBLIGATION = RouteSpec(
+    path="/obligations/{obligation_id}/cancel",
     method="POST",
-    summary="Request cancellation of an active run",
+    summary="Request cancellation of an active obligation",
     description=(
-        "Close a pending run as canceled, or flag a running run for "
+        "Close a pending obligation as canceled, or flag a running obligation for "
         "cooperative cancellation — the owning worker observes the flag at "
-        "its next heartbeat.  Already-closed runs are reported unchanged."
+        "its next heartbeat.  Already-closed obligations are reported unchanged."
     ),
     tags=["Execution"],
-    response_model=CancelRunResponse,
+    response_model=CancelObligationResponse,
     responses={
         200: {"description": "Cancellation applied or already effective"},
-        404: {"description": "Run not found among active runs"},
+        404: {"description": "Obligation not found among active obligations"},
         409: {"description": "Concurrent writes prevented cancellation"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
 )
 
-_REVIEW_RUN = RouteSpec(
-    path="/runs/{obligation_id}/review",
+_REVIEW_OBLIGATION = RouteSpec(
+    path="/obligations/{obligation_id}/review",
     method="POST",
     summary="Resolve a gated obligation with a review",
     description=(
-        "Record an authorized review on a run awaiting review: "
+        "Record an authorized review on an obligation awaiting review: "
         "'approved' discharges the obligation, 'rejected' reopens it for "
         "another attempt (or abandons it when the budget is spent).  The "
         "flow's gate policy decides actor eligibility; actor and decision "
@@ -122,15 +122,15 @@ _REVIEW_RUN = RouteSpec(
     responses={
         200: {"description": "Review recorded"},
         403: {"description": "Actor not eligible under the gate policy"},
-        404: {"description": "Run not found among active runs"},
-        409: {"description": "Run is not awaiting review"},
+        404: {"description": "Obligation not found among active obligations"},
+        409: {"description": "Obligation is not awaiting review"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
 )
 
-_ADMIT_RUN = RouteSpec(
-    path="/runs/{obligation_id}/admit",
+_ADMIT_OBLIGATION = RouteSpec(
+    path="/obligations/{obligation_id}/admit",
     method="POST",
     summary="Release a held obligation's admission",
     description=(
@@ -144,15 +144,15 @@ _ADMIT_RUN = RouteSpec(
     response_model=AdmissionResponse,
     responses={
         200: {"description": "Admission released"},
-        404: {"description": "Run not found among active runs"},
-        409: {"description": "Run is not held"},
+        404: {"description": "Obligation not found among active obligations"},
+        409: {"description": "Obligation is not held"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
 )
 
-_CLAIM_RUN = RouteSpec(
-    path="/runs/{obligation_id}/claim",
+_CLAIM_OBLIGATION = RouteSpec(
+    path="/obligations/{obligation_id}/claim",
     method="POST",
     summary="Claim an obligation for a detached executor",
     description=(
@@ -166,15 +166,15 @@ _CLAIM_RUN = RouteSpec(
     response_model=ExecutorClaimResponse,
     responses={
         200: {"description": "Claimed; epoch is the fence token"},
-        404: {"description": "Unknown run — submit first"},
+        404: {"description": "Unknown obligation — submit first"},
         409: {"description": "Not claimable (closed, gated, busy, paused, or budget spent)"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
 )
 
-_RENEW_RUN = RouteSpec(
-    path="/runs/{obligation_id}/renew",
+_RENEW_OBLIGATION = RouteSpec(
+    path="/obligations/{obligation_id}/renew",
     method="POST",
     summary="Heartbeat a held lease and observe signals",
     tags=["Executor"],
@@ -187,8 +187,8 @@ _RENEW_RUN = RouteSpec(
     requires_state=True,
 )
 
-_RUN_EFFECT = RouteSpec(
-    path="/runs/{obligation_id}/effects",
+_OBLIGATION_EFFECT = RouteSpec(
+    path="/obligations/{obligation_id}/effects",
     method="POST",
     summary="Record a side-effect exactly once per occurrence",
     tags=["Executor"],
@@ -202,33 +202,33 @@ _RUN_EFFECT = RouteSpec(
 )
 
 _SEND_MESSAGE = RouteSpec(
-    path="/runs/{obligation_id}/messages/{topic}",
+    path="/obligations/{obligation_id}/messages/{topic}",
     method="POST",
-    summary="Send an ordered message to a run's topic",
+    summary="Send an ordered message to an obligation's topic",
     description=(
-        "Append one message to the run's message channel. Unlike a signal "
-        "(a single-shot latch), messages queue in send order and the run's "
+        "Append one message to the obligation's message channel. Unlike a signal "
+        "(a single-shot latch), messages queue in send order and the obligation's "
         "executor consumes them exactly once via recv. A dedup_key makes "
-        "the send idempotent. Senders never touch the run's lease."
+        "the send idempotent. Senders never touch the obligation's lease."
     ),
     tags=["Execution"],
-    response_model=RunMessageResponse,
+    response_model=MessageResponse,
     responses={
         200: {"description": "Message appended (or converged via dedup_key)"},
-        404: {"description": "Run not found among active runs"},
-        409: {"description": "Run is closed — nothing will consume"},
+        404: {"description": "Obligation not found among active obligations"},
+        409: {"description": "Obligation is closed — nothing will consume"},
         422: {"description": "Unsafe topic name"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
 )
 
-_RUN_RECV = RouteSpec(
-    path="/runs/{obligation_id}/recv",
+_OBLIGATION_RECV = RouteSpec(
+    path="/obligations/{obligation_id}/recv",
     method="POST",
     summary="Consume one message from a topic, checkpointed",
     description=(
-        "Fenced consumption from the run's message channel: seq within the "
+        "Fenced consumption from the obligation's message channel: seq within the "
         "recorded consumptions replays the identical message (retry "
         "determinism), exactly one past them consumes the next fresh "
         "message and records it in the account under the lease fence."
@@ -244,8 +244,8 @@ _RUN_RECV = RouteSpec(
     requires_state=True,
 )
 
-_RUN_OUTCOME = RouteSpec(
-    path="/runs/{obligation_id}/outcome",
+_OBLIGATION_OUTCOME = RouteSpec(
+    path="/obligations/{obligation_id}/outcome",
     method="POST",
     summary="Conclude the attempt and route the obligation",
     tags=["Executor"],
@@ -258,11 +258,11 @@ _RUN_OUTCOME = RouteSpec(
     requires_state=True,
 )
 
-_RUNS_QUERY = RouteSpec(
-    path="/runs/query",
+_OBLIGATIONS_QUERY = RouteSpec(
+    path="/obligations/query",
     method="POST",
-    summary="List recent run states",
-    description="Return the most recent run states per flow with optional filtering by flow name and result limit.",
+    summary="List recent obligation summaries",
+    description="Return the most recent obligation summaries per flow with optional filtering by flow name and result limit.",
     tags=["Query"],
     response_model=list[ObligationSummaryDTO],
     responses={503: {"description": "Storage not configured"}},
@@ -272,23 +272,23 @@ _RUNS_QUERY = RouteSpec(
 _LOGS_QUERY = RouteSpec(
     path="/logs/query",
     method="POST",
-    summary="Fetch a single run with log detail",
+    summary="Fetch a single obligation with log detail",
     tags=["Query"],
     response_model=TraceDTO,
     responses={503: {"description": "Storage not configured"}},
     requires_querier=True,
 )
 
-_RUN_BY_ID = RouteSpec(
-    path="/runs/{obligation_id}",
+_OBLIGATION_BY_ID = RouteSpec(
+    path="/obligations/{obligation_id}",
     method="GET",
-    summary="Fetch a run by its ID",
-    description="Look up a run using only its obligation_id without needing flow_name.",
+    summary="Fetch an obligation by its ID",
+    description="Look up an obligation using only its obligation_id without needing flow_name.",
     tags=["Query"],
     response_model=TraceDTO,
     responses={
         503: {"description": "Storage not configured"},
-        404: {"description": "Run not found"},
+        404: {"description": "Obligation not found"},
     },
     requires_querier=True,
 )
@@ -311,19 +311,19 @@ _TRANSITIONS = RouteSpec(
     requires_transitions=True,
 )
 
-_RUN_EVENTS = RouteSpec(
-    path="/runs/{obligation_id}/events",
+_OBLIGATION_EVENTS = RouteSpec(
+    path="/obligations/{obligation_id}/events",
     method="GET",
-    summary="Fetch a run's lifecycle event timeline",
+    summary="Fetch an obligation's lifecycle event timeline",
     description=(
         "Return the audit trail of state transitions (submitted, claimed, "
         "completed, retries, cancellation, sweeper recoveries) recorded in "
-        "the run's append-only events file."
+        "the obligation's append-only events file."
     ),
     tags=["Query"],
     response_model=list[dict],
     responses={
-        404: {"description": "Run not found"},
+        404: {"description": "Obligation not found"},
         503: {"description": "Storage not configured"},
     },
     requires_events=True,
@@ -365,24 +365,24 @@ def build_router(controller: FlowController, **_) -> APIRouter:
 
     if not _SUBMIT_FLOW.requires_queue or controller.queue is not None:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
-    if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
-        _wire(router, _CANCEL_RUN, controller.cancel_run)
-        _wire(router, _REVIEW_RUN, controller.review_run)
-        _wire(router, _ADMIT_RUN, controller.admit_run)
-        _wire(router, _CLAIM_RUN, controller.claim_run)
-        _wire(router, _RENEW_RUN, controller.renew_run)
-        _wire(router, _RUN_EFFECT, controller.record_run_effect)
-        _wire(router, _SEND_MESSAGE, controller.send_run_message)
-        _wire(router, _RUN_RECV, controller.recv_run_message)
-        _wire(router, _RUN_OUTCOME, controller.record_run_outcome)
-    if not _RUNS_QUERY.requires_querier or controller.querier is not None:
-        _wire(router, _RUNS_QUERY, controller.query_runs)
+    if not _CANCEL_OBLIGATION.requires_state or controller.state_repo is not None:
+        _wire(router, _CANCEL_OBLIGATION, controller.cancel_obligation)
+        _wire(router, _REVIEW_OBLIGATION, controller.review_obligation)
+        _wire(router, _ADMIT_OBLIGATION, controller.admit_obligation)
+        _wire(router, _CLAIM_OBLIGATION, controller.claim_obligation)
+        _wire(router, _RENEW_OBLIGATION, controller.renew_obligation)
+        _wire(router, _OBLIGATION_EFFECT, controller.record_obligation_effect)
+        _wire(router, _SEND_MESSAGE, controller.send_obligation_message)
+        _wire(router, _OBLIGATION_RECV, controller.recv_obligation_message)
+        _wire(router, _OBLIGATION_OUTCOME, controller.record_obligation_outcome)
+    if not _OBLIGATIONS_QUERY.requires_querier or controller.querier is not None:
+        _wire(router, _OBLIGATIONS_QUERY, controller.query_obligations)
     if not _LOGS_QUERY.requires_querier or controller.querier is not None:
         _wire(router, _LOGS_QUERY, controller.query_logs)
-    if not _RUN_BY_ID.requires_querier or controller.querier is not None:
-        _wire(router, _RUN_BY_ID, controller.get_run_by_run_id)
-    if not _RUN_EVENTS.requires_events or controller.events is not None:
-        _wire(router, _RUN_EVENTS, controller.get_run_events)
+    if not _OBLIGATION_BY_ID.requires_querier or controller.querier is not None:
+        _wire(router, _OBLIGATION_BY_ID, controller.get_obligation)
+    if not _OBLIGATION_EVENTS.requires_events or controller.events is not None:
+        _wire(router, _OBLIGATION_EVENTS, controller.get_obligation_events)
     if not _TRANSITIONS.requires_transitions or controller.transitions is not None:
         _wire(router, _TRANSITIONS, controller.list_transitions)
 

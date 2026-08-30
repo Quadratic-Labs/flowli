@@ -30,7 +30,7 @@ const ENTER_MS = 400;
  *  transitions — new bars grow in, moved bars glide, vanished bars fade out.
  *  Unchanged data (same reference) is never redrawn, so poll-driven parent
  *  re-renders cost nothing. */
-export function RunFlamegraph({ runData }: { runData: TraceSummaryDTO }) {
+export function ObligationFlamegraph({ obligationData }: { obligationData: TraceSummaryDTO }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<d3.Selection<HTMLDivElement, unknown, HTMLElement, unknown> | null>(null);
 
@@ -46,7 +46,7 @@ export function RunFlamegraph({ runData }: { runData: TraceSummaryDTO }) {
   }, []);
 
   useEffect(() => {
-    if (!containerRef.current || !runData) return;
+    if (!containerRef.current || !obligationData) return;
     const container = containerRef.current;
     const width = container.offsetWidth - MARGIN.left - MARGIN.right;
 
@@ -68,7 +68,7 @@ export function RunFlamegraph({ runData }: { runData: TraceSummaryDTO }) {
       .attr('height', HEIGHT + MARGIN.top + MARGIN.bottom);
     svg.select('.x-label').attr('x', width / 2);
 
-    const root = toFNode(runData, 0);
+    const root = toFNode(obligationData, 0);
     const totalStart = root.start;
     const totalDuration = root.end - root.start;
     const md = maxDepth(root);
@@ -130,7 +130,7 @@ export function RunFlamegraph({ runData }: { runData: TraceSummaryDTO }) {
 
     svg.select<SVGGElement>('.x-axis').transition().duration(ENTER_MS)
       .call(d3.axisBottom(xScale).ticks(10).tickFormat(d => `${d}ms`));
-  }, [runData]);
+  }, [obligationData]);
 
   return <div ref={containerRef} className="w-full" />;
 }

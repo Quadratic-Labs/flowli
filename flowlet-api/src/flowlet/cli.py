@@ -45,10 +45,10 @@ def main(verbose: bool) -> None:
 
 @main.command()
 @click.option("--app", "app_ref", required=True, help="Flowlet instance, e.g. 'myproject.flows:flowlet'.")
-@click.option("--pending-grace", default=None, type=int, help="Seconds before a pending run is re-enqueued.")
-@click.option("--archive-grace", default=None, type=int, help="Seconds a closed run stays in state/.")
+@click.option("--pending-grace", default=None, type=int, help="Seconds before a pending obligation is re-enqueued.")
+@click.option("--archive-grace", default=None, type=int, help="Seconds a closed obligation stays in state/.")
 def sweep(app_ref: str, pending_grace: int | None, archive_grace: int | None) -> None:
-    """Run one sweep pass: recover expired leases, archive closed runs."""
+    """Run one sweep pass: recover expired leases, archive closed obligations."""
     from flowlet import sweeper
 
     flowlet = _load_flowlet(app_ref)

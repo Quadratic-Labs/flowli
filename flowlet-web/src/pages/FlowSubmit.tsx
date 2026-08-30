@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Play } from 'lucide-react';
 import { api } from '@/lib/api';
 
-export default function FlowRun() {
+export default function FlowSubmit() {
   const { name = '' } = useParams<{ name: string }>();
   const nav = useNavigate();
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -40,11 +40,11 @@ export default function FlowRun() {
       const resp = await api.submitFlow(name, kwargs, dispatchKey.trim() || undefined);
       setToast({
         msg: resp.deduplicated
-          ? `Dispatch key already submitted — resolved to existing run ${resp.obligation_id.slice(0, 8)}…`
-          : `Flow "${name}" submitted as run ${resp.obligation_id.slice(0, 8)}…`,
+          ? `Dispatch key already submitted — resolved to existing obligation ${resp.obligation_id.slice(0, 8)}…`
+          : `Flow "${name}" submitted as obligation ${resp.obligation_id.slice(0, 8)}…`,
         ok: true,
       });
-      setTimeout(() => nav(`/runs/${resp.obligation_id}?flow=${encodeURIComponent(name)}`), 1500);
+      setTimeout(() => nav(`/obligations/${resp.obligation_id}?flow=${encodeURIComponent(name)}`), 1500);
     } catch (err) {
       setToast({ msg: `Failed: ${err}`, ok: false });
     } finally {
@@ -54,7 +54,7 @@ export default function FlowRun() {
 
   return (
     <div className="p-6 max-w-2xl">
-      <h1 className="text-3xl font-normal mb-6">Run Flow: {name}</h1>
+      <h1 className="text-3xl font-normal mb-6">Submit Flow: {name}</h1>
       {isLoading && <div className="flex justify-center p-10"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
       {error && <div className="text-red-600 bg-red-50 p-4 rounded">{String(error)}</div>}
       {!isLoading && !error && !schema && <div className="text-red-600 bg-red-50 p-4 rounded">Flow "{name}" not found.</div>}
@@ -72,7 +72,7 @@ export default function FlowRun() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {(!schema.parameters || schema.parameters.length === 0) && (
-              <div className="bg-blue-50 text-blue-700 p-3 rounded">This flow has no parameters. Click "Run Flow" to execute it.</div>
+              <div className="bg-blue-50 text-blue-700 p-3 rounded">This flow has no parameters. Click "Submit Flow" to execute it.</div>
             )}
 
             {(schema.parameters ?? []).map(param => (
@@ -111,7 +111,7 @@ export default function FlowRun() {
                 placeholder="e.g. webhook-delivery-42 or campaign-sync:2026-08-04"
                 className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
               <p className="text-xs text-gray-400 mt-1">
-                Submissions with the same key collapse onto one run — safe against
+                Submissions with the same key collapse onto one obligation — safe against
                 double-clicks, webhook retries, and overlapping schedules.
               </p>
             </div>
@@ -120,7 +120,7 @@ export default function FlowRun() {
               <button type="submit" disabled={submitting}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
                 {submitting ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Play size={16} />}
-                {submitting ? 'Running...' : 'Run Flow'}
+                {submitting ? 'Submitting...' : 'Submit Flow'}
               </button>
             </div>
           </form>

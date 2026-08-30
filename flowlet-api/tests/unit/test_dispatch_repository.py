@@ -83,7 +83,7 @@ class TestSubmitFlowWithDispatchKey:
         )
         assert resp.deduplicated is False
 
-    def test_duplicate_submission_resolves_same_run(self, controller):
+    def test_duplicate_submission_resolves_same_obligation(self, controller):
         args = FlowArguments(kwargs={"x": 1, "y": 2}, dispatch_key="k1")
         first = controller.submit_flow("my_flow", args)
         second = controller.submit_flow("my_flow", args)
@@ -97,7 +97,7 @@ class TestSubmitFlowWithDispatchKey:
         controller.submit_flow("my_flow", args)
         assert mock_queue.enqueue.call_count == 2
 
-    def test_different_keys_create_different_runs(self, controller):
+    def test_different_keys_create_different_obligations(self, controller):
         first = controller.submit_flow(
             "my_flow", FlowArguments(kwargs={"x": 1, "y": 2}, dispatch_key="k1")
         )

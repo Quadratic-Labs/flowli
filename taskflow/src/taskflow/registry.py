@@ -207,7 +207,7 @@ class Registry:
 
     Stores instrumented callables indexed by name and provides schema lookup
     for RPC invocation. Each callable registered through this class is wrapped
-    by instrument() so that every call records a structured run entry.
+    by instrument() so that every call records a structured obligation entry.
 
     Attributes:
         flows (dict[str, Callable]): Mapping of flow name to instrumented

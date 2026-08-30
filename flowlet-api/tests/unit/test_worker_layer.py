@@ -268,10 +268,10 @@ class TestExecuteJobRetries:
 
 class TestExecuteJobSkips:
     def test_closed_state_acks_without_executing(
-        self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
+        self, state_repo, signals, make_flow_job, make_obligation_summary, seed_lease, store
     ):
         job = make_flow_job()
-        done = make_run_state(
+        done = make_obligation_summary(
             obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.completed,
@@ -295,10 +295,10 @@ class TestExecuteJobSkips:
         assert state_repo.read(job.flow_name, job.obligation_id).epoch == 1
 
     def test_busy_state_acks_duplicate_wakeup(
-        self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
+        self, state_repo, signals, make_flow_job, make_obligation_summary, seed_lease, store
     ):
         job = make_flow_job()
-        busy = make_run_state(
+        busy = make_obligation_summary(
             obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
@@ -328,10 +328,10 @@ class TestExecuteJobSkips:
 
 class TestExecuteJobTakeover:
     def test_expired_lease_takeover_increments_attempt(
-        self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
+        self, state_repo, signals, make_flow_job, make_obligation_summary, seed_lease, store
     ):
         job = make_flow_job()
-        expired = make_run_state(
+        expired = make_obligation_summary(
             obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
@@ -365,12 +365,12 @@ class TestExecuteJobTakeover:
         assert view.epoch == 2  # the takeover was a fenced steal
 
     def test_exhausted_expired_state_marked_failed(
-        self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
+        self, state_repo, signals, make_flow_job, make_obligation_summary, seed_lease, store
     ):
         job = make_flow_job()
         # Three consuming attempts spend the budget; the dead in-flight
         # fourth is a free crash — exhaustion comes from the real failures.
-        expired = make_run_state(
+        expired = make_obligation_summary(
             obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
@@ -417,22 +417,22 @@ class TestStateRepositoryFiles:
         assert keys == [f"state/{obligation.flow_name}/{obligation.id}.json"]
 
     def test_delete_removes_state_object(
-        self, state_repo, make_run_state, seed_lease, store
+        self, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state()
+        state = make_obligation_summary()
         seed_lease(store, state)
         state_repo.delete(state.flow_name, state.obligation_id)
 
         assert state_repo.store.list_objects_sync("state/") == []
 
     def test_archive_moves_state_out_of_active_dir(
-        self, state_repo, make_run_state, seed_lease, store, tmp_path
+        self, state_repo, make_obligation_summary, seed_lease, store, tmp_path
     ):
-        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
+        state = make_obligation_summary(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
         state_repo.archive(state.flow_name, state.obligation_id)
 
         assert state_repo.read(state.flow_name, state.obligation_id) is None
-        archived = list((tmp_path / "runs").rglob("state.json"))
+        archived = list((tmp_path / "obligations").rglob("state.json"))
         assert len(archived) == 1
         assert str(state.obligation_id) in str(archived[0].parent)

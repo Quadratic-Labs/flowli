@@ -56,14 +56,14 @@ class SpanEvent:
 @define(slots=True, kw_only=True)
 class SpanRecord:
     """
-    One finished span read back from a run's spans-<attempt>.jsonl file.
+    One finished span read back from an obligation's spans-<attempt>.jsonl file.
 
     Attributes:
-        obligation_id: The run's UUID — equal to the OTel trace_id.
+        obligation_id: The obligation's UUID — equal to the OTel trace_id.
         span_id: OTel span id, 16-char hex string.
         parent_span_id: Parent span id, or None for the root span.
         name: Span (flow/task) name.
-        flow_name: Root flow name (identical for all spans of a run).
+        flow_name: Root flow name (identical for all spans of an obligation).
         attempt: Execution attempt this span belongs to (1-based).
         span_type: Open label for the span's kind (taskflow emits
             ``flow`` / ``task``); None when the span carried none.
@@ -92,11 +92,11 @@ class SpanRecord:
 @define(slots=True, kw_only=True)
 class TraceSummary:
     """
-    A run's status.
+    An obligation's status.
 
-    Aggregates a run's spans into a single stat summary.
+    Aggregates an obligation's spans into a single stat summary.
     Recursively embeds children's spans as well.
-    The root span summary gives the entire run summary.
+    The root span summary gives the entire trace summary.
 
     Attributes:
         span_id: span's identifier (16-char hex OTel span id).
@@ -118,7 +118,7 @@ class TraceSummary:
     @property
     def duration(self) -> timedelta | None:
         """
-        Calculate execution duration of the latest run.
+        Calculate execution duration of the latest obligation.
 
         Returns:
             timedelta | None: Duration from start to end, or None if incomplete.
@@ -131,13 +131,13 @@ class TraceSummary:
 @define(slots=True, kw_only=True)
 class Trace(TraceSummary):
     """
-    A complete run with its logs and computed summary.
+    A complete trace with its logs and computed summary.
 
-    Combines a run's logs with its hierarchical summary for efficient querying.
+    Combines an obligation's logs with its hierarchical summary for efficient querying.
 
     Attributes:
         summary: Hierarchical summary computed from the logs.
-        logs: All log entries for this run, in chronological order.
+        logs: All log entries for this obligation, in chronological order.
     """
     logs: JsonData
 
@@ -673,7 +673,7 @@ class FlowJob:
 
     The queue is purely a work-distribution signal: retry accounting and
     ownership live in ``ObligationSummary``, never in the message.  A worker acks the
-    message as soon as the run's state is resolved; duplicate deliveries are
+    message as soon as the obligation's state is resolved; duplicate deliveries are
     harmless because the state machine drops them (busy/closed).
 
     Attributes:

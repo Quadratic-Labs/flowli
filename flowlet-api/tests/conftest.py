@@ -4,7 +4,7 @@ Pytest configuration and shared fixtures for flowlet tests.
 Provides:
 - Async SQLite engine for snapshot database tests
 - Registry and FlowController fixtures for controller tests
-- run_state / span_record factory fixtures (return a builder callable)
+- obligation_summary / span_record factory fixtures (return a builder callable)
 - Mock querier and queue stubs
 """
 from datetime import UTC, datetime
@@ -34,7 +34,7 @@ def _make_ts(dt: datetime | None = None) -> Timestamp:
     return Timestamp(dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt)
 
 
-def _make_run_state(
+def _make_obligation_summary(
     *,
     obligation_id: UUID | None = None,
     flow_name: str = "test_flow",
@@ -231,9 +231,9 @@ def make_ts():
 
 
 @pytest.fixture
-def make_run_state():
-    """Return the _make_run_state builder callable."""
-    return _make_run_state
+def make_obligation_summary():
+    """Return the _make_obligation_summary builder callable."""
+    return _make_obligation_summary
 
 
 @pytest.fixture
@@ -245,7 +245,7 @@ def seed_lease():
 @pytest.fixture
 def make_record():
     """Build an ObligationRecord from ObligationSummary-style keyword arguments."""
-    return lambda **kwargs: _record_from_state(_make_run_state(**kwargs))
+    return lambda **kwargs: _record_from_state(_make_obligation_summary(**kwargs))
 
 
 @pytest.fixture
@@ -267,10 +267,10 @@ def make_span_record():
 
 @pytest.fixture
 def mock_querier() -> AsyncMock:
-    """AsyncMock stand-in for RunQuery."""
+    """AsyncMock stand-in for ObligationQuery."""
     querier = AsyncMock()
     querier.list_recent_states = AsyncMock(return_value=[])
-    querier.get_run = Mock(return_value={})
+    querier.get_trace = Mock(return_value={})
     return querier
 
 

@@ -6,12 +6,12 @@ claim: exactly one submission wins the put-if-absent of
 ``dispatch/<flow_name>/<sha256(key)>.json`` recording its obligation_id, and every
 later submission with the same key converges on that same obligation_id.
 Duplicate wake-up messages remain harmless — the worker state machine drops
-them for busy/closed runs — so dedup only has to pin the obligation_id, never to
+them for busy/closed obligations — so dedup only has to pin the obligation_id, never to
 suppress messages.
 
 obligation_id stays a genuine uuid7 (the mapping is indirection, not a hash-derived
 id), preserving the invariant that every obligation_id embeds a timestamp for the
-runs/ date partition.
+obligations/ date partition.
 """
 import hashlib
 import logging
@@ -44,7 +44,7 @@ class DispatchKeyRepository:
     def resolve_or_create(
         self, flow_name: str, dispatch_key: str, obligation_id: UUID
     ) -> tuple[UUID, bool]:
-        """Claim the key for *obligation_id*, or resolve the previously claimed run.
+        """Claim the key for *obligation_id*, or resolve the previously claimed obligation.
 
         Args:
             flow_name: Flow being submitted.
@@ -66,9 +66,4 @@ class DispatchKeyRepository:
                 "created_at": Timestamp.now().to_iso(),
             },
         )
-        # A mapping written before the run_id -> obligation_id rename still has
-        # to resolve: losing it would mint a second obligation for a key that
-        # was already claimed.
-        value = result.value
-        existing = value.get("obligation_id") or value["run_id"]
-        return UUID(existing), result.won
+        return UUID(result.value["obligation_id"]), result.won

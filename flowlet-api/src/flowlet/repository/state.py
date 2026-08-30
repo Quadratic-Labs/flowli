@@ -1,6 +1,6 @@
-"""Run-state repository — cairndb lease documents on the object store.
+"""Obligation-state repository — cairndb lease documents on the object store.
 
-Per-run state lives at ``state/<flow_name>/<obligation_id>.json`` as a cairndb
+Per-obligation state lives at ``state/<flow_name>/<obligation_id>.json`` as a cairndb
 lease document ``{epoch, holder, deadline_at, state}`` whose state payload
 is the :class:`~flowlet.models.ObligationSummary` wire dict.  Ownership is the lease:
 acquiring (fresh, after a release, or by stealing an expired lease) bumps
@@ -20,7 +20,7 @@ from cairndb.storage.base import BlobStorage
 
 from flowlet.models import ObligationRecord, ObligationSummary
 from flowlet.serdes import from_payload, to_payload
-from flowlet.storage import run_prefix
+from flowlet.storage import obligation_prefix
 from flowlet.types import Timestamp
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class StateLease:
 
 @define(slots=True, kw_only=True)
 class StateRepository:
-    """Repository for run lease documents on the blob store.
+    """Repository for obligation lease documents on the blob store.
 
     Attributes:
         store: CairnDB blob store all state documents live in.
@@ -172,11 +172,11 @@ class StateRepository:
         )
 
     def read(self, flow_name: str, obligation_id: UUID) -> StateView | None:
-        """Read one run's lease document without touching ownership.
+        """Read one obligation's lease document without touching ownership.
 
         Args:
             flow_name: Name of the flow.
-            obligation_id: UUID identifying the run.
+            obligation_id: UUID identifying the obligation.
 
         Returns:
             The parsed StateView, or None when the document does not exist
@@ -247,7 +247,7 @@ class StateRepository:
 
         Args:
             flow_name: Name of the flow.
-            obligation_id: UUID identifying the run.
+            obligation_id: UUID identifying the obligation.
             ttl: Lease duration in seconds; heartbeats renew it.
             holder: Identifier of the acquiring actor (worker id, "api",
                 "sweeper").
@@ -339,11 +339,11 @@ class StateRepository:
         )
 
     def delete(self, flow_name: str, obligation_id: UUID) -> None:
-        """Remove the lease document for a run.
+        """Remove the lease document for an obligation.
 
         Args:
             flow_name: Name of the flow.
-            obligation_id: UUID identifying the run.
+            obligation_id: UUID identifying the obligation.
         """
         try:
             self.store.delete_object_sync(self._key(flow_name, obligation_id))
@@ -354,17 +354,17 @@ class StateRepository:
             )
 
     def archive(self, flow_name: str, obligation_id: UUID) -> None:
-        """Move a closed run's record into its run folder.
+        """Move a closed obligation's record into its obligation folder.
 
         The account payload is written in the ``to_json`` wire format to
-        ``runs/<flow_name>/<date>/<obligation_id>/state.json`` — colocated with the
-        run's span files so the run folder is the complete, self-contained
+        ``obligations/<flow_name>/<date>/<obligation_id>/state.json`` — colocated with the
+        obligation's span files so the obligation folder is the complete, self-contained
         durable record — and the lease document is removed.  Keeps the
-        active ``state/`` listing O(active runs).
+        active ``state/`` listing O(active obligations).
 
         Args:
             flow_name: Name of the flow.
-            obligation_id: UUID identifying the run.
+            obligation_id: UUID identifying the obligation.
         """
         obj = self.store.get_object_sync(self._key(flow_name, obligation_id))
         if obj is None:
@@ -377,7 +377,7 @@ class StateRepository:
         if payload is None:
             self.delete(flow_name, obligation_id)
             return
-        target = f"{run_prefix(flow_name, obligation_id)}/state.json"
+        target = f"{obligation_prefix(flow_name, obligation_id)}/state.json"
         try:
             self.store.put_object_sync(target, json.dumps(payload).encode())
         except Exception:

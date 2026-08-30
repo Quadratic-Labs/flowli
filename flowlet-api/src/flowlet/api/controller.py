@@ -2,7 +2,7 @@
 FastAPI controllers for the Flowlet account surface.
 
 FlowController handles the kernel's HTTP endpoints: submission, cancel,
-review, the fenced executor claim lifecycle, and the run/log query
+review, the fenced executor claim lifecycle, and the obligation/log query
 projections.  Authoring surfaces (synchronous execution of registered
 callables, schema introspection) belong to layer-2 controllers — taskflow
 mounts them beside this router.
@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from flowlet.api.models import (
     AdmissionRequest,
     AdmissionResponse,
-    CancelRunResponse,
+    CancelObligationResponse,
     ExecutorClaimRequest,
     ExecutorClaimResponse,
     ExecutorEffectRequest,
@@ -36,16 +36,16 @@ from flowlet.api.models import (
     FlowArguments,
     FlowSubmissionResponse,
     LogQueryRequest,
+    MessageRequest,
+    MessageResponse,
+    ObligationQueryRequest,
     ObligationSummaryDTO,
     ReviewRequest,
     ReviewResponse,
-    RunMessageRequest,
-    RunMessageResponse,
-    RunQueryRequest,
     TraceDTO,
     TransitionPageResponse,
 )
-from flowlet.api.query import RunQuery
+from flowlet.api.query import ObligationQuery
 from flowlet.models import FlowJob
 from flowlet.queue import JobQueueProtocol
 
@@ -83,7 +83,7 @@ class FlowController:
     """FastAPI controller for the kernel's account surface.
 
     Attributes:
-        querier: RunQuery instance for reading run states and log details.
+        querier: ObligationQuery instance for reading obligation summaries and log details.
         queue: Optional job queue for asynchronous execution.
         state_repo: Optional state repository (cancel/review/claim).
         signals: Optional signal repository (cancel signal, pause scopes).
@@ -96,13 +96,13 @@ class FlowController:
             controllers, the kernel records only actor and decision.
 
     Example:
-        >>> controller = FlowController(querier=run_query)
+        >>> controller = FlowController(querier=obligation_query)
         >>> await controller.submit_flow("my_flow", FlowArguments(kwargs={"x": 1}))
     """
 
     # Declared attribute types — the class-level annotations are the single
     # source of truth for type checkers; __init__ assigns against them.
-    querier: RunQuery | None
+    querier: ObligationQuery | None
     queue: JobQueueProtocol | None
     state_repo: "StateRepository | None"
     signals: "SignalRepository | None"
@@ -115,7 +115,7 @@ class FlowController:
     def __init__(
         self,
         *,
-        querier: RunQuery | None = None,
+        querier: ObligationQuery | None = None,
         queue: JobQueueProtocol | None = None,
         state_repo: "StateRepository | None" = None,
         signals: "SignalRepository | None" = None,
@@ -130,17 +130,17 @@ class FlowController:
         """Initialise the flow controller.
 
         Args:
-            querier: RunQuery providing read access to run states and logs.
+            querier: ObligationQuery providing read access to obligation summaries and logs.
                 When None the query endpoints return 503.
             queue: Optional job queue for asynchronous flow submission.
             state_repo: Optional state repository; required by the cancel,
                 review, and executor endpoints.
             signals: Optional signal repository; required by the cancel
-                endpoint to reach an actively-owned run.
+                endpoint to reach an actively-owned obligation.
             dispatch_repo: Optional dispatch-key repository enabling
                 idempotent submissions; when None, dispatch_key submissions
                 return 503.
-            events: Optional run event log receiving lifecycle events.
+            events: Optional obligation event log receiving lifecycle events.
             transitions: Optional account-transition feed; when present the
                 GET /transitions endpoint serves ordered lifecycle events
                 with a cursor for reconcilers.
@@ -168,7 +168,7 @@ class FlowController:
         Validates arguments and enqueues the job, returning immediately with
         tracking information.  When the payload carries a ``dispatch_key``,
         the submission is idempotent: the first submission with a given key
-        creates the run, and every later one resolves to the same obligation_id
+        creates the obligation, and every later one resolves to the same obligation_id
         (``deduplicated=True``).  The wake-up message is enqueued either way
         — duplicates are dropped by the worker state machine, and re-sending
         protects against a lost original message.
@@ -187,8 +187,8 @@ class FlowController:
                 / admission: gated / reviews was given without storage
                 configured.
             HTTPException: 404 if the flow is not registered, or the
-                reviewed run is unknown.
-            HTTPException: 409 if the reviewed run is not awaiting
+                reviewed obligation is unknown.
+            HTTPException: 409 if the reviewed obligation is not awaiting
                 review.
             HTTPException: 422 if the arguments fail schema validation.
             HTTPException: 500 if enqueueing fails.
@@ -247,7 +247,7 @@ class FlowController:
         reviews = payload.reviews
         target_view = None
         if reviews is not None:
-            # This submission mints the reviewer of a parked run: the
+            # This submission mints the reviewer of a parked obligation: the
             # lock (awaiting_review) is on the target; this obligation
             # is the job that will record the review.
             if self.state_repo is None:
@@ -268,14 +268,14 @@ class FlowController:
             if target_view is None:
                 raise HTTPException(
                     status_code=404,
-                    detail="Reviewd run not found among active runs",
+                    detail="Reviewed obligation not found among active obligations",
                 )
             target_status = target_view.record.obligation.status
             if target_status != ObligationStatus.awaiting_review:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "Reviewd run is not awaiting review "
+                        "Reviewed obligation is not awaiting review "
                         f"(status: {target_status})"
                     ),
                 )
@@ -300,7 +300,7 @@ class FlowController:
         if gated_admission:
             # Born held: the durable obligation *is* the submission — no
             # wake-up is enqueued, nothing could execute it.  Release comes
-            # through POST /runs/{obligation_id}/admit (the entry gate).
+            # through POST /obligations/{obligation_id}/admit (the entry gate).
             from flowlet.models import Obligation, ObligationRecord, ObligationStatus
             from flowlet.types import Timestamp
 
@@ -347,7 +347,7 @@ class FlowController:
             def link(existing: "ObligationRecord | None") -> "ObligationRecord":
                 if existing is None:
                     raise LookupError(
-                        f"account for run {reviews} disappeared"
+                        f"account for obligation {reviews} disappeared"
                     )
                 existing.assign_reviewer(job.obligation_id)
                 return existing
@@ -423,25 +423,25 @@ class FlowController:
             deduplicated=deduplicated,
         )
 
-    def cancel_run(self, obligation_id: UUID) -> CancelRunResponse:
-        """Request cancellation of an active run.
+    def cancel_obligation(self, obligation_id: UUID) -> CancelObligationResponse:
+        """Request cancellation of an active obligation.
 
-        An unowned run (released ``pending``, or ``running`` with an expired
+        An unowned obligation (released ``pending``, or ``running`` with an expired
         lease) is closed as ``canceled`` directly through a fenced lease
-        steal.  An actively-owned run gets its durable ``cancel`` signal
+        steal.  An actively-owned obligation gets its durable ``cancel`` signal
         set; the owning worker observes it at its next heartbeat and
-        finalizes the run as ``canceled``.  Already-closed runs are left
+        finalizes the obligation as ``canceled``.  Already-closed obligations are left
         untouched and reported as-is.
 
         Args:
-            obligation_id: UUID of the run to cancel.
+            obligation_id: UUID of the obligation to cancel.
 
         Returns:
-            CancelRunResponse describing the state after the request.
+            CancelObligationResponse describing the state after the request.
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
-            HTTPException: 404 when the run is not among the active states.
+            HTTPException: 404 when the obligation is not among the active states.
         """
         if self.state_repo is None or self.signals is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
@@ -457,7 +457,7 @@ class FlowController:
         if match is None:
             raise HTTPException(
                 status_code=404,
-                detail="Run not found among active runs (it may already be archived)",
+                detail="Obligation not found among active obligations (it may already be archived)",
             )
         flow_name = match.record.obligation.flow_name
 
@@ -471,7 +471,7 @@ class FlowController:
         from flowlet.repository.signals import CANCEL
         from flowlet.types import Timestamp
 
-        def _respond(record: ObligationRecord, event: str | None) -> CancelRunResponse:
+        def _respond(record: ObligationRecord, event: str | None) -> CancelObligationResponse:
             state = record.summary()
             if event is not None and self.events is not None:
                 self.events.append(
@@ -483,10 +483,10 @@ class FlowController:
                     to_status=str(state.status),
                 )
             logger.info(
-                "run_cancel_requested",
+                "obligation_cancel_requested",
                 extra={"obligation_id": str(obligation_id), "status": str(state.status)},
             )
-            return CancelRunResponse(
+            return CancelObligationResponse(
                 obligation_id=obligation_id,
                 status=state.status,
                 cancel_requested=state.cancel_requested or event is not None,
@@ -494,7 +494,7 @@ class FlowController:
 
         view = self.state_repo.read(flow_name, obligation_id)
         if view is None:
-            raise HTTPException(status_code=404, detail="Run state disappeared")
+            raise HTTPException(status_code=404, detail="Obligation state disappeared")
         if view.record.obligation.status.is_closed():
             return _respond(view.record, None)
 
@@ -509,7 +509,7 @@ class FlowController:
         # in-flight attempt gets its crash accounted before the abandon.
         def transition(existing: ObligationRecord | None) -> ObligationRecord:
             if existing is None:
-                raise LookupError(f"account for run {obligation_id} disappeared")
+                raise LookupError(f"account for obligation {obligation_id} disappeared")
             if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
             if existing.open_attempt is not None:
@@ -532,7 +532,7 @@ class FlowController:
         except AlreadyClosed as closed:
             return _respond(closed.record, None)
         except LookupError:
-            raise HTTPException(status_code=404, detail="Run state disappeared")
+            raise HTTPException(status_code=404, detail="Obligation state disappeared")
 
         if lease is None:
             # A worker claimed it between the read and the steal — fall back
@@ -544,7 +544,7 @@ class FlowController:
         lease.release()
         return _respond(record, "canceled")
 
-    def review_run(
+    def review_obligation(
         self, obligation_id: UUID, payload: ReviewRequest
     ) -> ReviewResponse:
         """Resolve a gated obligation with an authorized review.
@@ -568,7 +568,7 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when storage is not configured; 404 when the
-                run is unknown; 409 when it is not awaiting review;
+                obligation is unknown; 409 when it is not awaiting review;
                 403 when the gate policy refuses the actor.
         """
         if self.state_repo is None:
@@ -585,7 +585,7 @@ class FlowController:
         if match is None:
             raise HTTPException(
                 status_code=404,
-                detail="Run not found among active runs (it may already be archived)",
+                detail="Obligation not found among active obligations (it may already be archived)",
             )
         record = match.record
         flow_name = record.obligation.flow_name
@@ -603,7 +603,7 @@ class FlowController:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Run is not awaiting review "
+                    "Obligation is not awaiting review "
                     f"(status: {record.obligation.status})"
                 ),
             )
@@ -625,7 +625,7 @@ class FlowController:
 
         def transition(existing: ObligationRecord | None) -> ObligationRecord:
             if existing is None:
-                raise LookupError(f"account for run {obligation_id} disappeared")
+                raise LookupError(f"account for obligation {obligation_id} disappeared")
             if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
             existing.decide(review, extend_budget=payload.extend_budget)
@@ -642,13 +642,13 @@ class FlowController:
                 decision=payload.decision,
             )
         except LookupError:
-            raise HTTPException(status_code=404, detail="Run state disappeared")
+            raise HTTPException(status_code=404, detail="Obligation state disappeared")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if lease is None:
             raise HTTPException(
                 status_code=409,
-                detail="Run is actively owned; retry the review",
+                detail="Obligation is actively owned; retry the review",
             )
 
         resolved = lease.record
@@ -693,7 +693,7 @@ class FlowController:
                 )
 
         logger.info(
-            "run_reviewed",
+            "obligation_reviewed",
             extra={
                 "obligation_id": str(obligation_id),
                 "decision": payload.decision,
@@ -706,11 +706,11 @@ class FlowController:
             decision=payload.decision,
         )
 
-    def admit_run(
+    def admit_obligation(
         self, obligation_id: UUID, payload: AdmissionRequest
     ) -> AdmissionResponse:
         """Release a held obligation's admission — the entry-gate mirror of
-        :meth:`review_run`.
+        :meth:`review_obligation`.
 
         The obligation must be ``held``.  The release is a fenced
         transition (``held → open``, ``admitted_by``/``admitted_at``
@@ -729,7 +729,7 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when storage is not configured; 404 when the
-                run is unknown; 409 when it is not held.
+                obligation is unknown; 409 when it is not held.
         """
         if self.state_repo is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
@@ -745,7 +745,7 @@ class FlowController:
         if match is None:
             raise HTTPException(
                 status_code=404,
-                detail="Run not found among active runs (it may already be archived)",
+                detail="Obligation not found among active obligations (it may already be archived)",
             )
         record = match.record
         flow_name = record.obligation.flow_name
@@ -756,12 +756,12 @@ class FlowController:
         if record.obligation.status != ObligationStatus.held:
             raise HTTPException(
                 status_code=409,
-                detail=f"Run is not held (status: {record.obligation.status})",
+                detail=f"Obligation is not held (status: {record.obligation.status})",
             )
 
         def transition(existing: ObligationRecord | None) -> ObligationRecord:
             if existing is None:
-                raise LookupError(f"account for run {obligation_id} disappeared")
+                raise LookupError(f"account for obligation {obligation_id} disappeared")
             if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
             existing.admit(by=payload.actor)
@@ -776,12 +776,12 @@ class FlowController:
                 obligation_id=obligation_id, status=str(closed.record.summary().status)
             )
         except LookupError:
-            raise HTTPException(status_code=404, detail="Run state disappeared")
+            raise HTTPException(status_code=404, detail="Obligation state disappeared")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if lease is None:
             raise HTTPException(
-                status_code=409, detail="Run is busy; retry the admission"
+                status_code=409, detail="Obligation is busy; retry the admission"
             )
 
         resolved = lease.record
@@ -821,7 +821,7 @@ class FlowController:
                 )
 
         logger.info(
-            "run_admitted",
+            "obligation_admitted",
             extra={"obligation_id": str(obligation_id), "actor": payload.actor},
         )
         return AdmissionResponse(
@@ -849,7 +849,7 @@ class FlowController:
             )
         return lease
 
-    def claim_run(
+    def claim_obligation(
         self, obligation_id: UUID, payload: ExecutorClaimRequest
     ) -> ExecutorClaimResponse:
         """Claim an existing obligation for a detached executor.
@@ -858,10 +858,10 @@ class FlowController:
         appending this executor's attempt) is written atomically with the
         fenced acquisition — identical semantics to the in-process worker.
         Obligations are created by submission, never by claim: an unknown
-        run is 404.
+        obligation is 404.
 
         Raises:
-            HTTPException: 503 without storage; 404 unknown run; 409 when
+            HTTPException: 503 without storage; 404 unknown obligation; 409 when
                 the obligation is closed, gated, busy, cancel-pending,
                 its attempt budget is spent (a gated obligation then parks
                 awaiting review instead of closing), or
@@ -880,7 +880,7 @@ class FlowController:
         if view is None:
             raise HTTPException(
                 status_code=404,
-                detail="Unknown run — obligations are created by submission",
+                detail="Unknown obligation — obligations are created by submission",
             )
 
         paused = self.signals.paused_scopes(
@@ -928,7 +928,7 @@ class FlowController:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Run is not claimable "
+                    "Obligation is not claimable "
                     f"(status: {refused.record.obligation.status})"
                 ),
             )
@@ -937,7 +937,7 @@ class FlowController:
             raise HTTPException(status_code=409, detail=str(exc))
         if lease is None:
             raise HTTPException(
-                status_code=409, detail="Run is actively owned by another executor"
+                status_code=409, detail="Obligation is actively owned by another executor"
             )
 
         from flowlet.worker import _ClaimCase, _release_terminal
@@ -952,7 +952,7 @@ class FlowController:
             )
             raise HTTPException(
                 status_code=409,
-                detail="Run gated at claim (awaiting_review)",
+                detail="Obligation gated at claim (awaiting_review)",
             )
 
         if decision["case"] != _ClaimCase.execute:
@@ -970,12 +970,12 @@ class FlowController:
             )
             raise HTTPException(
                 status_code=409,
-                detail=f"Run closed at claim ({record.summary().status})",
+                detail=f"Obligation closed at claim ({record.summary().status})",
             )
 
         record = lease.record
         logger.info(
-            "run_claimed_externally",
+            "obligation_claimed_externally",
             extra={"obligation_id": str(obligation_id), "executor": payload.executor},
         )
         return ExecutorClaimResponse(
@@ -990,7 +990,7 @@ class FlowController:
             flow_version=record.obligation.flow_version,
         )
 
-    def renew_run(
+    def renew_obligation(
         self, obligation_id: UUID, payload: ExecutorRenewRequest
     ) -> ExecutorRenewResponse:
         """Heartbeat: renew the fenced lease and observe pending signals.
@@ -1021,7 +1021,7 @@ class FlowController:
             ),
         )
 
-    def record_run_effect(
+    def record_obligation_effect(
         self, obligation_id: UUID, payload: ExecutorEffectRequest
     ) -> ExecutorEffectResponse:
         """Record a side-effect exactly once per occurrence, fenced.
@@ -1093,17 +1093,17 @@ class FlowController:
                 pending[topic] = remaining
         return pending
 
-    def send_run_message(
-        self, obligation_id: UUID, topic: str, payload: RunMessageRequest
-    ) -> RunMessageResponse:
-        """Append a message to a run's topic — the ordered channel.
+    def send_obligation_message(
+        self, obligation_id: UUID, topic: str, payload: MessageRequest
+    ) -> MessageResponse:
+        """Append a message to an obligation's topic — the ordered channel.
 
         Senders never touch the lease: the message is an immutable object
-        beside the run, and only the owning attempt consumes it (recv).
+        beside the obligation, and only the owning attempt consumes it (recv).
         A ``dedup_key`` makes the send idempotent.
 
         Raises:
-            HTTPException: 503 without storage; 404 unknown run; 409 when
+            HTTPException: 503 without storage; 404 unknown obligation; 409 when
                 the obligation is closed; 422 for an unsafe topic name.
         """
         if self.state_repo is None:
@@ -1113,13 +1113,13 @@ class FlowController:
         view = self.state_repo.read(payload.flow_name, obligation_id)
         if view is None:
             raise HTTPException(
-                status_code=404, detail="Run not found among active runs"
+                status_code=404, detail="Obligation not found among active obligations"
             )
         if view.record.obligation.status.is_closed():
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Run is closed "
+                    "Obligation is closed "
                     f"({view.record.obligation.status}) — nothing will consume"
                 ),
             )
@@ -1144,7 +1144,7 @@ class FlowController:
                 details={"topic": topic, "message_id": message_id},
             )
         logger.info(
-            "run_message_sent",
+            "obligation_message_sent",
             extra={
                 "obligation_id": str(obligation_id),
                 "topic": topic,
@@ -1152,14 +1152,14 @@ class FlowController:
                 "deduplicated": not created,
             },
         )
-        return RunMessageResponse(
+        return MessageResponse(
             obligation_id=obligation_id,
             topic=topic,
             message_id=message_id,
             deduplicated=not created,
         )
 
-    def recv_run_message(
+    def recv_obligation_message(
         self, obligation_id: UUID, payload: ExecutorRecvRequest
     ) -> ExecutorRecvResponse:
         """Consume one message from a topic, checkpointed in the account.
@@ -1257,7 +1257,7 @@ class FlowController:
                 detail="Lease fenced while recording the consumption",
             )
         logger.info(
-            "run_message_consumed",
+            "obligation_message_consumed",
             extra={
                 "obligation_id": str(obligation_id),
                 "topic": payload.topic,
@@ -1273,7 +1273,7 @@ class FlowController:
             replayed=False,
         )
 
-    def record_run_outcome(
+    def record_obligation_outcome(
         self, obligation_id: UUID, payload: ExecutorOutcomeRequest
     ) -> ExecutorOutcomeResponse:
         """Conclude the attempt: record the outcome and route the obligation.
@@ -1310,7 +1310,7 @@ class FlowController:
                 detail="Lease fenced at conclusion — the outcome was discarded",
             )
         logger.info(
-            "run_concluded_externally",
+            "obligation_concluded_externally",
             extra={
                 "obligation_id": str(obligation_id),
                 "executor": payload.executor,
@@ -1355,26 +1355,26 @@ class FlowController:
         )
         return TransitionPageResponse(entries=page.entries, cursor=page.cursor)
 
-    async def get_run_events(self, request: Request, obligation_id: UUID) -> Response:
-        """Return a run's lifecycle events (audit timeline) in append order.
+    async def get_obligation_events(self, request: Request, obligation_id: UUID) -> Response:
+        """Return an obligation's lifecycle events (audit timeline) in append order.
 
         The owning flow is resolved from the active state directory first
-        (covers live runs the read cache has not seen yet), then from the
-        querier's cache (covers archived runs).  Responses carry a
+        (covers live obligations the read cache has not seen yet), then from the
+        querier's cache (covers archived obligations).  Responses carry a
         content-hash ETag; a matching ``If-None-Match`` yields a 304 so
         polling clients only pay for actual changes.
 
         Args:
             request: Incoming request (If-None-Match handling).
-            obligation_id: UUID of the run.
+            obligation_id: UUID of the obligation.
 
         Returns:
-            JSON list of event records (empty when the run has no events
+            JSON list of event records (empty when the obligation has no events
             file), or 304 when unchanged.
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
-            HTTPException: 404 when the run cannot be resolved to a flow.
+            HTTPException: 404 when the obligation cannot be resolved to a flow.
         """
         if self.events is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
@@ -1390,13 +1390,13 @@ class FlowController:
         if flow_name is None and self.querier is not None:
             flow_name = await self.querier.find_flow_name(obligation_id)
         if flow_name is None:
-            raise HTTPException(status_code=404, detail="Run not found")
+            raise HTTPException(status_code=404, detail="Obligation not found")
 
         records = self.events.read(flow_name, obligation_id)
         return _etag_json_response(request, json.dumps(records, default=str))
 
-    async def query_runs(self, request: RunQueryRequest) -> list[ObligationSummaryDTO]:
-        """Return the most recent run states per flow.
+    async def query_obligations(self, request: ObligationQueryRequest) -> list[ObligationSummaryDTO]:
+        """Return the most recent obligation summaries per flow.
 
         Args:
             request: Filter parameters — optional flow name allow-list and
@@ -1418,24 +1418,24 @@ class FlowController:
             )
             return [ObligationSummaryDTO.model_validate(row) for row in rows]
         except ValidationError as e:
-            logger.exception("run_state_dto_validation_failed")
+            logger.exception("obligation_summary_dto_validation_failed")
             raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query failed: {e}")
 
-    async def get_run_by_run_id(
+    async def get_obligation(
         self, request: Request, obligation_id: UUID, with_logs: bool = True
     ) -> Response:
-        """Fetch a run by its ID alone, looking up flow_name from the database.
+        """Fetch an obligation by its ID alone, looking up flow_name from the database.
 
         Convenience wrapper around ``query_logs`` that first queries the
-        database to discover which flow owns the run.  Responses carry a
+        database to discover which flow owns the obligation.  Responses carry a
         content-hash ETag; a matching ``If-None-Match`` yields a 304 so
         polling clients only pay for actual changes.
 
         Args:
             request: Incoming request (If-None-Match handling).
-            obligation_id: UUID of the run to fetch.
+            obligation_id: UUID of the obligation to fetch.
             with_logs: Include log entries in the response (default: True).
 
         Returns:
@@ -1444,20 +1444,20 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
-            HTTPException: 500 when the run loads but violates the response
+            HTTPException: 500 when the obligation loads but violates the response
                 contract (server bug, never "not found").
-            HTTPException: 404 if the run cannot be found.
+            HTTPException: 404 if the obligation cannot be found.
             HTTPException: 400 on any other failure.
         """
         if self.querier is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
         try:
-            result = await self.querier.get_run_by_run_id(obligation_id, with_logs)
+            result = await self.querier.get_trace_by_id(obligation_id, with_logs)
             dto = TraceDTO.model_validate(result)
         # ValidationError extends ValueError: without its own clause a broken
-        # response contract would masquerade as a 404 (run not found).
+        # response contract would masquerade as a 404 (obligation not found).
         except ValidationError as e:
-            logger.exception("run_dto_validation_failed", extra={"obligation_id": str(obligation_id)})
+            logger.exception("trace_dto_validation_failed", extra={"obligation_id": str(obligation_id)})
             raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
@@ -1466,13 +1466,13 @@ class FlowController:
         return _etag_json_response(request, dto.model_dump_json())
 
     def query_logs(self, request: LogQueryRequest) -> TraceDTO:
-        """Fetch a single run with its full log detail.
+        """Fetch a single obligation with its full log detail.
 
         Loads log entries recursively from storage (subflows and subtasks
         included) and derives a hierarchical TraceSummary.
 
         Args:
-            request: Identifies the run by flow_name and obligation_id; optionally
+            request: Identifies the obligation by flow_name and obligation_id; optionally
                 suppresses log entries via with_logs=False.
 
         Returns:
@@ -1480,25 +1480,25 @@ class FlowController:
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
-            HTTPException: 500 when the run loads but violates the response
+            HTTPException: 500 when the obligation loads but violates the response
                 contract (server bug, never "not found").
-            HTTPException: 404 if the run cannot be found.
+            HTTPException: 404 if the obligation cannot be found.
             HTTPException: 400 on any other failure.
         """
         if self.querier is None:
             raise HTTPException(status_code=503, detail="Storage not configured")
         try:
-            result = self.querier.get_run(
+            result = self.querier.get_trace(
                 request.flow_name,
                 request.obligation_id,
                 request.with_logs,
             )
             return TraceDTO.model_validate(result)
         # ValidationError extends ValueError: without its own clause a broken
-        # response contract would masquerade as a 404 (run not found).
+        # response contract would masquerade as a 404 (obligation not found).
         except ValidationError as e:
             logger.exception(
-                "run_dto_validation_failed", extra={"obligation_id": str(request.obligation_id)}
+                "trace_dto_validation_failed", extra={"obligation_id": str(request.obligation_id)}
             )
             raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
         except ValueError as e:

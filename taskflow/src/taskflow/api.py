@@ -1,9 +1,9 @@
 """Taskflow's authoring surface: synchronous execution and schema introspection.
 
 Mounted beside the kernel's account router.  Synchronous execution accounts
-the run exactly like a worker would — acquire the obligation's lease, run
+the obligation exactly like a worker would — acquire the obligation's lease, run
 the callable through the RegistryExecutor, conclude — so ``POST /execute``
-runs leave the same durable record as queued ones.
+executions leave the same durable record as queued ones.
 """
 import logging
 from inspect import Parameter
@@ -12,7 +12,7 @@ from uuid import uuid7
 
 from fastapi import APIRouter, HTTPException
 from flowlet.api.models import FlowArguments
-from flowlet.lease import RunCancelled, RunLease, bind_lease, unbind_lease
+from flowlet.lease import ObligationCancelled, ObligationLease, bind_lease, unbind_lease
 from flowlet.models import AttemptOutcome, Obligation, ObligationRecord
 from flowlet.repository import EffectRepository, MessageRepository
 from flowlet.types import Timestamp
@@ -69,17 +69,17 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
     )
     assert lease is not None  # fresh uuid7 — cannot be held
 
-    run_lease = RunLease(
+    obligation_lease = ObligationLease(
         lease=lease,
         signals=tf.signals,
         effects=EffectRepository(store=state_repo.store),
         messages=MessageRepository(store=state_repo.store),
     )
-    token = bind_lease(run_lease)
+    token = bind_lease(obligation_lease)
     outcome, error = AttemptOutcome.returned, None
     try:
         executor.execute(lease.record.obligation, 1)
-    except RunCancelled:
+    except ObligationCancelled:
         outcome = AttemptOutcome.interrupted
     except Exception as exc:
         outcome, error = AttemptOutcome.raised, type(exc).__name__

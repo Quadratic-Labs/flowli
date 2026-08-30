@@ -6,7 +6,7 @@ One container image runs three roles on Azure Container Apps:
 ```
                           ┌────────────────────────────────────────┐
  POST /flows/…/submit ──> │ flowlet-api        (Container App,     │
- GET  /runs …             │   scale 0→N, stateless — reads storage │
+ GET  /obligations …             │   scale 0→N, stateless — reads storage │
                           │   through a TTL-refreshed local cache) │
                           └────────────┬───────────────────────────┘
                                        │ enqueue FlowJob
@@ -15,11 +15,11 @@ One container image runs three roles on Azure Container Apps:
         "flowlet-jobs"                   queue scaler, 0→N executions)
                                        │ CAS-claim lease → run → finalize
                                        ▼
-   Azure Blob Storage   <── state/  (active runs, CAS via ETag)
-        "flowlet"       <── runs/<flow>/<date>/<obligation_id>/  (spans + state.json)
+   Azure Blob Storage   <── state/  (active obligations, CAS via ETag)
+        "flowlet"       <── obligations/<flow>/<date>/<obligation_id>/  (spans + state.json)
                                        ▲
    flowlet-sweeper (Cron job, */5) ────┘ recover expired leases,
-                                         re-enqueue, archive closed runs
+                                         re-enqueue, archive closed obligations
 ```
 
 There is no database, no broker, and no always-on process.  Blob storage is
@@ -170,7 +170,7 @@ az containerapp create -n flowlet-api -g $RG --environment $ENV \
   --env-vars $FLOWLET_ENV_VARS
 ```
 
-The API is stateless: cold starts rebuild the run cache lazily from storage
+The API is stateless: cold starts rebuild the obligation cache lazily from storage
 on the first query (TTL-refreshed afterwards), so `min-replicas 0` is safe.
 
 ### Worker (event-driven job, KEDA queue scaler)
@@ -202,11 +202,11 @@ execution result).  Notes:
 - `--replica-retry-limit 0` is correct: retries belong to the state machine,
   never to the platform.
 - Duplicate executions are harmless by design — the worker CAS-claims a
-  lease before running and drops messages for busy/closed runs.
+  lease before running and drops messages for busy/closed obligations.
 
 For sustained medium throughput, an alternative is a regular Container App
 running the polling loop (`work` without `--once`) scaled 0→N by the same
-KEDA rule; jobs give cleaner per-run isolation, the loop amortises cold
+KEDA rule; jobs give cleaner per-obligation isolation, the loop amortises cold
 starts.  Both shapes are supported by the same CLI.
 
 ### Sweeper (cron job)
@@ -232,11 +232,11 @@ writes), so the cadence and retry limit are uncritical.  Every pass prints
 API_URL=https://$(az containerapp show -n flowlet-api -g $RG \
   --query properties.configuration.ingress.fqdn -o tsv)/flowlet
 
-# Submit a run and watch it complete
+# Submit an obligation and watch it complete
 curl -X POST $API_URL/flows/process_data/submit \
   -H 'content-type: application/json' \
   -d '{"kwargs": {"source": "smoke-test"}}'
-curl "$API_URL/runs/query" -X POST -H 'content-type: application/json' \
+curl "$API_URL/obligations/query" -X POST -H 'content-type: application/json' \
   -d '{"names": ["process_data"], "last_n": 5}'
 ```
 
@@ -256,7 +256,7 @@ execution completes it with `attempt` incremented.
 | ACR Basic | flat | ~$5/month (the biggest line item) |
 
 The one cost that grows with *history* rather than load is blob storage of
-run folders; a lifecycle-management rule moving `runs/` blobs to the cool
+run folders; a lifecycle-management rule moving `obligations/` blobs to the cool
 tier after 30 days keeps that flat too.
 
 ## 8. Local development

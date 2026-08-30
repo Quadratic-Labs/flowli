@@ -1,6 +1,6 @@
-"""Unit tests for the append-only run event log.
+"""Unit tests for the append-only obligation event log.
 
-Covers file placement in the run folder, JSONL record shape, append-only
+Covers file placement in the obligation folder, JSONL record shape, append-only
 accumulation, the non-throwing guarantee, and emission from the worker and
 sweeper lifecycles.
 """
@@ -14,7 +14,7 @@ from cairndb.storage.filesystem import FilesystemStorage
 from flowlet.events import EventLog
 from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
-from flowlet.storage import run_prefix
+from flowlet.storage import obligation_prefix
 from flowlet.sweeper import sweep
 from flowlet.worker import execute_job
 
@@ -32,7 +32,7 @@ def event_log(store):
 
 
 def _read_events(store, flow_name, obligation_id):
-    obj = store.get_object_sync(f"{run_prefix(flow_name, obligation_id)}/events.jsonl")
+    obj = store.get_object_sync(f"{obligation_prefix(flow_name, obligation_id)}/events.jsonl")
     if obj is None:
         return []
     return [json.loads(line) for line in obj.data.decode().splitlines()]
@@ -44,7 +44,7 @@ def _read_events(store, flow_name, obligation_id):
 
 
 class TestAppend:
-    def test_event_lands_in_run_folder(self, event_log, store):
+    def test_event_lands_in_obligation_folder(self, event_log, store):
         obligation_id = uuid7()
         event_log.append(
             flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api"
@@ -96,9 +96,9 @@ class TestAppend:
         assert record["details"] == {"case": "ready"}
 
     def test_append_never_raises(self, tmp_path, store):
-        # Make the runs/ segment a plain file, so the store cannot create
+        # Make the obligations/ segment a plain file, so the store cannot create
         # keys under it — the append must swallow the resulting error.
-        (tmp_path / "runs").write_text("not a directory")
+        (tmp_path / "obligations").write_text("not a directory")
         log = EventLog(store=store)
         log.append(flow_name="flow", obligation_id=uuid7(), event="submitted", actor="api")
 
@@ -122,7 +122,7 @@ class TestRead:
     def test_read_skips_malformed_lines(self, event_log, store):
         obligation_id = uuid7()
         event_log.append(flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api")
-        key = f"{run_prefix('flow', obligation_id)}/events.jsonl"
+        key = f"{obligation_prefix('flow', obligation_id)}/events.jsonl"
         obj = store.get_object_sync(key)
         store.put_object_sync(key, obj.data + b"not json\n", if_match=obj.etag)
         event_log.append(flow_name="flow", obligation_id=obligation_id, event="claimed", actor="w1")
@@ -131,7 +131,7 @@ class TestRead:
 
 
 # ============================================================================
-# Controller — GET /runs/{obligation_id}/events
+# Controller — GET /obligations/{obligation_id}/events
 # ============================================================================
 
 
@@ -147,7 +147,7 @@ def _body_events(response) -> list[dict]:
     return json.loads(bytes(response.body))
 
 
-class TestRunEventsEndpoint:
+class TestObligationEventsEndpoint:
     @pytest.fixture
     def state_repo(self, store):
         return StateRepository(store=store)
@@ -159,21 +159,21 @@ class TestRunEventsEndpoint:
         return FlowController(state_repo=state_repo, events=event_log)
 
     @pytest.mark.asyncio
-    async def test_events_of_active_run(
-        self, controller, state_repo, event_log, make_run_state, seed_lease, store
+    async def test_events_of_active_obligation(
+        self, controller, state_repo, event_log, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="claimed", actor="w1",
         )
 
-        response = await controller.get_run_events(_request(), state.obligation_id)
+        response = await controller.get_obligation_events(_request(), state.obligation_id)
         assert [r["event"] for r in _body_events(response)] == ["claimed"]
 
     @pytest.mark.asyncio
-    async def test_archived_run_resolved_via_querier(
+    async def test_archived_obligation_resolved_via_querier(
         self, event_log, state_repo
     ):
         from unittest.mock import AsyncMock
@@ -190,15 +190,15 @@ class TestRunEventsEndpoint:
             state_repo=state_repo, events=event_log, querier=querier,
         )
 
-        response = await controller.get_run_events(_request(), obligation_id)
+        response = await controller.get_obligation_events(_request(), obligation_id)
         assert [r["event"] for r in _body_events(response)] == ["completed"]
 
     @pytest.mark.asyncio
-    async def test_unknown_run_is_404(self, controller):
+    async def test_unknown_obligation_is_404(self, controller):
         from fastapi import HTTPException
 
         with pytest.raises(HTTPException) as exc:
-            await controller.get_run_events(_request(), uuid7())
+            await controller.get_obligation_events(_request(), uuid7())
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -209,23 +209,23 @@ class TestRunEventsEndpoint:
 
         controller = FlowController()
         with pytest.raises(HTTPException) as exc:
-            await controller.get_run_events(_request(), uuid7())
+            await controller.get_obligation_events(_request(), uuid7())
         assert exc.value.status_code == 503
 
     @pytest.mark.asyncio
     async def test_etag_roundtrip_yields_304(
-        self, controller, state_repo, event_log, make_run_state, seed_lease, store
+        self, controller, state_repo, event_log, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="claimed", actor="w1",
         )
 
-        first = await controller.get_run_events(_request(), state.obligation_id)
+        first = await controller.get_obligation_events(_request(), state.obligation_id)
         etag = first.headers["etag"]
-        second = await controller.get_run_events(
+        second = await controller.get_obligation_events(
             _request({"If-None-Match": etag}), state.obligation_id
         )
         assert second.status_code == 304
@@ -236,7 +236,7 @@ class TestRunEventsEndpoint:
             flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="completed", actor="w1",
         )
-        third = await controller.get_run_events(
+        third = await controller.get_obligation_events(
             _request({"If-None-Match": etag}), state.obligation_id
         )
         assert third.status_code == 200
@@ -300,10 +300,10 @@ class TestWorkerEmission:
 
 class TestSweeperEmission:
     def test_expired_lease_recovery_emits_requeued(
-        self, store, event_log, make_run_state, seed_lease
+        self, store, event_log, make_obligation_summary, seed_lease
     ):
         state_repo = StateRepository(store=store)
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="dead-worker",
             deadline=datetime.now(UTC) - timedelta(seconds=5),

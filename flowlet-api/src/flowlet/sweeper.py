@@ -14,18 +14,18 @@ sweep lists the active state directory and:
 2. **Stuck parked obligations** — released and open long past their backoff
    window (their retry message was lost, or the failing worker died before
    enqueueing).  Re-enqueued; a duplicate message is harmless because the
-   state machine drops wake-ups for busy/closed runs.
+   state machine drops wake-ups for busy/closed obligations.
 3. **Closed obligations past the grace window** — archived out of
    ``state/`` (and their signals cleared) so the active directory stays
-   O(active runs) and sweep cost never grows with history.  When a
-   run-history log is configured, each run is durably recorded there
+   O(active obligations) and sweep cost never grows with history.  When a
+   obligation-history log is configured, each obligation is durably recorded there
    *before* its state document is archived; a crash in between re-records
-   the run on the next sweep, which the idempotent history projection
+   the obligation on the next sweep, which the idempotent history projection
    absorbs.
 
 Sweeps are idempotent and overlap-safe: ownership is transferred by the
 epoch-fenced lease acquisition, never by the act of sweeping, so concurrent
-sweepers (or a sweeper racing a worker) cannot double-claim a run.
+sweepers (or a sweeper racing a worker) cannot double-claim an obligation.
 
 Failure-detection latency is ``lease deadline + sweep interval`` — tune the
 per-flow ``@flow(timeout=...)`` for faster takeover, not the sweep cadence.
@@ -55,12 +55,12 @@ from flowlet.repository import (
 from flowlet.types import Timestamp
 
 if TYPE_CHECKING:
-    from flowlet.history import RunHistory
+    from flowlet.history import ObligationHistory
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PENDING_GRACE = 600    # seconds before a parked run is re-enqueued
-DEFAULT_ARCHIVE_GRACE = 3600   # seconds a closed run stays in state/
+DEFAULT_PENDING_GRACE = 600    # seconds before a parked obligation is re-enqueued
+DEFAULT_ARCHIVE_GRACE = 3600   # seconds a closed obligation stays in state/
 
 SWEEPER_TTL = 60  # seconds — recovery transitions release immediately
 
@@ -71,11 +71,11 @@ class SweepStats:
 
     Attributes:
         scanned: Number of state documents examined.
-        requeued: Expired or stuck runs re-enqueued for another attempt.
+        requeued: Expired or stuck obligations re-enqueued for another attempt.
         failed: Obligations abandoned (attempt budget spent).
         archived: Closed state documents moved out of the active directory.
         timers_fired: Due timers fired (signal sent and/or wake-up enqueued).
-        errors: Runs skipped because of read/write errors (logged).
+        errors: Obligations skipped because of read/write errors (logged).
     """
     scanned: int = 0
     requeued: int = 0
@@ -93,7 +93,7 @@ def sweep(
     timers: TimerRepository | None = None,
     pending_grace: int = DEFAULT_PENDING_GRACE,
     archive_grace: int = DEFAULT_ARCHIVE_GRACE,
-    history: "RunHistory | None" = None,
+    history: "ObligationHistory | None" = None,
     events: EventLog | None = None,
 ) -> SweepStats:
     """Run one sweep pass over the active state directory.
@@ -101,18 +101,18 @@ def sweep(
     Args:
         state_repo: State repository holding the active obligations.
         queue: Job queue to enqueue wake-up messages on.
-        signals: Optional signal repository; when given, an archived run's
+        signals: Optional signal repository; when given, an archived obligation's
             signals are cleared with it, pause modes gate re-enqueues, and
             due timers can deliver their signals.
         timers: Optional timer repository; when given, due timers fire in
             this pass (bounded by the sweep cadence).
         pending_grace: Seconds a parked obligation may wait before it is
             assumed stuck (lost retry message) and re-enqueued.
-        archive_grace: Seconds a closed run stays in the active directory
+        archive_grace: Seconds a closed obligation stays in the active directory
             before being archived.
-        history: Optional run-history log; when given, archive candidates
+        history: Optional obligation-history log; when given, archive candidates
             are durably recorded there before their state files are removed.
-        events: Optional run event log receiving recovery events.
+        events: Optional obligation event log receiving recovery events.
 
     Returns:
         SweepStats describing the pass.
@@ -149,7 +149,7 @@ def sweep(
         except Exception:
             stats.errors += 1
             logger.exception(
-                "sweep_run_error",
+                "sweep_obligation_error",
                 extra={
                     "flow_name": view.record.obligation.flow_name,
                     "obligation_id": str(view.record.obligation.id),
@@ -243,7 +243,7 @@ def _recover_crashed(
         stats.failed += 1
         _emit(events, recovered, "failed", cause="lease_expired_max_retries")
         logger.warning(
-            "sweep_run_failed_permanently",
+            "sweep_obligation_failed_permanently",
             extra={
                 "obligation_id": str(recovered.obligation.id),
                 "attempt": len(recovered.attempts),
@@ -259,7 +259,7 @@ def _recover_crashed(
             cause="lease_expired_max_retries",
         )
         logger.warning(
-            "sweep_run_gated_on_exhaustion",
+            "sweep_obligation_gated_on_exhaustion",
             extra={
                 "obligation_id": str(recovered.obligation.id),
                 "attempt": len(recovered.attempts),
@@ -271,7 +271,7 @@ def _recover_crashed(
     stats.requeued += 1
     _emit(events, recovered, "requeued", cause="lease_expired")
     logger.info(
-        "sweep_run_requeued",
+        "sweep_obligation_requeued",
         extra={
             "obligation_id": str(recovered.obligation.id),
             "attempt": len(recovered.attempts),
@@ -326,7 +326,7 @@ def _past_archive_grace(
 def _archive_all(
     state_repo: StateRepository,
     signals: SignalRepository | None,
-    history: "RunHistory | None",
+    history: "ObligationHistory | None",
     to_archive: list[ObligationRecord],
     stats: SweepStats,
 ) -> None:
@@ -335,7 +335,7 @@ def _archive_all(
     Recording happens strictly before any state document is removed: if the
     history write fails, all candidates stay in ``state/`` and the whole
     step is retried on the next sweep.  Re-recording is harmless — the
-    history projection upserts by obligation_id.  Each archived run's signals are
+    history projection upserts by obligation_id.  Each archived obligation's signals are
     cleared after its state document is gone.
     """
     if not to_archive:

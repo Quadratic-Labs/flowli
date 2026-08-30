@@ -4,7 +4,7 @@ Covers the MessageRepository (ordering, dedup convergence, counts, clear),
 the in-process ``flowlet.recv`` discipline (consume in order, fenced
 checkpoint, deterministic replay across attempts), the controller's
 send/recv endpoints over the executor claim lifecycle, flow_version
-provenance stamping, and sweeper archive cleanup of a run's messages.
+provenance stamping, and sweeper archive cleanup of an obligation's messages.
 """
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
@@ -20,9 +20,9 @@ from flowlet.api.models import (
     ExecutorRecvRequest,
     ExecutorRenewRequest,
     FlowArguments,
-    RunMessageRequest,
+    MessageRequest,
 )
-from flowlet.lease import RunLease, bind_lease, recv, unbind_lease
+from flowlet.lease import ObligationLease, bind_lease, recv, unbind_lease
 from flowlet.models import FlowJob, ReportedStatus
 from flowlet.repository import (
     MessageRepository,
@@ -60,7 +60,7 @@ def _controller(state_repo, signals, queue=None):
     return FlowController(state_repo=state_repo, signals=signals, queue=queue)
 
 
-def _claimed_run_lease(state_repo, signals, messages, make_record, holder="w1"):
+def _claimed_obligation_lease(state_repo, signals, messages, make_record, holder="w1"):
     """Acquire a running obligation's lease with the channel wired in."""
     record = make_record(status=ReportedStatus.running)
     obligation = record.obligation
@@ -69,7 +69,7 @@ def _claimed_run_lease(state_repo, signals, messages, make_record, holder="w1"):
         state_fn=lambda _: record,
     )
     assert lease is not None
-    return RunLease(
+    return ObligationLease(
         lease=lease, signals=signals, messages=messages, min_interval=0.0
     )
 
@@ -156,8 +156,8 @@ class TestRecv:
     def test_consumes_in_order_then_none(
         self, state_repo, signals, messages, make_record
     ):
-        run_lease = _claimed_run_lease(state_repo, signals, messages, make_record)
-        obligation = run_lease.lease.record.obligation
+        obligation_lease = _claimed_obligation_lease(state_repo, signals, messages, make_record)
+        obligation = obligation_lease.lease.record.obligation
         messages.send(
             obligation.flow_name, obligation.id, "steer", "one", actor="api"
         )
@@ -165,7 +165,7 @@ class TestRecv:
             obligation.flow_name, obligation.id, "steer", "two", actor="api"
         )
 
-        token = bind_lease(run_lease)
+        token = bind_lease(obligation_lease)
         try:
             assert recv("steer")["body"] == "one"
             assert recv("steer")["body"] == "two"
@@ -176,13 +176,13 @@ class TestRecv:
     def test_consumption_is_checkpointed_in_the_account(
         self, state_repo, signals, messages, make_record
     ):
-        run_lease = _claimed_run_lease(state_repo, signals, messages, make_record)
-        obligation = run_lease.lease.record.obligation
+        obligation_lease = _claimed_obligation_lease(state_repo, signals, messages, make_record)
+        obligation = obligation_lease.lease.record.obligation
         sent_id, _ = messages.send(
             obligation.flow_name, obligation.id, "steer", "go", actor="api"
         )
 
-        token = bind_lease(run_lease)
+        token = bind_lease(obligation_lease)
         try:
             recv("steer")
         finally:
@@ -197,19 +197,19 @@ class TestRecv:
     ):
         """The recv checkpoint: attempt 2's first recvs return exactly the
         messages attempt 1 consumed, in order, before any fresh one."""
-        run_lease = _claimed_run_lease(state_repo, signals, messages, make_record)
-        obligation = run_lease.lease.record.obligation
+        obligation_lease = _claimed_obligation_lease(state_repo, signals, messages, make_record)
+        obligation = obligation_lease.lease.record.obligation
         messages.send(
             obligation.flow_name, obligation.id, "steer", "one", actor="api"
         )
-        token = bind_lease(run_lease)
+        token = bind_lease(obligation_lease)
         try:
             assert recv("steer")["body"] == "one"
         finally:
             unbind_lease(token)
         # A third message lands; attempt 1 "crashes" (lease released here
         # for simplicity — the account keeps the consumption either way).
-        run_lease.lease.release(run_lease.lease.record)
+        obligation_lease.lease.release(obligation_lease.lease.record)
         messages.send(
             obligation.flow_name, obligation.id, "steer", "two", actor="api"
         )
@@ -219,7 +219,7 @@ class TestRecv:
             obligation.flow_name, obligation.id, ttl=600, holder="w2",
             state_fn=lambda existing: existing,
         )
-        run_lease2 = RunLease(
+        run_lease2 = ObligationLease(
             lease=lease2, signals=signals, messages=messages, min_interval=0.0
         )
         token = bind_lease(run_lease2)
@@ -260,32 +260,32 @@ class TestRecv:
 
 @pytest.mark.unit
 class TestMessageEndpoints:
-    def _seed_ready(self, make_run_state, seed_lease, store, **overrides):
-        state = make_run_state(status=ReportedStatus.pending, **overrides)
+    def _seed_ready(self, make_obligation_summary, seed_lease, store, **overrides):
+        state = make_obligation_summary(status=ReportedStatus.pending, **overrides)
         seed_lease(store, state)
         return state
 
     def test_send_then_recv_lifecycle(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
 
-        sent = controller.send_run_message(
+        sent = controller.send_obligation_message(
             state.obligation_id, "steer",
-            RunMessageRequest(
+            MessageRequest(
                 flow_name=state.flow_name, actor="operator", body={"go": 1}
             ),
         )
         assert sent.deduplicated is False
 
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         assert claim.messages == {"steer": 1}
 
-        first = controller.recv_run_message(
+        first = controller.recv_obligation_message(
             state.obligation_id,
             ExecutorRecvRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
@@ -296,7 +296,7 @@ class TestMessageEndpoints:
         assert first.replayed is False
         assert first.pending == 0
 
-        empty = controller.recv_run_message(
+        empty = controller.recv_obligation_message(
             state.obligation_id,
             ExecutorRecvRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
@@ -306,23 +306,23 @@ class TestMessageEndpoints:
         assert empty.message is None
 
     def test_recv_replays_recorded_seq_and_refuses_gaps(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
-        controller.send_run_message(
+        controller.send_obligation_message(
             state.obligation_id, "steer",
-            RunMessageRequest(
+            MessageRequest(
                 flow_name=state.flow_name, actor="operator", body="one"
             ),
         )
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
         def _recv(seq):
-            return controller.recv_run_message(
+            return controller.recv_obligation_message(
                 state.obligation_id,
                 ExecutorRecvRequest(
                     flow_name=state.flow_name, executor="s1",
@@ -340,22 +340,22 @@ class TestMessageEndpoints:
         assert exc.value.status_code == 409
 
     def test_renew_reports_pending_message_counts(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
-        controller.send_run_message(
+        controller.send_obligation_message(
             state.obligation_id, "steer",
-            RunMessageRequest(
+            MessageRequest(
                 flow_name=state.flow_name, actor="operator", body="hello"
             ),
         )
 
-        renewed = controller.renew_run(
+        renewed = controller.renew_obligation(
             state.obligation_id,
             ExecutorRenewRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch
@@ -365,55 +365,55 @@ class TestMessageEndpoints:
         assert renewed.messages == {"steer": 1}
 
     def test_send_with_dedup_key_converges(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
-        req = RunMessageRequest(
+        req = MessageRequest(
             flow_name=state.flow_name, actor="hook", body="x",
             dedup_key="delivery-1",
         )
 
-        first = controller.send_run_message(state.obligation_id, "hook", req)
-        second = controller.send_run_message(state.obligation_id, "hook", req)
+        first = controller.send_obligation_message(state.obligation_id, "hook", req)
+        second = controller.send_obligation_message(state.obligation_id, "hook", req)
 
         assert second.deduplicated is True
         assert second.message_id == first.message_id
 
-    def test_send_to_unknown_run_is_404(self, state_repo, signals):
+    def test_send_to_unknown_obligation_is_404(self, state_repo, signals):
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
-            controller.send_run_message(
+            controller.send_obligation_message(
                 uuid7(), "steer",
-                RunMessageRequest(flow_name="f", actor="a", body=1),
+                MessageRequest(flow_name="f", actor="a", body=1),
             )
         assert exc.value.status_code == 404
 
-    def test_send_to_closed_run_is_409(
-        self, state_repo, signals, make_run_state, seed_lease, store
+    def test_send_to_closed_obligation_is_409(
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.completed)
+        state = make_obligation_summary(status=ReportedStatus.completed)
         seed_lease(store, state)
         controller = _controller(state_repo, signals)
 
         with pytest.raises(HTTPException) as exc:
-            controller.send_run_message(
+            controller.send_obligation_message(
                 state.obligation_id, "steer",
-                RunMessageRequest(
+                MessageRequest(
                     flow_name=state.flow_name, actor="a", body=1
                 ),
             )
         assert exc.value.status_code == 409
 
     def test_unsafe_topic_is_422(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
-            controller.send_run_message(
+            controller.send_obligation_message(
                 state.obligation_id, "_dedup",
-                RunMessageRequest(
+                MessageRequest(
                     flow_name=state.flow_name, actor="a", body=1
                 ),
             )
@@ -439,7 +439,7 @@ class TestFlowVersion:
         assert record.obligation.flow_version == "git:abc123"
 
     def test_submission_carries_version_to_the_account(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
         """Queue-mode submission stamps the job; the first claim stamps the
         obligation; the executor claim response surfaces it."""
@@ -465,10 +465,10 @@ class TestFlowVersion:
 
 @pytest.mark.unit
 class TestArchiveClearsMessages:
-    def test_archived_run_loses_its_messages(
-        self, state_repo, signals, messages, make_run_state, seed_lease, store
+    def test_archived_obligation_loses_its_messages(
+        self, state_repo, signals, messages, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=3)),
         )

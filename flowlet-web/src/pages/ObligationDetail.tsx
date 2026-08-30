@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type RunEvent, type TraceSummaryDTO, type SpanRecordDTO } from '@/lib/api';
+import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type ObligationEvent, type TraceSummaryDTO, type SpanRecordDTO } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import { RunFlamegraph } from '@/components/RunFlamegraph';
-import { CancelRunButton } from '@/components/CancelRunButton';
-import { ReviewRunPanel } from '@/components/ReviewRunPanel';
+import { ObligationFlamegraph } from '@/components/ObligationFlamegraph';
+import { CancelObligationButton } from '@/components/CancelObligationButton';
+import { ReviewPanel } from '@/components/ReviewPanel';
 
 interface LogLine { ts: string | null; level: string; message: string }
 
@@ -93,12 +93,12 @@ function groupAttempts(spans: SpanRecordDTO[]): AttemptView[] {
 const TERMINAL_EVENTS = ['completed', 'failed', 'canceled'];
 
 /** Statuses the kernel treats as closed (ReportedStatus.is_closed(), mirrored).
- *  Distinct from TERMINAL_EVENTS: a "reviewed" event can close a run
+ *  Distinct from TERMINAL_EVENTS: a "reviewed" event can close a obligation
  *  (approved) or reopen it (rejected, budget left) — the resulting status,
  *  not the event name, says which. */
 const CLOSED_STATUSES = ['completed', 'failed', 'canceled', 'warning', 'stopped'];
 
-/** Map the latest lifecycle event to a displayable status for runs whose
+/** Map the latest lifecycle event to a displayable status for obligations whose
  *  span record does not exist yet (spans export only on completion). */
 function eventToStatus(event: string | undefined): string {
   if (!event) return 'queued';
@@ -112,11 +112,11 @@ function eventToStatus(event: string | undefined): string {
 
 /** The account's authoritative status, from the last lifecycle event that
  *  recorded one (`to`) — falls back to the span-derived status when no such
- *  event exists yet.  The two can disagree: a gated run's callable already
+ *  event exists yet.  The two can disagree: a gated obligation's callable already
  *  returned (its span says "completed"), but the account may have since been
  *  canceled or rejected instead of discharged, and the account is the one
- *  that actually decides whether the run's contract was met. */
-function accountStatus(events: RunEvent[], fallback: string): string {
+ *  that actually decides whether the obligation's contract was met. */
+function accountStatus(events: ObligationEvent[], fallback: string): string {
   for (let i = events.length - 1; i >= 0; i--) {
     const to = events[i].to;
     if (to) return to;
@@ -133,7 +133,7 @@ function eventBadgeClass(event: string): string {
   return 'text-gray-700 bg-gray-100';
 }
 
-function EventTimeline({ events }: { events: RunEvent[] }) {
+function EventTimeline({ events }: { events: ObligationEvent[] }) {
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-100 text-left">
@@ -185,7 +185,7 @@ function Section({ title, icon, defaultOpen = false, children }: { title: string
   );
 }
 
-export default function RunDetail() {
+export default function ObligationDetail() {
   const { id: obligationId = '' } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const parentId = searchParams.get('parentId');
@@ -193,37 +193,37 @@ export default function RunDetail() {
   const queryClient = useQueryClient();
 
   // A 404 is not an error here: spans export only when a span completes and
-  // the read cache only learns about a run after a worker claims it, so a
-  // freshly submitted run legitimately has nothing to show yet.  Model that
+  // the read cache only learns about a obligation after a worker claims it, so a
+  // freshly submitted obligation legitimately has nothing to show yet.  Model that
   // as *data* (null) rather than a query error: React Query drops an
   // errored data-less query back to pending on every interval refetch,
   // which would flip isLoading and remount the whole page twice per poll.
   // With null the state is referentially stable and idle polls render nothing.
-  const fetchRunOrNull = async (id: string) => {
+  const fetchObligationOrNull = async (id: string) => {
     try {
-      return await api.getRunById(id);
+      return await api.getObligationById(id);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) return null;
       throw e;
     }
   };
-  const { data: run, isLoading, error } = useQuery({
-    queryKey: ['run', obligationId],
-    queryFn: () => fetchRunOrNull(obligationId),
+  const { data: obligation, isLoading, error } = useQuery({
+    queryKey: ['obligation', obligationId],
+    queryFn: () => fetchObligationOrNull(obligationId),
     retry: false,
     refetchInterval: (q) => (q.state.data ? false : 2500),
   });
   const { data: parent } = useQuery({
-    queryKey: ['run', parentId], queryFn: () => fetchRunOrNull(parentId!),
+    queryKey: ['obligation', parentId], queryFn: () => fetchObligationOrNull(parentId!),
     enabled: !!parentId,
   });
-  // Lifecycle events are optional: older runs (pre event log) have none and
+  // Lifecycle events are optional: older obligations (pre event log) have none and
   // deployments without storage don't expose the endpoint at all.  While the
-  // run is in flight they are the only live signal, so keep polling until
+  // obligation is in flight they are the only live signal, so keep polling until
   // the timeline reaches a terminal event.
   const { data: events = [] } = useQuery({
-    queryKey: ['run-events', obligationId],
-    queryFn: () => api.getRunEvents(obligationId),
+    queryKey: ['obligation-events', obligationId],
+    queryFn: () => api.getObligationEvents(obligationId),
     retry: false,
     refetchInterval: (q) => {
       const evs = q.state.data;
@@ -234,18 +234,18 @@ export default function RunDetail() {
   });
 
   // Each lifecycle advance may have produced new spans or a final state —
-  // refresh the run record whenever the timeline grows.
+  // refresh the obligation record whenever the timeline grows.
   const eventCount = events.length;
   useEffect(() => {
-    if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
+    if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['obligation', obligationId] });
   }, [eventCount, obligationId, queryClient]);
 
-  const runNotFoundYet = run === null;
+  const obligationNotFoundYet = obligation === null;
 
-  const attempts = useMemo(() => groupAttempts(run?.logs ?? []), [run]);
+  const attempts = useMemo(() => groupAttempts(obligation?.logs ?? []), [obligation]);
   const [selectedAttempt, setSelectedAttempt] = useState<number | null>(null);
   // Latest attempt by default; an out-of-range selection (e.g. after
-  // navigating to another run) falls back to the latest as well.
+  // navigating to another obligation) falls back to the latest as well.
   const effectiveAttempt =
     attempts.find(a => a.attempt === selectedAttempt)?.attempt
     ?? attempts.at(-1)?.attempt
@@ -254,18 +254,18 @@ export default function RunDetail() {
 
   // The server summary (latest attempt) is the fallback when no span records
   // are available; otherwise the selected attempt's rebuilt tree drives the page.
-  const view = current?.tree ?? run ?? null;
+  const view = current?.tree ?? obligation ?? null;
   const logs = current?.logs ?? [];
   const children = view?.children ?? [];
 
   const lastEvent = events.at(-1)?.event;
 
-  // The account, not the span tree, decides whether the run's contract was
-  // met — a gated run's callable already returned (span status "completed")
+  // The account, not the span tree, decides whether the obligation's contract was
+  // met — a gated obligation's callable already returned (span status "completed")
   // but may since have been canceled or rejected instead of discharged.
   const displayStatus = accountStatus(events, view?.status ?? '');
   const isGated = displayStatus === 'gated';
-  const runActive = events.length > 0
+  const obligationActive = events.length > 0
     ? !CLOSED_STATUSES.includes(displayStatus.toLowerCase())
     : isCancellable(view?.status ?? '');
 
@@ -274,13 +274,13 @@ export default function RunDetail() {
       {isLoading && <div className="flex justify-center p-10"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
       {error != null && <div className="text-red-600 bg-red-50 p-4 rounded mb-4">{String(error)}</div>}
 
-      {runNotFoundYet && (
+      {obligationNotFoundYet && (
         <div className="fade-in">
           <div className="bg-white rounded shadow p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-medium">Run Details</h2>
-                {events.length > 0 && runActive && <CancelRunButton obligationId={obligationId} small />}
+                <h2 className="text-lg font-medium">Obligation Details</h2>
+                {events.length > 0 && obligationActive && <CancelObligationButton obligationId={obligationId} small />}
               </div>
               <span className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
@@ -289,27 +289,27 @@ export default function RunDetail() {
             </div>
             <div className="text-sm space-y-1">
               {flowHint && <p><strong>Flow:</strong> {flowHint}</p>}
-              <p><strong>Run ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
+              <p><strong>Obligation ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
               <p><strong>Status:</strong> <StatusBadge status={eventToStatus(lastEvent)} /></p>
             </div>
             <p className="text-gray-500 text-sm mt-4">
               {events.length === 0
-                ? 'Waiting for a worker to pick this run up — details appear as soon as execution is recorded.'
+                ? 'Waiting for a worker to pick this obligation up — details appear as soon as execution is recorded.'
                 : 'Execution in progress — the full record (flamegraph, logs) appears when the attempt finishes.'}
             </p>
           </div>
 
-          {eventToStatus(lastEvent) === 'gated' && <ReviewRunPanel obligationId={obligationId} />}
+          {eventToStatus(lastEvent) === 'gated' && <ReviewPanel obligationId={obligationId} />}
         </div>
       )}
 
-      {run && view && (
+      {obligation && view && (
         <div className="fade-in">
           <div className="bg-white rounded shadow p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-medium">Run Details</h2>
-                {runActive && <CancelRunButton obligationId={obligationId} small />}
+                <h2 className="text-lg font-medium">Obligation Details</h2>
+                {obligationActive && <CancelObligationButton obligationId={obligationId} small />}
               </div>
               {attempts.length > 1 && (
                 <div className="flex items-center gap-2">
@@ -338,7 +338,7 @@ export default function RunDetail() {
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p><strong>Name:</strong> {view.span_name}</p>
-                <p><strong>Run ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
+                <p><strong>Obligation ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
                 <p><strong>Root span:</strong> <span className="font-mono text-xs">{view.span_id}</span></p>
                 <p><strong>Status:</strong> <StatusBadge status={displayStatus} />
                   {attempts.length > 1 && (
@@ -353,10 +353,10 @@ export default function RunDetail() {
             </div>
           </div>
 
-          {isGated && <ReviewRunPanel obligationId={obligationId} />}
+          {isGated && <ReviewPanel obligationId={obligationId} />}
 
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
-            <RunFlamegraph runData={view} />
+            <ObligationFlamegraph obligationData={view} />
           </Section>
         </div>
       )}
@@ -365,16 +365,16 @@ export default function RunDetail() {
           so the branch swap neither remounts the timeline nor resets the
           section's open/closed state. */}
       {events.length > 0 && (
-        <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen={!run}>
+        <Section title="Lifecycle Events" icon={<span>🧭</span>} defaultOpen={!obligation}>
           <EventTimeline events={events} />
         </Section>
       )}
 
-      {run && view && (
+      {obligation && view && (
         <div className="fade-in">
           <Section title="Logs" icon={<span>📄</span>}>
             {logs.length === 0
-              ? <div className="bg-blue-50 text-blue-700 p-4 rounded">No logs found for this run.</div>
+              ? <div className="bg-blue-50 text-blue-700 p-4 rounded">No logs found for this obligation.</div>
               : <div className="bg-[#1e1e1e] text-[#d4d4d4] font-mono text-[13px] p-4 rounded max-h-[600px] overflow-auto">
                   {logs.map((log, i) => (
                     <div key={i} className="mb-3">
@@ -390,10 +390,10 @@ export default function RunDetail() {
           </Section>
 
           {children.length > 0 && (
-            <Section title="Child Runs" icon={<span>🌿</span>}>
+            <Section title="Child Obligations" icon={<span>🌿</span>}>
               <table className="w-full text-sm">
                 <thead className="bg-gray-100 text-left">
-                  <tr>{['Name','Run ID','Status'].map(h => <th key={h} className="py-2 px-3">{h}</th>)}</tr>
+                  <tr>{['Name','Obligation ID','Status'].map(h => <th key={h} className="py-2 px-3">{h}</th>)}</tr>
                 </thead>
                 <tbody>{children.map((c, i) => (
                   <tr key={i} className="border-t">

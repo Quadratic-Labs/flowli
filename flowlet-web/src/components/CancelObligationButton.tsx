@@ -2,23 +2,23 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ban } from 'lucide-react';
 import { api } from '@/lib/api';
 
-/** Request cancellation of an active run.
+/** Request cancellation of an active obligation.
  *
- *  Pending runs are closed as canceled immediately; running runs are flagged
+ *  Pending obligations are closed as canceled immediately; running ones are flagged
  *  and stop at their next heartbeat, so the status may stay "running" for a
  *  short while after a successful request. */
-export function CancelRunButton({ obligationId, small = false, onDone }: {
+export function CancelObligationButton({ obligationId, small = false, onDone }: {
   obligationId: string;
   small?: boolean;
   onDone?: (status: string) => void;
 }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: () => api.cancelRun(obligationId),
+    mutationFn: () => api.cancelObligation(obligationId),
     onSuccess: (resp) => {
-      queryClient.invalidateQueries({ queryKey: ['runs'] });
-      queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
-      queryClient.invalidateQueries({ queryKey: ['run-events', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['obligations'] });
+      queryClient.invalidateQueries({ queryKey: ['obligation', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['obligation-events', obligationId] });
       onDone?.(resp.status);
     },
   });
@@ -26,7 +26,7 @@ export function CancelRunButton({ obligationId, small = false, onDone }: {
   return (
     <span className="inline-flex items-center gap-2">
       <button
-        onClick={() => { if (window.confirm('Cancel this run?')) mutation.mutate(); }}
+        onClick={() => { if (window.confirm('Cancel this obligation?')) mutation.mutate(); }}
         disabled={mutation.isPending}
         title="Request cancellation — running flows stop at their next heartbeat"
         className={`inline-flex items-center gap-1.5 rounded text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 ${

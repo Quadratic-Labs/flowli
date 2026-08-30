@@ -12,26 +12,26 @@ function statusAtIndex(statuses: string[], index: number): string | null {
 
 export default function FlowsList() {
   const flowsQ = useQuery({ queryKey: ['flows'], queryFn: api.getFlows });
-  const runsQ = useQuery({ queryKey: ['runs', 100], queryFn: () => api.queryRuns(100) });
+  const obligationsQ = useQuery({ queryKey: ['obligations', 100], queryFn: () => api.queryObligations(100) });
 
-  const loading = flowsQ.isLoading || runsQ.isLoading;
-  const error = flowsQ.error || runsQ.error;
+  const loading = flowsQ.isLoading || obligationsQ.isLoading;
+  const error = flowsQ.error || obligationsQ.error;
 
   const flows = (() => {
-    if (!flowsQ.data || !runsQ.data) return [];
+    if (!flowsQ.data || !obligationsQ.data) return [];
     const byFlow = new Map<string, ObligationSummaryDTO[]>();
-    runsQ.data.forEach(r => {
+    obligationsQ.data.forEach(r => {
       if (!byFlow.has(r.flow_name)) byFlow.set(r.flow_name, []);
       const arr = byFlow.get(r.flow_name)!;
       if (arr.length < 5) arr.push(r);
     });
     return flowsQ.data.map(f => {
-      const runs = byFlow.get(f.name) || [];
-      const latest = runs[0];
+      const obligations = byFlow.get(f.name) || [];
+      const latest = obligations[0];
       const dur = latest?.ended_at
         ? humanizeDuration(new Date(latest.ended_at).getTime() - new Date(latest.started_at).getTime())
         : null;
-      return { name: f.name, doc: f.docstring ?? null, recent_statuses: runs.map(r => r.status),
+      return { name: f.name, doc: f.docstring ?? null, recent_statuses: obligations.map(r => r.status),
         finished_ago: timeAgo(latest?.ended_at ?? undefined), duration: dur };
     });
   })();
@@ -40,7 +40,7 @@ export default function FlowsList() {
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-normal">Flowlet Workflows</h1>
-        <button onClick={() => { flowsQ.refetch(); runsQ.refetch(); }}
+        <button onClick={() => { flowsQ.refetch(); obligationsQ.refetch(); }}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
           <RefreshCw size={16} /> Refresh
         </button>
@@ -64,7 +64,7 @@ export default function FlowsList() {
                     <div className="flex gap-1.5">
                       {[0,1,2,3,4].map(i => {
                         const s = statusAtIndex(f.recent_statuses, i);
-                        return <span key={i} title={s ?? 'No run'}
+                        return <span key={i} title={s ?? 'No obligation'}
                           style={{ backgroundColor: s ? getStatusColor(s) : undefined }}
                           className={`w-3 h-3 rounded-full inline-block transition-transform hover:scale-125 ${!s ? 'bg-gray-200 border border-gray-300 opacity-50' : ''}`} />;
                       })}
@@ -74,8 +74,8 @@ export default function FlowsList() {
                   <td className="py-3 px-4 text-gray-500">{f.duration ?? '—'}</td>
                   <td className="py-3 px-4 text-gray-500">{f.doc ?? 'N/A'}</td>
                   <td className="py-3 px-4">
-                    <Link to={`/flows/${f.name}/run`}
-                      className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">Run</Link>
+                    <Link to={`/flows/${f.name}/submit`}
+                      className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">Submit</Link>
                   </td>
                 </tr>
               ))}</tbody>

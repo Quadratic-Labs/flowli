@@ -3,22 +3,22 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { api } from '@/lib/api';
 
-/** Resolve a run that is awaiting review: accept discharges it,
+/** Resolve a obligation that is awaiting review: accept discharges it,
  *  reject reopens it for another attempt (or abandons it, if the attempt
  *  budget is spent). The kernel's gate policy — not this form — decides
  *  whether the given actor is eligible; a refusal surfaces as a 403. */
-export function ReviewRunPanel({ obligationId }: { obligationId: string }) {
+export function ReviewPanel({ obligationId }: { obligationId: string }) {
   const [actor, setActor] = useState('');
   const [reason, setReason] = useState('');
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
     mutationFn: (decision: 'approved' | 'rejected') =>
-      api.reviewRun(obligationId, decision, actor.trim(), reason.trim() || undefined),
+      api.reviewObligation(obligationId, decision, actor.trim(), reason.trim() || undefined),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['runs'] });
-      queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
-      queryClient.invalidateQueries({ queryKey: ['run-events', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['obligations'] });
+      queryClient.invalidateQueries({ queryKey: ['obligation', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['obligation-events', obligationId] });
     },
   });
 

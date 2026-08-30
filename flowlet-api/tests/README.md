@@ -113,7 +113,7 @@ Factories provide clean test data generation using Factory Boy:
 ```python
 from tests.factories import RunFactory, RunLogFactory, RunLinkFactory
 
-# Create a run
+# Create an obligation
 run = RunFactory(name="my_flow", run_type="flow")
 
 # Create with custom values

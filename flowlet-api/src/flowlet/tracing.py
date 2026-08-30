@@ -3,9 +3,9 @@ OpenTelemetry-based instrumentation with a blob/file JSONL span exporter.
 
 Flowlet spans are ordinary OTel spans produced by the OTel SDK; what makes
 them Flowlet's is the sink: ``BlobSpanExporter`` writes finished spans as
-JSON lines into the run folder
+JSON lines into the obligation folder
 
-    ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>/spans-<attempt>.jsonl``
+    ``obligations/<flow_name>/<yyyy-mm-dd>/<obligation_id>/spans-<attempt>.jsonl``
 
 which is the product's durable record (the API reads it back — see
 ``flowlet.repository.log``).  Standard OTLP/vendor exporters can be attached
@@ -13,11 +13,11 @@ which is the product's durable record (the API reads it back — see
 
 Identity model:
     - ``obligation_id`` (uuid7) **is** the OTel trace_id — both are 128 bits.  The
-      run folder's date partition is derived from the uuid7 timestamp, so a
+      obligation folder's date partition is derived from the uuid7 timestamp, so a
       retry executed days later still lands in the same folder.
     - span ids are native OTel 64-bit ids, serialised as 16-char hex.
     - every span carries ``flowlet.flow_name`` and ``flowlet.attempt``
-      attributes (stamped from the ambient run context at creation) so the
+      attributes (stamped from the ambient obligation context at creation) so the
       exporter can route spans without needing the root span in the same
       batch.
 
@@ -45,7 +45,7 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import Status, StatusCode
 
-from flowlet.storage import append_lines, run_prefix
+from flowlet.storage import append_lines, obligation_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ _pending_trace_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "flowlet_pending_trace_id", default=None
 )
 # (flow_name, attempt) stamped onto every span created in this context.
-_run_meta: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
-    "flowlet_run_meta", default=None
+_obligation_meta: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
+    "flowlet_obligation_meta", default=None
 )
 
 _provider: TracerProvider | None = None
@@ -71,7 +71,7 @@ _provider_lock = threading.Lock()
 class FlowletIdGenerator(RandomIdGenerator):
     """Id generator whose trace ids are always uuid7 values.
 
-    When a run identity is pending (``run_root`` was entered), the obligation_id is
+    When an obligation identity is pending (``obligation_root`` was entered), the obligation_id is
     used verbatim; otherwise a fresh uuid7 is generated.  Either way every
     trace_id doubles as a valid obligation_id with an embedded timestamp, so the
     exporter can always derive the date partition.
@@ -86,15 +86,15 @@ class FlowletIdGenerator(RandomIdGenerator):
 
 
 class BlobSpanExporter(SpanExporter):
-    """Span exporter appending JSON lines to per-run objects on the store.
+    """Span exporter appending JSON lines to per-obligation objects on the store.
 
     One code path for every backend: appends go through the storage
     helper's compare-and-swap loop.  Exports are infrequent (batch
-    processor) and each run/attempt has a single writer, so contention is
+    processor) and each obligation/attempt has a single writer, so contention is
     negligible.
 
     Attributes:
-        store: CairnDB blob store the ``runs/`` tree is written to.
+        store: CairnDB blob store the ``obligations/`` tree is written to.
     """
 
     def __init__(self, store: BlobStorage):
@@ -102,14 +102,14 @@ class BlobSpanExporter(SpanExporter):
         self._lock = threading.Lock()
 
     def export(self, spans: typing.Sequence[ReadableSpan]) -> SpanExportResult:
-        """Append finished spans to their run objects, grouped per run/attempt.
+        """Append finished spans to their obligation objects, grouped per obligation/attempt.
 
         Args:
             spans: Finished spans handed over by the batch processor.
 
         Returns:
             SUCCESS when every group was written; FAILURE otherwise (the
-            batch processor drops the batch — the run's terminal status
+            batch processor drops the batch — the obligation's terminal status
             lives in the state object regardless).
         """
         groups: dict[tuple[str, UUID, int], list[str]] = {}
@@ -124,7 +124,7 @@ class BlobSpanExporter(SpanExporter):
         ok = True
         with self._lock:
             for (flow_name, obligation_id, attempt), lines in groups.items():
-                key = f"{run_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
+                key = f"{obligation_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
                 if not append_lines(self.store, key, "\n".join(lines) + "\n"):
                     ok = False
                     logger.error(
@@ -151,7 +151,7 @@ def configure_tracing(
     so repeated calls (tests, reconfiguration) simply swap it.
 
     Args:
-        store: CairnDB blob store; spans land under ``runs/``.
+        store: CairnDB blob store; spans land under ``obligations/``.
         extra_exporters: Optional additional sinks (e.g. OTLP) attached
             alongside the mandatory blob exporter.
 
@@ -185,34 +185,34 @@ def _get_tracer() -> trace.Tracer:
 
 
 @contextlib.contextmanager
-def run_root(obligation_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[None]:
-    """Bind a run's identity for the duration of its root execution.
+def obligation_root(obligation_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[None]:
+    """Bind an obligation's identity for the duration of its root execution.
 
     The next root span created inside (by the instrumented flow function)
     adopts ``obligation_id`` as its trace_id, and every span in the context carries
     the flow name and attempt as attributes.
 
     Args:
-        obligation_id: The run's UUID (uuid7) — becomes the trace_id.
+        obligation_id: The obligation's UUID (uuid7) — becomes the trace_id.
         flow_name: Root flow name, used for the storage path.
         attempt: Execution attempt number (1-based).
     """
     id_token = _pending_trace_id.set(int(obligation_id))
-    meta_token = _run_meta.set((flow_name, attempt))
+    meta_token = _obligation_meta.set((flow_name, attempt))
     try:
         yield
     finally:
         _pending_trace_id.reset(id_token)
-        _run_meta.reset(meta_token)
+        _obligation_meta.reset(meta_token)
 
 
 def instrument(fn: typing.Callable, name: str, span_type: str) -> typing.Callable:
     """Wrap a callable so every invocation records an OTel span.
 
     Replaces the legacy custom context stack: nesting, ids, and thread/async
-    propagation are the OTel SDK's job now.  When no ambient run context
+    propagation are the OTel SDK's job now.  When no ambient obligation context
     exists (direct call outside a worker), the wrapper establishes one so
-    the span still lands in a valid run folder.
+    the span still lands in a valid obligation folder.
 
     Args:
         fn: The flow or task function to wrap.
@@ -227,12 +227,12 @@ def instrument(fn: typing.Callable, name: str, span_type: str) -> typing.Callabl
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        meta = _run_meta.get()
+        meta = _obligation_meta.get()
         cm = contextlib.nullcontext()
         if meta is None:
             # Direct invocation (no worker/controller context): this call is
-            # its own run — flow_name is this span's name, attempt is 1.
-            cm = run_root(uuid7(), name, 1)
+            # its own obligation — flow_name is this span's name, attempt is 1.
+            cm = obligation_root(uuid7(), name, 1)
             meta = (name, 1)
         flow_name, attempt = meta
         with cm:
@@ -258,7 +258,7 @@ class SpanEventHandler(logging.Handler):
     """Logging handler that turns log records into events on the current span.
 
     Attach to any logger (typically ``flowlet.log``) so user logging inside
-    flows is captured in the run record without a separate file pipeline.
+    flows is captured in the obligation record without a separate file pipeline.
     """
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -277,7 +277,7 @@ class SpanEventHandler(logging.Handler):
             self.handleError(record)
 
 
-def configure_run_logging() -> None:
+def configure_obligation_logging() -> None:
     """Route the ``flowlet.log`` logger into span events.
 
     Call once at application startup (idempotent).

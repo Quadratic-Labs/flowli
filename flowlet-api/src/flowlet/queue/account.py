@@ -11,7 +11,7 @@ infrastructure at all: the state directory *is* the work list.
   (open, unheld, past its backoff window, not paused) and synthesizes the
   wake-up entirely from the account, the way the sweeper rebuilds lost
   messages.
-- ``ack`` is a no-op — there is no message to remove; resolving the run's
+- ``ack`` is a no-op — there is no message to remove; resolving the obligation's
   state was the whole point.
 
 Trade-offs versus a real queue: dispatch latency is the worker's poll

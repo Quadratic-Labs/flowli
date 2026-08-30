@@ -4,7 +4,7 @@
 > end-to-end verification includes a SIGKILLed worker recovered by the
 > sweeper across process boundaries.  Notable deltas from the plan:
 > the sweeper also re-enqueues *stuck pending* runs (lost retry messages),
-> archived terminal state lands in the run folder as `state.json` (no
+> archived terminal state lands in the obligation folder as `state.json` (no
 > separate state-archive/ tree), and `run_flow`'s sync path now records
 > state like a mini-worker instead of the dead pubsub/snapshot calls.
 
@@ -21,24 +21,24 @@ log formatting).
 submit (API) ──> queue (wake-up signal only) ──> worker job (scale from 0)
                                                     │  claim: CAS state + lease deadline
                                                     │  run:   OTel spans → blob exporter
-                                                    │  done:  CAS terminal → run folder, ack
+                                                    │  done:  CAS terminal → obligation folder, ack
 sweeper (cron job, 1–5 min) ──> list state/ ──> re-enqueue expired leases,
                                                 fail exhausted, archive closed
-API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on demand
+API (scale to 0) ──> refresh local SQLite cache from state/ + obligations/ on demand
 ```
 
-- **Control plane**: `state/<flow>/<obligation_id>.json`, CAS-written, *active runs only*.
+- **Control plane**: `state/<flow>/<obligation_id>.json`, CAS-written, *active obligations only*.
   Ownership = lease (`deadline_at`); no heartbeats, no queue-visibility coupling.
-- **Durable record**: `runs/<flow>/<yyyy-mm-dd>/<obligation_id>/` containing
+- **Durable record**: `obligations/<flow>/<yyyy-mm-dd>/<obligation_id>/` containing
   `spans-<attempt>.jsonl` (OTel spans) and `state.json` (final state, moved
-  here on terminal transition). One folder = one run, self-contained.
+  here on terminal transition). One folder = one obligation, self-contained.
 - **Queue**: pure wake-up. `enqueue / dequeue / ack`. No retry_count, no
   backoff, no renew/release. Message acked immediately after a successful claim.
   Since then made optional per deployment: `queue: {"type": "account"}` replaces
   it with the account-backed job source (submissions recorded directly as
   obligations, workers poll the state directory) — see the deployment guide.
 - **Reads**: API rebuilds/refreshes an ephemeral local SQLite from
-  `state/` (active) + recent `runs/` partitions (history), TTL a few seconds.
+  `state/` (active) + recent `obligations/` partitions (history), TTL a few seconds.
   No pubsub, no subscriber, no snapshot rollout/partition machinery.
 - **Observability**: OTel SDK; obligation_id (uuid7) == trace_id. Mandatory sink is a
   custom `BlobSpanExporter` (product truth); OTLP/App Insights exporters are
@@ -50,9 +50,9 @@ API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on deman
 |---|---|---|
 | IDs | stdlib `uuid7` everywhere; drop `uuid7_desc` | one convention; uuid7 == 128-bit OTel trace_id; recency via date partitions + explicit `DESC` |
 | Span identity | native OTel 64-bit span_id (hex) in records | no impedance with SDK; obligation_id remains the join key |
-| Log layout | `runs/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl` | 1 read per run; hierarchy from parent_span_id fields; per-attempt file avoids two-writer appends after takeover |
+| Log layout | `obligations/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl` | 1 read per obligation; hierarchy from parent_span_id fields; per-attempt file avoids two-writer appends after takeover |
 | Retry authority | `ObligationSummary.attempt/max_retries` only | queue knows nothing about retries |
-| kwargs persistence | stored in the state file at claim time | sweeper must be able to re-enqueue a crashed run without the original message |
+| kwargs persistence | stored in the state file at claim time | sweeper must be able to re-enqueue a crashed obligation without the original message |
 | Lease default | `@flow(timeout=...)`, default 15 min; deadline = now + timeout per attempt | failure detection = deadline + sweep interval |
 | Sweeper deploy | Container Apps cron job, same image, `flowlet sweep` | operational homogeneity with workers; ~$0 either way |
 | Pubsub | removed from the data path entirely | pull-based reads; WS/live-push can return later as a nicety fed from the cache |
@@ -96,7 +96,7 @@ The biggest safety payoff; independent of OTel.
   1. list `state/`;
   2. `running` past deadline → attempt < max ? CAS→`pending` + enqueue (kwargs
      from state) : CAS→`failed`;
-  3. terminal states older than a grace window → move to the run folder
+  3. terminal states older than a grace window → move to the obligation folder
      (Phase 3 target; until then, a `state-archive/<date>/` holding area).
   Sweeps are idempotent and overlap-safe by construction (CAS transfers
   ownership, duplicate messages die in `closed`/`busy`).
@@ -108,16 +108,16 @@ The biggest safety payoff; independent of OTel.
 
 - New `tracing.py`: `TracerProvider` setup + `BlobSpanExporter` (groups spans
   by trace_id, appends JSON lines to
-  `runs/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl`; flow/attempt carried as
+  `obligations/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl`; flow/attempt carried as
   span attributes). Worker calls `force_flush()` before the terminal CAS write.
 - `@flow`/`@task` decorators → `tracer.start_as_current_span`; user logging
   inside flows becomes span events via a small logging-handler shim.
   Delete `context.py` (ContextManager/RunContext), `instrumentation.py`,
   `ContextInjectingFilter`, `JSONSpanFormatter`, and the per-span
   `FilesystemHandler` routing (the LRU handler cache goes with it).
-- Terminal transition writes `state.json` into the run folder and deletes from
-  `state/` — the state-dir hygiene that keeps sweep cost O(active runs).
-- `repository/log.py` v2: read one `spans-*.jsonl` set per run (no recursion,
+- Terminal transition writes `state.json` into the obligation folder and deletes from
+  `state/` — the state-dir hygiene that keeps sweep cost O(active obligations).
+- `repository/log.py` v2: read one `spans-*.jsonl` set per obligation (no recursion,
   no child_span_id convention); `analysis.summarise` v2 builds the tree from
   `parent_span_id`. Optional one-shot converter for existing example data.
 - Optional OTLP exporter behind config for users who want App Insights et al.
@@ -126,10 +126,10 @@ The biggest safety payoff; independent of OTel.
 
 - Replace `SnapshotRepository` + rollout strategies + `SnapshotSubscriber` +
   pubsub publishes with a `CacheRepository`: ephemeral local SQLite,
-  `refresh(ttl≈3–5 s)` scanning `state/` + recent `runs/` date partitions.
+  `refresh(ttl≈3–5 s)` scanning `state/` + recent `obligations/` date partitions.
   Optionally persist the cache file to blob as a cold-start accelerator
   (best-effort, zero correctness role).
-- `RunQuery` reads through the cache; `controller.run_flow`'s dead
+- `ObligationQuery` reads through the cache; `controller.run_flow`'s dead
   `snapshot_repo`/`pubsub` branches removed; WS layer either polls the cache
   or is dropped in favour of client-side polling.
 - Delete `pubsub/` (memory/zeromq/azure), `api/subscriber.py`.
@@ -155,8 +155,8 @@ The biggest safety payoff; independent of OTel.
 | Crash loses buffered in-flight spans | acceptable: state file records the failure; next attempt gets fresh spans; `force_flush` before terminal CAS bounds loss to crashes only |
 | kwargs in state file may contain sensitive values | same exposure as today's queue message; document; storage ACLs are the boundary |
 | Failure detection slower than heartbeats (deadline + sweep) | tune per-flow `timeout`; sweep cadence is a config knob costing ~nothing |
-| Recorded runs in old layout unreadable by v2 readers | pre-1.0: accept; optional converter script in Phase 3 |
-| Global "recent runs" listing scans one date partition per flow | fine at small/medium scale; revisit with a manifest if flow count grows large |
+| Recorded obligations in old layout unreadable by v2 readers | pre-1.0: accept; optional converter script in Phase 3 |
+| Global "recent obligations" listing scans one date partition per flow | fine at small/medium scale; revisit with a manifest if flow count grows large |
 | Phases 1 partially rewritten by 3–4 | accepted cost for keeping every merge self-consistent |
 
 ## Order and effort

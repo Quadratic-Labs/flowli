@@ -10,7 +10,7 @@ A lightweight, thread-safe flow orchestration framework for Python with built-in
 - 🎯 **Simple API**: Clean decorator-based API (`@flow`, `@task`)
 - 🔍 **Observability**: Built-in logging, metrics, and execution history
 - 🌐 **REST API**: FastAPI-based API for managing and monitoring flows
-- 📱 **Web UI**: Simple web interface for visualizing flows and runs
+- 📱 **Web UI**: Simple web interface for visualizing flows and obligations
 
 ## Deployment
 
@@ -157,9 +157,9 @@ def my_task(x, y):
 
 ### Runs
 
-- `GET /runs` - List recent flow runs
-- `GET /runs/{obligation_id}` - Get specific run details
-- `GET /runs/{obligation_id}/tasks` - Get tasks for a run
+- `GET /obligations` - List recent flow obligations
+- `GET /obligations/{obligation_id}` - Get specific obligation details
+- `GET /obligations/{obligation_id}/tasks` - Get tasks for an obligation
 
 ## Configuration
 

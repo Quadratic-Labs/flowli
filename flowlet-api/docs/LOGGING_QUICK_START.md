@@ -11,7 +11,7 @@ flowlet = Flowlet()
 # Setup structured logging
 initialize_logging(
     logs_dir="./storage/logs",
-    runs_dir="./storage/runs"
+    runs_dir="./storage/obligations"
 )
 ```
 
@@ -67,7 +67,7 @@ if all_runs:
 {"logger":"myapp.component","obligation_id":"019b...","span_id":"019b...","message":"processing started",...}
 ```
 
-### 2. Run Summary (runs/{obligation_id}.json)
+### 2. Run Summary (obligations/{obligation_id}.json)
 - Only Flowlet logs (filtered)
 - Hierarchical structure
 - Timing information
@@ -122,7 +122,7 @@ Every log automatically includes:
    └────┬───┘  └────────┘  └──────┬───────┘
         │                          │
         v                          v
- logs/{obligation_id}              runs/{obligation_id}.json
+ logs/{obligation_id}              obligations/{obligation_id}.json
  .jsonl                     (summary)
 ```
 

@@ -194,7 +194,7 @@ def parallel_tasks_flow(count: int = 3):
 def error_handling_demo_flow(fail_chance: float = 0.5):
     """
     Demonstrates the retry budget by running a task that fails at random.
-    Each failed attempt is retried (up to max_retries) before the run is
+    Each failed attempt is retried (up to max_retries) before the obligation is
     accounted as failed.
     """
     result = risky_operation(fail_probability=fail_chance)
@@ -217,7 +217,7 @@ def deploy_to_prod_flow(target: str = "prod"):
     obligation then suspends as ``awaiting_review`` instead of
     auto-discharging. Resolve it with:
 
-        POST /runs/{obligation_id}/review {"decision": "approved", "actor": "lead"}
+        POST /obligations/{obligation_id}/review {"decision": "approved", "actor": "lead"}
 
     Only the 'lead' actor is eligible (see the gate policy above); any other
     actor gets a 403. 'rejected' reopens the obligation for another attempt.

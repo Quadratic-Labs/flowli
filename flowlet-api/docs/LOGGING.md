@@ -20,7 +20,7 @@ The logging system provides:
 storage/
 ├── logs/           # Full append-only JSONL logs
 │   └── {obligation_id}.jsonl
-└── runs/           # Compacted run summaries
+└── obligations/           # Compacted obligation summaries
     └── {obligation_id}.json
 ```
 
@@ -45,7 +45,7 @@ User Code               Flowlet Framework
                                                            ↓
                                                   Compact & Emit
                                                            ↓
-                                                  runs/{obligation_id}.json
+                                                  obligations/{obligation_id}.json
 ```
 
 ### Components
@@ -112,7 +112,7 @@ flowlet = Flowlet()
 # Setup structured logging
 initialize_logging(
     logs_dir="./storage/logs",
-    runs_dir="./storage/runs",
+    runs_dir="./storage/obligations",
     enable_file_logging=True
 )
 ```
@@ -155,7 +155,7 @@ def my_flow():
 # Execute flow
 result = my_flow()
 
-# Get the root run from execution stack
+# Get the root obligation from execution stack
 all_runs = ExecutionContext.get_all_runs()
 if all_runs:
     root_run = all_runs[0]
@@ -175,14 +175,14 @@ from flowlet.logging_manager import get_logging_manager
 
 log_manager = get_logging_manager()
 
-# Start logging for a run
+# Start logging for an obligation
 obligation_id = "019b49b8-f27e-73a5-97f4-ef37fd763918"
 log_manager.start_run_logging(obligation_id)
 
 # Execute your flow/task
 # All logs during execution will go to logs/{obligation_id}.jsonl
 
-# Stop logging for this run
+# Stop logging for this obligation
 log_manager.stop_run_logging(obligation_id)
 ```
 
@@ -206,7 +206,7 @@ Located in `logs/{obligation_id}.jsonl`:
 
 ### Run Summaries (JSON)
 
-Located in `runs/{obligation_id}.json`:
+Located in `obligations/{obligation_id}.json`:
 
 ```json
 {
@@ -258,7 +258,7 @@ All `obligation_id` and `span_id` values use UUID7, which provides:
 Example queries:
 
 ```python
-# Find all runs from the last hour
+# Find all obligations from the last hour
 import uuid_utils as uuid
 from datetime import datetime, timedelta
 
@@ -266,7 +266,7 @@ one_hour_ago = datetime.utcnow() - timedelta(hours=1)
 min_uuid = uuid.uuid7(one_hour_ago)
 
 # All UUIDs >= min_uuid are from the last hour
-recent_runs = [r for r in runs if r.obligation_id >= min_uuid]
+recent_runs = [r for r in obligations if r.obligation_id >= min_uuid]
 ```
 
 ## Integration Points
@@ -435,8 +435,8 @@ Main class for managing logging configuration.
 #### Methods
 
 - `setup()` - Initialize logging system
-- `start_run_logging(obligation_id)` - Start file logging for a run
-- `stop_run_logging(obligation_id)` - Stop file logging for a run
+- `start_run_logging(obligation_id)` - Start file logging for an obligation
+- `stop_run_logging(obligation_id)` - Stop file logging for an obligation
 - `emit_run_summary(obligation_id, clear_buffer=True)` - Generate and write run summary
 - `get_run_logs(obligation_id)` - Get buffered logs without emitting summary
 

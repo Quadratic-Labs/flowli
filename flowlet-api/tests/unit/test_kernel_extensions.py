@@ -106,25 +106,25 @@ class TestPauseAdmission:
         self, state_repo, signals, make_flow_job
     ):
         parent = uuid7()
-        signals.send_scoped(f"run:{parent}", PAUSE, actor="operator")
+        signals.send_scoped(f"obligation:{parent}", PAUSE, actor="operator")
         job = make_flow_job()
         job.parent_id = parent
         executor = FakeExecutor({job.flow_name: lambda **kw: None})
 
         assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 2
 
-    def test_sweeper_keeps_paused_runs_parked(
-        self, state_repo, signals, make_run_state, seed_lease, store
+    def test_sweeper_keeps_paused_obligations_parked(
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending)
+        state = make_obligation_summary(status=ReportedStatus.pending)
         seed_lease(store, state, deadline=datetime.now(UTC) - timedelta(seconds=700))
-        signals.send_scoped(f"run:{state.obligation_id}", PAUSE, actor="operator")
+        signals.send_scoped(f"obligation:{state.obligation_id}", PAUSE, actor="operator")
 
         queue = FakeQueue([])
         stats = sweep(state_repo, queue, signals=signals, pending_grace=0)
         assert stats.requeued == 0
 
-        signals.revoke_scoped(f"run:{state.obligation_id}", PAUSE)
+        signals.revoke_scoped(f"obligation:{state.obligation_id}", PAUSE)
         stats = sweep(state_repo, queue, signals=signals, pending_grace=0)
         assert stats.requeued == 1
 
@@ -207,9 +207,9 @@ class TestResourceLeases:
 @pytest.mark.unit
 class TestTimers:
     def test_due_timer_fires_signal_and_wakeup_then_clears(
-        self, state_repo, signals, timers, make_run_state, seed_lease, store
+        self, state_repo, signals, timers, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending)
+        state = make_obligation_summary(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.obligation_id, "gate_timeout",
@@ -233,9 +233,9 @@ class TestTimers:
         assert timers.due(Timestamp(datetime.now(UTC) + timedelta(days=1))) == []
 
     def test_undue_timer_is_left_alone(
-        self, state_repo, signals, timers, make_run_state, seed_lease, store
+        self, state_repo, signals, timers, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending)
+        state = make_obligation_summary(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.obligation_id, "later",
@@ -250,10 +250,10 @@ class TestTimers:
         assert stats.timers_fired == 0
         assert len(timers.due(Timestamp(datetime.now(UTC) + timedelta(days=1)))) == 1
 
-    def test_timer_for_closed_run_clears_without_firing(
-        self, state_repo, signals, timers, make_run_state, seed_lease, store
+    def test_timer_for_closed_obligation_clears_without_firing(
+        self, state_repo, signals, timers, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
+        state = make_obligation_summary(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.obligation_id, "stale",
@@ -276,18 +276,18 @@ class TestTimers:
 
 @pytest.mark.unit
 class TestExternalExecutor:
-    def _seed_ready(self, make_run_state, seed_lease, store, **overrides):
-        state = make_run_state(status=ReportedStatus.pending, **overrides)
+    def _seed_ready(self, make_obligation_summary, seed_lease, store, **overrides):
+        state = make_obligation_summary(status=ReportedStatus.pending, **overrides)
         seed_lease(store, state)
         return state
 
     def test_full_lifecycle_claim_renew_effect_outcome(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store, attempt=1)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store, attempt=1)
         controller = _controller(state_repo, signals)
 
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1"
@@ -297,7 +297,7 @@ class TestExternalExecutor:
         assert claim.review_policy == "auto"
         epoch = claim.epoch
 
-        renewed = controller.renew_run(
+        renewed = controller.renew_obligation(
             state.obligation_id,
             ExecutorRenewRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
@@ -306,7 +306,7 @@ class TestExternalExecutor:
         )
         assert renewed.signals == {}
 
-        effect = controller.record_run_effect(
+        effect = controller.record_obligation_effect(
             state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
@@ -317,7 +317,7 @@ class TestExternalExecutor:
         assert effect.produced is True
         assert effect.result == "commit:a1b2c3"
 
-        outcome = controller.record_run_outcome(
+        outcome = controller.record_obligation_outcome(
             state.obligation_id,
             ExecutorOutcomeRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
@@ -335,14 +335,14 @@ class TestExternalExecutor:
         assert record.effects[0].result_ref == "commit:a1b2c3"
 
     def test_claim_resumed_from_links_the_attempts(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
         """v0.3 delta 2: a resuming executor records which attempt's
         substrate it continues — continuation is account data."""
-        state = self._seed_ready(make_run_state, seed_lease, store, attempt=1)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store, attempt=1)
         controller = _controller(state_repo, signals)
 
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(
                 flow_name=state.flow_name, executor="s2", resumed_from=1
@@ -355,13 +355,13 @@ class TestExternalExecutor:
         assert record.attempts[0].resumed_from is None
 
     def test_claim_resumed_from_unknown_attempt_is_refused(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store, attempt=1)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store, attempt=1)
         controller = _controller(state_repo, signals)
 
         with pytest.raises(HTTPException) as exc:
-            controller.claim_run(
+            controller.claim_obligation(
                 state.obligation_id,
                 ExecutorClaimRequest(
                     flow_name=state.flow_name, executor="s2", resumed_from=5
@@ -374,23 +374,23 @@ class TestExternalExecutor:
         assert len(record.attempts) == 1
 
     def test_duplicate_effect_report_converges(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
-        first = controller.record_run_effect(
+        first = controller.record_obligation_effect(
             state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 name="send", result="v1",
             ),
         )
-        second = controller.record_run_effect(
+        second = controller.record_obligation_effect(
             state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
@@ -403,42 +403,42 @@ class TestExternalExecutor:
         record = state_repo.read(state.flow_name, state.obligation_id).record
         assert len(record.effects) == 1
 
-    def test_claim_unknown_run_is_404(self, state_repo, signals):
+    def test_claim_unknown_obligation_is_404(self, state_repo, signals):
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
-            controller.claim_run(
+            controller.claim_obligation(
                 uuid7(),
                 ExecutorClaimRequest(flow_name="ghost", executor="s1"),
             )
         assert exc.value.status_code == 404
 
-    def test_claim_of_held_run_is_409(
-        self, state_repo, signals, make_run_state, seed_lease, store
+    def test_claim_of_held_obligation_is_409(
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="other",
             deadline=datetime.now(UTC) + timedelta(seconds=300),
         )
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
-            controller.claim_run(
+            controller.claim_obligation(
                 state.obligation_id,
                 ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
             )
         assert exc.value.status_code == 409
 
     def test_stale_epoch_is_fenced_with_409(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store)
         controller = _controller(state_repo, signals)
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         with pytest.raises(HTTPException) as exc:
-            controller.renew_run(
+            controller.renew_obligation(
                 state.obligation_id,
                 ExecutorRenewRequest(
                     flow_name=state.flow_name, executor="s1",
@@ -448,17 +448,17 @@ class TestExternalExecutor:
         assert exc.value.status_code == 409
 
     def test_raised_outcome_parks_and_wakes_a_retry(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = self._seed_ready(make_run_state, seed_lease, store, max_retries=3)
+        state = self._seed_ready(make_obligation_summary, seed_lease, store, max_retries=3)
         queue = FakeQueue([])
         controller = _controller(state_repo, signals, queue=queue)
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
-        outcome = controller.record_run_outcome(
+        outcome = controller.record_obligation_outcome(
             state.obligation_id,
             ExecutorOutcomeRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
@@ -482,13 +482,13 @@ class TestExternalExecutor:
         seed_lease(store, record)
         state = record.obligation
         controller = _controller(state_repo, signals)
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         assert claim.review_policy == "gated"
 
-        outcome = controller.record_run_outcome(
+        outcome = controller.record_obligation_outcome(
             state.id,
             ExecutorOutcomeRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
@@ -497,16 +497,16 @@ class TestExternalExecutor:
         )
         assert outcome.status == "gated"
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             state.id,
             ReviewRequest(decision="approved", actor="reviewer-1"),
         )
         assert resp.status == "completed"
 
     def test_external_claim_accounts_a_crashed_predecessor(
-        self, state_repo, signals, make_run_state, seed_lease, store
+        self, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.running, worker_id="dead-session",
             attempt=1, max_retries=3,
         )
@@ -516,7 +516,7 @@ class TestExternalExecutor:
         )
         controller = _controller(state_repo, signals)
 
-        claim = controller.claim_run(
+        claim = controller.claim_obligation(
             state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s2"),
         )

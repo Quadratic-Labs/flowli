@@ -1,21 +1,21 @@
-"""Durable run history as a CairnDB event-sourced projection.
+"""Durable obligation history as a CairnDB event-sourced projection.
 
-Archived runs are immutable facts, which makes them a natural fit for a
-CairnDB commit log: the sweeper records a ``run.archived`` event just
-before a closed run's state leaves the active prefix, and readers project
-the log into a durable SQLite ``runs`` table that answers long-horizon
+Archived obligations are immutable facts, which makes them a natural fit for a
+CairnDB commit log: the sweeper records a ``obligation.archived`` event just
+before a closed obligation's state leaves the active prefix, and readers project
+the log into a durable SQLite ``obligations`` table that answers long-horizon
 dashboard queries without rescanning state objects.
 
 This is strictly additive to the control plane: leases and the worker
-state machine are untouched.  CacheRepository's archived-run scan consults
-it (get_states()) to avoid a blob GET per archived run on a cold seed, but
-falls back to reading state.json directly for any run history it doesn't
+state machine are untouched.  CacheRepository's archived-obligation scan consults
+it (get_states()) to avoid a blob GET per archived obligation on a cold seed, but
+falls back to reading state.json directly for any obligation history it doesn't
 have — the cache never depends on history being enabled.  The history log
 is the CairnDB **named log** ``history`` (keys under ``logs/history/``) on
-the same store as everything else, so it never collides with the ``runs/``
+the same store as everything else, so it never collides with the ``obligations/``
 and ``state/`` planes.
 
-History covers only the log plane: *active* run state stays in mutable
+History covers only the log plane: *active* obligation state stays in mutable
 lease documents and is never logged, which is why live reads go through
 the pull-based cache scan rather than a projection — see
 ``docs/architecture.md`` § "Why the pull cache scans storage" for the
@@ -41,14 +41,14 @@ from flowlet.serdes import from_json, to_json
 
 logger = logging.getLogger(__name__)
 
-RUN_ARCHIVED = "run.archived"
+OBLIGATION_ARCHIVED = "obligation.archived"
 HISTORY_SCHEMA_VERSION = "1.1.0"
 HISTORY_LOG_NAME = "history"
 DEFAULT_TTL_SECONDS = 5.0
 
 
 history_registry = HandlerRegistry()
-"""Handlers projecting history events into the SQLite ``runs`` table."""
+"""Handlers projecting history events into the SQLite ``obligations`` table."""
 
 
 async def init_history_schema(db_path: str) -> None:
@@ -62,8 +62,8 @@ async def init_history_schema(db_path: str) -> None:
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS obligations (
+                obligation_id TEXT PRIMARY KEY,
                 flow_name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 worker_id TEXT,
@@ -76,24 +76,24 @@ async def init_history_schema(db_path: str) -> None:
             """
         )
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_runs_flow ON runs (flow_name, ended_at)"
+            "CREATE INDEX IF NOT EXISTS idx_obligations_flow ON obligations (flow_name, ended_at)"
         )
         await db.commit()
 
 
-@history_registry.handler(RUN_ARCHIVED)
-async def _handle_run_archived(db, entry) -> None:
-    """Upsert one archived run; idempotent per obligation id."""
+@history_registry.handler(OBLIGATION_ARCHIVED)
+async def _handle_obligation_archived(db, entry) -> None:
+    """Upsert one archived obligation; idempotent per obligation id."""
     payload = entry.payload
     await db.execute(
         """
-        INSERT OR REPLACE INTO runs
-            (run_id, flow_name, status, worker_id, started_at, ended_at,
+        INSERT OR REPLACE INTO obligations
+            (obligation_id, flow_name, status, worker_id, started_at, ended_at,
              attempt, max_retries, state_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            payload.get("obligation_id") or payload["run_id"],
+            payload["obligation_id"],
             payload["flow_name"],
             payload["status"],
             payload.get("worker_id"),
@@ -107,9 +107,9 @@ async def _handle_run_archived(db, entry) -> None:
 
 
 def _archived_event(state: ObligationSummary) -> Event:
-    """Build the run.archived event carrying the full serialized state."""
+    """Build the obligation.archived event carrying the full serialized state."""
     return Event(
-        event_type=EventType(RUN_ARCHIVED),
+        event_type=EventType(OBLIGATION_ARCHIVED),
         timestamp=CairnTimestamp.now(),
         payload=json.loads(to_json(state)),
         schema_version=SchemaVersion(HISTORY_SCHEMA_VERSION),
@@ -117,8 +117,8 @@ def _archived_event(state: ObligationSummary) -> Event:
 
 
 @define(slots=True, kw_only=True)
-class RunHistory:
-    """Reader/writer for the run-history event log and its SQLite projection.
+class ObligationHistory:
+    """Reader/writer for the obligation-history event log and its SQLite projection.
 
     Synchronous façade over the cairndb named log so the (synchronous)
     sweeper can call :meth:`record_many` directly.  All events of one call
@@ -142,15 +142,15 @@ class RunHistory:
     _last_refresh: float = field(default=0.0, alias="_last_refresh")
 
     def record_many(self, states: list[ObligationSummary]) -> None:
-        """Durably append one run.archived event per state.
+        """Durably append one obligation.archived event per state.
 
         Args:
-            states: Closed runs about to be archived.
+            states: Closed obligations about to be archived.
 
         Raises:
             Exception: Whatever the committer raises when the log cannot be
                 written; callers must then *not* archive the states, so the
-                runs are re-recorded on the next sweep (idempotent).
+                obligations are re-recorded on the next sweep (idempotent).
         """
         if not states:
             return
@@ -182,7 +182,7 @@ class RunHistory:
 
         await self.refresh()
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT DISTINCT flow_name FROM runs")
+            cursor = await db.execute("SELECT DISTINCT flow_name FROM obligations")
             return [row[0] for row in await cursor.fetchall()]
 
     async def list_states(
@@ -191,7 +191,7 @@ class RunHistory:
         """Fetch the most recent *last_n* archived ObligationSummaries for each flow.
 
         Refreshes the projection first (TTL-throttled).  Intended as an
-        additive source RunQuery merges with the ephemeral cache — this is
+        additive source ObligationQuery merges with the ephemeral cache — this is
         the read side of the "long-horizon" queries the history log exists
         for.
 
@@ -215,8 +215,8 @@ class RunHistory:
         async with aiosqlite.connect(self.db_path) as db:
             for name in names:
                 cursor = await db.execute(
-                    "SELECT state_json FROM runs WHERE flow_name = ? "
-                    "ORDER BY run_id DESC LIMIT ?",
+                    "SELECT state_json FROM obligations WHERE flow_name = ? "
+                    "ORDER BY obligation_id DESC LIMIT ?",
                     (name, last_n),
                 )
                 states.extend(
@@ -225,10 +225,10 @@ class RunHistory:
         return states
 
     async def get_states(self, obligation_ids: Iterable[UUID]) -> dict[UUID, ObligationSummary]:
-        """Look up specific archived runs by ID from the local projection.
+        """Look up specific archived obligations by ID from the local projection.
 
-        Bulk point-lookup for CacheRepository's archived-run seeding: a
-        handful of local SQLite reads instead of one blob GET per run.
+        Bulk point-lookup for CacheRepository's archived-obligation seeding: a
+        handful of local SQLite reads instead of one blob GET per obligation.
         Refreshes first (TTL-throttled).
 
         Args:
@@ -251,7 +251,7 @@ class RunHistory:
         results: dict[UUID, ObligationSummary] = {}
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                f"SELECT run_id, state_json FROM runs WHERE run_id IN ({placeholders})",
+                f"SELECT obligation_id, state_json FROM obligations WHERE obligation_id IN ({placeholders})",
                 [str(rid) for rid in ids],
             )
             for obligation_id_str, state_json in await cursor.fetchall():

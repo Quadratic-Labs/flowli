@@ -3,7 +3,7 @@ Example usage of the Flowlet Snapshot System.
 
 This script demonstrates:
 1. Server-side: Building snapshots from log files
-2. Client-side: Querying run history from snapshots
+2. Client-side: Querying obligation history from snapshots
 """
 import asyncio
 from pathlib import Path
@@ -40,7 +40,7 @@ async def server_side_example():
 
     # Configure snapshot settings
     config = SnapshotConfig(
-        max_hot_runs=10000,          # Rollout after 10k runs
+        max_hot_obligations=10000,          # Rollout after 10k obligations
         max_hot_age_days=180,         # Rollout after 6 months
         cold_snapshot_months=3        # 3-month cold snapshot chunks
     )
@@ -71,10 +71,10 @@ async def server_side_example():
     print(f"\n2. Snapshot Status:")
     if manifest.hot:
         print(f"   Hot Snapshot:")
-        print(f"     - Runs: {manifest.hot.run_count}")
+        print(f"     - Obligations: {manifest.hot.run_count}")
         print(f"     - Size: {manifest.hot.size_bytes:,} bytes")
-        if manifest.hot.earliest_run:
-            print(f"     - Date Range: {manifest.hot.earliest_run.date()} to {manifest.hot.latest_run.date()}")
+        if manifest.hot.earliest_obligation:
+            print(f"     - Date Range: {manifest.hot.earliest_obligation.date()} to {manifest.hot.latest_obligation.date()}")
         print(f"     - Last Synced: {manifest.hot.last_synced_log}")
     else:
         print("   No hot snapshot yet (no log files found)")
@@ -82,7 +82,7 @@ async def server_side_example():
     print(f"\n   Cold Snapshots: {len(manifest.cold)}")
     for i, cold in enumerate(manifest.cold, 1):
         print(f"     {i}. {cold.start_date} to {cold.end_date}")
-        print(f"        - Runs: {cold.run_count:,}")
+        print(f"        - Obligations: {cold.run_count:,}")
         print(f"        - Size: {cold.size_bytes:,} bytes")
 
     print("\n✓ Server-side snapshot building complete!")
@@ -93,10 +93,10 @@ async def client_side_example(storage_root: Path):
     """
     Client-side example: Query run history from snapshots.
 
-    This demonstrates how applications/dashboards would query run data.
+    This demonstrates how applications/dashboards would query obligation data.
     """
     print("\n" + "=" * 60)
-    print("CLIENT-SIDE: Querying Run History")
+    print("CLIENT-SIDE: Querying Obligation History")
     print("=" * 60)
 
     # Configure client
@@ -113,24 +113,24 @@ async def client_side_example(storage_root: Path):
         async with FlowletClient(config=config) as client:
             print("   ✓ Client initialized")
 
-            # Example 1: List recent runs
-            print("\n2. Listing recent runs (limit 10)...")
-            runs = client.list_runs(limit=10)
+            # Example 1: List recent obligations
+            print("\n2. Listing recent obligations (limit 10)...")
+            runs = client.list_obligations(limit=10)
 
             if not runs:
                 print("   No runs found in snapshot")
                 return
 
             print(f"   Found {len(runs)} runs:")
-            for run in runs:
+            for obligation in obligations:
                 duration = (run.end_ts - run.start_ts) if run.end_ts and run.start_ts else None
                 duration_str = f"{duration.total_seconds():.1f}s" if duration else "N/A"
                 print(f"     - {run.name}: {run.status} ({duration_str})")
 
-            # Example 2: Get specific run with hierarchy
-            print("\n3. Getting run hierarchy for first run...")
-            first_run = runs[0]
-            summary = client.get_run_summary(first_run.obligation_id)
+            # Example 2: Get specific obligation with hierarchy
+            print("\n3. Getting run hierarchy for first obligation...")
+            first_obligation = runs[0]
+            summary = client.get_obligation_summary(first_obligation.obligation_id)
 
             if summary:
                 print(f"   Run: {summary.span_name}")
@@ -146,29 +146,29 @@ async def client_side_example(storage_root: Path):
 
             # Example 3: Count runs by status
             print("\n4. Counting runs by status...")
-            total_runs = client.count_runs()
-            completed = client.count_runs(status=ReportedStatus.completed)
-            failed = client.count_runs(status=ReportedStatus.failed)
+            total_obligations = client.count_obligations()
+            completed = client.count_obligations(status=ReportedStatus.completed)
+            failed = client.count_obligations(status=ReportedStatus.failed)
 
-            print(f"   Total: {total_runs}")
+            print(f"   Total: {total_obligations}")
             print(f"   Completed: {completed}")
             print(f"   Failed: {failed}")
 
             # Example 4: Filter by flow name
-            if runs:
+            if obligations:
                 flow_name = runs[0].name
                 print(f"\n5. Filtering by flow name '{flow_name}'...")
-                filtered_runs = client.list_runs(flow_name=flow_name, limit=5)
-                print(f"   Found {len(filtered_runs)} runs for flow '{flow_name}'")
+                filtered_obligations = client.list_obligations(flow_name=flow_name, limit=5)
+                print(f"   Found {len(filtered_obligations)} runs for flow '{flow_name}'")
 
             # Example 5: Get run relationships
             if summary and summary.children:
                 print("\n6. Exploring run relationships...")
-                parent = client.get_run_parent(summary.children[0].span_id)
+                parent = client.get_obligation_parent(summary.children[0].span_id)
                 if parent:
                     print(f"   Parent of first child: {parent.name}")
 
-                children = client.get_run_children(first_run.obligation_id)
+                children = client.get_obligation_children(first_obligation.obligation_id)
                 print(f"   Direct children of root: {len(children)}")
 
             print("\n✓ Client-side querying complete!")

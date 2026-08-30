@@ -7,7 +7,7 @@ accounting for a predecessor's in-flight attempt, then appending its own
 attempt — is written atomically with the acquisition itself.  Every
 subsequent write is epoch-fenced: a worker whose lease expired and was
 stolen gets ``LeaseLost`` and discards its outcome.  There are no
-background threads; a run past its lease deadline is simply reclaimable, by
+background threads; an obligation past its lease deadline is simply reclaimable, by
 another worker dequeuing a duplicate message or by the sweeper (see
 ``flowlet.sweeper``).  Flows renew the lease cooperatively via
 ``flowlet.heartbeat()`` (see ``flowlet.lease``), which also observes the
@@ -64,7 +64,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from flowlet.events import EventLog
-from flowlet.lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
+from flowlet.lease import LeaseLost, ObligationCancelled, ObligationLease, bind_lease, unbind_lease
 from flowlet.models import (
     AttemptOutcome,
     Decision,
@@ -96,11 +96,11 @@ class Executor(Protocol):
     """The seam between the kernel and whatever does the work.
 
     An executor runs one attempt's work under an already-bound
-    :class:`~flowlet.lease.RunLease` (so ``flowlet.heartbeat()`` and
+    :class:`~flowlet.lease.ObligationLease` (so ``flowlet.heartbeat()`` and
     ``flowlet.effect()`` are ambient).  The kernel interprets its end:
 
     - return            → outcome ``returned`` (auto-review or gate)
-    - raise RunCancelled → outcome ``interrupted``
+    - raise ObligationCancelled → outcome ``interrupted``
     - raise LeaseLost    → the outcome is discarded (fenced)
     - raise anything     → outcome ``raised`` (retry budget decides)
 
@@ -344,7 +344,7 @@ def conclude_attempt(
             ``interrupted`` (a honoured cancel).
         error: Exception type name when the outcome is ``raised``.
         queue: Optional queue for the retry wake-up.
-        events: Optional run event log.
+        events: Optional obligation event log.
         actor: The executor concluding the attempt.
         timeout_seconds: Per-attempt lease override forwarded to the retry
             wake-up message.
@@ -469,7 +469,7 @@ def execute_job(
     releases the lease.  See the module docstring for the full transition
     table.
 
-    While the flow runs, a :class:`~flowlet.lease.RunLease` is bound to the
+    While the flow obligations, a :class:`~flowlet.lease.ObligationLease` is bound to the
     context so ``flowlet.heartbeat()`` can renew the lease and observe the
     cancel signal.  A cancel finalizes the obligation as abandoned
     (``canceled``); a lost lease discards the outcome without writing.
@@ -482,7 +482,7 @@ def execute_job(
         worker_id: Unique identifier for this worker instance.
         default_timeout: Lease seconds used when the job carries no
             timeout_seconds.
-        events: Optional run event log receiving lifecycle events.
+        events: Optional obligation event log receiving lifecycle events.
         review_policy_for: Per-flow review policy (``"auto"``/
             ``"gated"``) stamped on obligations *created* by this claim;
             None means auto.  Existing obligations keep the policy fixed
@@ -523,7 +523,7 @@ def execute_job(
         )
         return 2
 
-    # Advisory early-outs: skip closed/busy runs without bumping the epoch.
+    # Advisory early-outs: skip closed/busy obligations without bumping the epoch.
     view = state_repo.read(job.flow_name, job.obligation_id)
     job_state = existing_state_case(view)
     if job_state == JobState.closed:
@@ -540,8 +540,8 @@ def execute_job(
     if job_state in (JobState.busy, JobState.gated, JobState.held):
         assert view is not None
         # Duplicate wake-up for an actively-owned, review-parked, or
-        # admission-held run: drop it.  Crashed owners are the sweeper's
-        # job; gated runs resume through the review endpoint and held
+        # admission-held obligation: drop it.  Crashed owners are the sweeper's
+        # job; gated obligations resume through the review endpoint and held
         # runs through the admission endpoint, never a wake-up.
         _ack_safely(queue, job)
         logger.info(
@@ -591,7 +591,7 @@ def execute_job(
         )
         return 0
     if lease is None:
-        # Another worker holds (or won) the lease; they own the run now.
+        # Another worker holds (or won) the lease; they own the obligation now.
         _ack_safely(queue, job)
         logger.info("job_claim_lost", extra={"obligation_id": str(job.obligation_id)})
         return 2
@@ -642,7 +642,7 @@ def execute_job(
         details={"case": str(job_state)},
     )
 
-    run_lease = RunLease(
+    obligation_lease = ObligationLease(
         lease=lease,
         signals=signals,
         effects=EffectRepository(store=state_repo.store),
@@ -651,10 +651,10 @@ def execute_job(
     flow_exc: Exception | None = None
     cancelled = False
     lease_lost = False
-    lease_token = bind_lease(run_lease)
+    lease_token = bind_lease(obligation_lease)
     try:
         executor.execute(record.obligation, len(record.attempts))
-    except RunCancelled:
+    except ObligationCancelled:
         cancelled = True
         logger.info("job_cancelled", extra={"obligation_id": str(job.obligation_id)})
     except LeaseLost:
@@ -667,7 +667,7 @@ def execute_job(
         unbind_lease(lease_token)
 
     if lease_lost:
-        # The run was reclaimed mid-flight; the new owner records the outcome.
+        # The obligation was reclaimed mid-flight; the new owner records the outcome.
         return 2
 
     if cancelled:

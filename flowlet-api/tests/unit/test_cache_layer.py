@@ -6,7 +6,7 @@ from cairndb.storage.filesystem import FilesystemStorage
 from sqlalchemy import select
 
 from flowlet.api.cache import CacheRepository, ObligationRow
-from flowlet.history import RunHistory
+from flowlet.history import ObligationHistory
 from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.types import Timestamp
@@ -29,7 +29,7 @@ def cache(state_repo, tmp_path):
 
 @pytest.fixture
 def history(store, tmp_path):
-    return RunHistory(store=store, db_path=str(tmp_path / "history.db"), ttl=0.0)
+    return ObligationHistory(store=store, db_path=str(tmp_path / "history.db"), ttl=0.0)
 
 
 async def _rows(cache):
@@ -41,9 +41,9 @@ async def _rows(cache):
 @pytest.mark.unit
 class TestRefresh:
     async def test_active_states_are_indexed(
-        self, cache, state_repo, make_run_state, seed_lease, store
+        self, cache, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(flow_name="flow_a")
+        state = make_obligation_summary(flow_name="flow_a")
         seed_lease(store, state)
 
         await cache.refresh()
@@ -54,9 +54,9 @@ class TestRefresh:
         assert rows[0].status == ReportedStatus.running.value
 
     async def test_state_transitions_are_reflected(
-        self, cache, state_repo, make_run_state, seed_lease, store
+        self, cache, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state()
+        state = make_obligation_summary()
         seed_lease(store, state)
         await cache.refresh()
 
@@ -69,9 +69,9 @@ class TestRefresh:
         assert rows[0].status == ReportedStatus.completed.value
 
     async def test_archived_state_survives_removal_from_active_dir(
-        self, cache, state_repo, make_run_state, seed_lease, store
+        self, cache, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
@@ -87,12 +87,12 @@ class TestRefresh:
         assert rows[0].status == ReportedStatus.completed.value
 
     async def test_ttl_throttles_scans(
-        self, state_repo, tmp_path, make_run_state, seed_lease, store
+        self, state_repo, tmp_path, make_obligation_summary, seed_lease, store
     ):
         cache = CacheRepository(state_repo=state_repo, store=state_repo.store, ttl=3600)
         await cache.refresh()
 
-        seed_lease(store, make_run_state())
+        seed_lease(store, make_obligation_summary())
         await cache.refresh()  # within TTL — must not rescan
 
         assert await _rows(cache) == []
@@ -106,12 +106,12 @@ class TestHistorySeeding:
     """When history is configured, a newly-seen archived obligation_id is looked up
     there first — coverage must be identical whether or not it's found."""
 
-    def test_run_known_to_history_is_seeded_without_reading_state_json(
-        self, state_repo, history, make_run_state, seed_lease, store
+    def test_obligation_known_to_history_is_seeded_without_reading_state_json(
+        self, state_repo, history, make_obligation_summary, seed_lease, store
     ):
         import asyncio
 
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
@@ -124,8 +124,8 @@ class TestHistorySeeding:
         # refreshing.  Deleting it outright would also remove it from the
         # listing _read_new_archived_states discovers obligation_ids from in the
         # first place, which would prove nothing either way.
-        from flowlet.storage import run_prefix
-        key = f"{run_prefix(state.flow_name, state.obligation_id)}/state.json"
+        from flowlet.storage import obligation_prefix
+        key = f"{obligation_prefix(state.flow_name, state.obligation_id)}/state.json"
         store.put_object_sync(key, b"not valid json")
 
         cache = CacheRepository(state_repo=state_repo, store=store, history=history, ttl=0.0)
@@ -136,12 +136,12 @@ class TestHistorySeeding:
         assert rows[0].obligation_id == state.obligation_id
         assert rows[0].status == ReportedStatus.completed.value
 
-    async def test_run_unknown_to_history_falls_back_to_state_json(
-        self, state_repo, history, make_run_state, seed_lease, store
+    async def test_obligation_unknown_to_history_falls_back_to_state_json(
+        self, state_repo, history, make_obligation_summary, seed_lease, store
     ):
-        """A run history has never heard of (e.g. archived before history was
+        """An obligation history has never heard of (e.g. archived before history was
         enabled) is still picked up — history is never a coverage gate."""
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )

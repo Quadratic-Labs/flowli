@@ -1,6 +1,6 @@
 """Unit tests for lease renewal (heartbeat) and cooperative cancellation.
 
-Covers RunLease.beat() mechanics (fenced renewal, throttling, cancel-signal
+Covers ObligationLease.beat() mechanics (fenced renewal, throttling, cancel-signal
 observation), the module-level heartbeat() ergonomics, the worker's
 cancel/finalize paths, the controller cancel endpoint, and ObligationSummary serdes
 compatibility for the cancel_requested record field.
@@ -15,8 +15,8 @@ from fastapi import HTTPException
 from flowlet.api.controller import FlowController
 from flowlet.lease import (
     LeaseLost,
-    RunCancelled,
-    RunLease,
+    ObligationCancelled,
+    ObligationLease,
     bind_lease,
     current_lease,
     heartbeat,
@@ -59,11 +59,11 @@ def _claimed_lease(state_repo, make_record, holder="w1", **overrides):
 
 
 # ============================================================================
-# RunLease.beat
+# ObligationLease.beat
 # ============================================================================
 
 
-class TestRunLeaseBeat:
+class TestObligationLeaseBeat:
     def test_beat_renews_envelope_deadline(
         self, state_repo, signals, make_record
     ):
@@ -71,8 +71,8 @@ class TestRunLeaseBeat:
         obligation = lease.record.obligation
         before = state_repo.read(obligation.flow_name, obligation.id).deadline_at
 
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
-        assert run_lease.beat() == {}
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=0.0)
+        assert obligation_lease.beat() == {}
 
         after = state_repo.read(obligation.flow_name, obligation.id).deadline_at
         assert after.value >= before.value
@@ -85,9 +85,9 @@ class TestRunLeaseBeat:
         key = f"state/{obligation.flow_name}/{obligation.id}.json"
         etag_before = store.get_object_sync(key).etag
 
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=3600.0)
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=3600.0)
         # Interval starts at claim time, so this beat is a free no-op.
-        assert run_lease.beat() == {}
+        assert obligation_lease.beat() == {}
         assert store.get_object_sync(key).etag == etag_before  # no write
 
     def test_beat_observes_cancel_signal(
@@ -97,8 +97,8 @@ class TestRunLeaseBeat:
         obligation = lease.record.obligation
         signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
 
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
-        assert CANCEL in run_lease.beat()
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=0.0)
+        assert CANCEL in obligation_lease.beat()
 
     def test_beat_raises_lease_lost_when_fenced(
         self, state_repo, signals, make_record, seed_lease, store
@@ -117,9 +117,9 @@ class TestRunLeaseBeat:
         )
         assert thief is not None
 
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=0.0)
         with pytest.raises(LeaseLost):
-            run_lease.beat()
+            obligation_lease.beat()
 
 
 # ============================================================================
@@ -131,17 +131,17 @@ class TestHeartbeat:
     def test_noop_outside_worker_context(self):
         assert heartbeat() == {}
 
-    def test_raises_run_cancelled_by_default(
+    def test_raises_obligation_cancelled_by_default(
         self, state_repo, signals, make_record
     ):
         lease = _claimed_lease(state_repo, make_record)
         obligation = lease.record.obligation
         signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=0.0)
 
-        token = bind_lease(run_lease)
+        token = bind_lease(obligation_lease)
         try:
-            with pytest.raises(RunCancelled):
+            with pytest.raises(ObligationCancelled):
                 heartbeat()
         finally:
             unbind_lease(token)
@@ -152,9 +152,9 @@ class TestHeartbeat:
         lease = _claimed_lease(state_repo, make_record)
         obligation = lease.record.obligation
         signals.send(obligation.flow_name, obligation.id, CANCEL, actor="api")
-        run_lease = RunLease(lease=lease, signals=signals, min_interval=0.0)
+        obligation_lease = ObligationLease(lease=lease, signals=signals, min_interval=0.0)
 
-        token = bind_lease(run_lease)
+        token = bind_lease(obligation_lease)
         try:
             assert CANCEL in heartbeat(raise_on_cancel=False)
         finally:
@@ -191,12 +191,12 @@ class TestWorkerCancellation:
         assert view.holder is None  # terminal states are released
         assert queue.enqueued == []  # cancellation never schedules a retry
 
-    def test_signalled_run_is_canceled_without_executing(
-        self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
+    def test_signalled_obligation_is_canceled_without_executing(
+        self, state_repo, signals, make_flow_job, make_obligation_summary, seed_lease, store
     ):
         job = make_flow_job()
-        # A released pending run whose cancel arrived while off-lease.
-        state = make_run_state(
+        # A released pending obligation whose cancel arrived while off-lease.
+        state = make_obligation_summary(
             obligation_id=job.obligation_id, flow_name=job.flow_name, status=ReportedStatus.pending
         )
         seed_lease(store, state)
@@ -279,18 +279,18 @@ class TestRelease:
 # ============================================================================
 
 
-class TestCancelRun:
+class TestCancelObligation:
     @pytest.fixture
     def controller(self, state_repo, signals):
         return FlowController(state_repo=state_repo, signals=signals)
 
-    def test_pending_run_is_closed_directly(
-        self, controller, state_repo, make_run_state, seed_lease, store
+    def test_pending_obligation_is_closed_directly(
+        self, controller, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending)
+        state = make_obligation_summary(status=ReportedStatus.pending)
         seed_lease(store, state)  # released — nobody owns it
 
-        resp = controller.cancel_run(state.obligation_id)
+        resp = controller.cancel_obligation(state.obligation_id)
 
         assert resp.status == ReportedStatus.canceled
         assert resp.cancel_requested is True
@@ -299,16 +299,16 @@ class TestCancelRun:
         assert view.state.ended_at is not None
         assert view.holder is None
 
-    def test_running_run_is_signalled_not_closed(
-        self, controller, state_repo, signals, make_run_state, seed_lease, store
+    def test_running_obligation_is_signalled_not_closed(
+        self, controller, state_repo, signals, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="w1",
             deadline=datetime.now(UTC) + timedelta(seconds=300),
         )
 
-        resp = controller.cancel_run(state.obligation_id)
+        resp = controller.cancel_obligation(state.obligation_id)
 
         assert resp.status == ReportedStatus.running
         assert resp.cancel_requested is True
@@ -317,26 +317,26 @@ class TestCancelRun:
         assert view.state.status == ReportedStatus.running
         assert signals.get(state.flow_name, state.obligation_id, CANCEL) is not None
 
-    def test_closed_run_is_reported_unchanged(
-        self, controller, state_repo, make_run_state, seed_lease, store
+    def test_closed_obligation_is_reported_unchanged(
+        self, controller, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.completed)
+        state = make_obligation_summary(status=ReportedStatus.completed)
         seed_lease(store, state)
 
-        resp = controller.cancel_run(state.obligation_id)
+        resp = controller.cancel_obligation(state.obligation_id)
 
         assert resp.status == ReportedStatus.completed
         assert resp.cancel_requested is False
 
-    def test_unknown_run_is_404(self, controller):
+    def test_unknown_obligation_is_404(self, controller):
         with pytest.raises(HTTPException) as exc:
-            controller.cancel_run(uuid7())
+            controller.cancel_obligation(uuid7())
         assert exc.value.status_code == 404
 
     def test_no_storage_is_503(self):
         controller = FlowController()
         with pytest.raises(HTTPException) as exc:
-            controller.cancel_run(uuid7())
+            controller.cancel_obligation(uuid7())
         assert exc.value.status_code == 503
 
 
@@ -346,20 +346,20 @@ class TestCancelRun:
 
 
 class TestCancelRequestedSerdes:
-    def test_roundtrip_preserves_flag(self, make_run_state):
+    def test_roundtrip_preserves_flag(self, make_obligation_summary):
         from flowlet.models import ObligationSummary
 
-        state = make_run_state()
+        state = make_obligation_summary()
         state.cancel_requested = True
         restored = from_json(ObligationSummary)(to_json(state))
         assert restored.cancel_requested is True
 
-    def test_legacy_state_without_flag_defaults_false(self, make_run_state):
+    def test_legacy_state_without_flag_defaults_false(self, make_obligation_summary):
         import json
 
         from flowlet.models import ObligationSummary
 
-        state = make_run_state()
+        state = make_obligation_summary()
         raw = json.loads(to_json(state))
         del raw["cancel_requested"]  # simulate a pre-upgrade state file
         restored = from_json(ObligationSummary)(json.dumps(raw))

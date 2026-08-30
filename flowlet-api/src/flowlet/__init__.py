@@ -3,7 +3,7 @@ from flowlet.lease import (
     LeaseLost as LeaseLost,
 )
 from flowlet.lease import (
-    RunCancelled as RunCancelled,
+    ObligationCancelled as ObligationCancelled,
 )
 from flowlet.lease import (
     effect as effect,

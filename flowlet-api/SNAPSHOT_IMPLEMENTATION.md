@@ -2,13 +2,13 @@
 
 ## Overview
 
-This implementation provides a production-ready SQLite snapshot system for Flowlet that enables efficient querying of run history without reading thousands of individual log files.
+This implementation provides a production-ready SQLite snapshot system for Flowlet that enables efficient querying of obligation history without reading thousands of individual log files.
 
 ## Architecture
 
 The system uses a layered approach with two types of snapshots:
 
-- **Hot Snapshot** (`flowlet-hot.db`): Last 3-6 months of runs, updated incrementally
+- **Hot Snapshot** (`flowlet-hot.db`): Last 3-6 months of obligations, updated incrementally
 - **Cold Snapshots** (`flowlet-cold-YYYY-MM-DD-YYYY-MM-DD.db`): Immutable 3-month archives
 
 ## Components Implemented
@@ -59,12 +59,12 @@ The system uses a layered approach with two types of snapshots:
 **Implemented in:** `client.py`
 
 **Key Methods:**
-- `get_run(obligation_id)` - Fetch specific run
-- `list_runs(flow_name, status, limit, offset)` - List runs with filtering
-- `get_run_summary(obligation_id)` - Get hierarchical run tree
-- `count_runs(flow_name, status)` - Count matching runs
-- `get_run_children(obligation_id)` - Get child tasks
-- `get_run_parent(obligation_id)` - Get parent flow
+- `get_trace(obligation_id)` - Fetch specific obligation
+- `list_obligations(flow_name, status, limit, offset)` - List runs with filtering
+- `get_obligation_summary(obligation_id)` - Get hierarchical obligation tree
+- `count_obligations(flow_name, status)` - Count matching obligations
+- `get_obligation_children(obligation_id)` - Get child tasks
+- `get_obligation_parent(obligation_id)` - Get parent flow
 
 ## Usage Examples
 
@@ -84,7 +84,7 @@ async def build_snapshots():
 
     # Create components
     config = SnapshotConfig(
-        max_hot_runs=10000,
+        max_hot_obligations=10000,
         max_hot_age_days=180,
         cold_snapshot_months=3
     )
@@ -112,14 +112,14 @@ async def build_snapshots():
 asyncio.run(build_snapshots())
 ```
 
-### Client-Side: Querying Runs
+### Client-Side: Querying Obligations
 
 ```python
 import asyncio
 from pathlib import Path
 from flowlet.client import FlowletClient, FlowletClientConfig
 
-async def query_runs():
+async def query_obligations():
     # Configure client
     config = FlowletClientConfig(
         storage_root=Path("/path/to/storage"),
@@ -130,27 +130,27 @@ async def query_runs():
 
     # Use client with async context manager
     async with FlowletClient(config=config) as client:
-        # List recent runs
-        runs = client.list_runs(flow_name="my_flow", limit=10)
-        for run in runs:
+        # List recent obligations
+        runs = client.list_obligations(flow_name="my_flow", limit=10)
+        for obligation in obligations:
             print(f"{run.name}: {run.status} ({run.start_ts})")
 
-        # Get specific run with full hierarchy
-        if runs:
+        # Get specific obligation with full hierarchy
+        if obligations:
             obligation_id = runs[0].obligation_id
-            summary = client.get_run_summary(obligation_id)
+            summary = client.get_obligation_summary(obligation_id)
             print(f"\nRun {summary.span_name}:")
             print(f"  Status: {summary.status}")
             print(f"  Duration: {summary.duration}")
             print(f"  Children: {len(summary.children)}")
 
-        # Count runs by status
+        # Count obligations by status
         from flowlet.types import ReportedStatus
-        completed = client.count_runs(status=ReportedStatus.completed)
-        failed = client.count_runs(status=ReportedStatus.failed)
+        completed = client.count_obligations(status=ReportedStatus.completed)
+        failed = client.count_obligations(status=ReportedStatus.failed)
         print(f"\nCompleted: {completed}, Failed: {failed}")
 
-asyncio.run(query_runs())
+asyncio.run(query_obligations())
 ```
 
 ### Using with Azure Blob Storage
@@ -173,8 +173,8 @@ async def query_azure_runs():
     )
 
     async with FlowletClient(config=config) as client:
-        runs = client.list_runs(limit=10)
-        for run in runs:
+        runs = client.list_obligations(limit=10)
+        for obligation in obligations:
             print(f"{run.name}: {run.status}")
 ```
 
@@ -186,7 +186,7 @@ async def query_azure_runs():
 from flowlet.storage.manifest import SnapshotConfig
 
 config = SnapshotConfig(
-    max_hot_runs=10000,          # Max runs before roll-out
+    max_hot_obligations=10000,          # Max runs before roll-out
     max_hot_age_days=180,         # Max age (days) before roll-out
     cold_snapshot_months=3        # Size of cold snapshot chunks
 )
@@ -231,8 +231,8 @@ storage/
     "path": "snapshots/flowlet-hot.db",
     "last_updated": "2026-02-16T10:00:00Z",
     "run_count": 8543,
-    "earliest_run": "2025-08-16T00:00:00Z",
-    "latest_run": "2026-02-16T09:55:00Z",
+    "earliest_obligation": "2025-08-16T00:00:00Z",
+    "latest_obligation": "2026-02-16T09:55:00Z",
     "last_synced_log": "logs/2026-02-16/run-abc123.jsonl"
   },
   "cold": [
@@ -246,7 +246,7 @@ storage/
     }
   ],
   "config": {
-    "max_hot_runs": 10000,
+    "max_hot_obligations": 10000,
     "max_hot_age_days": 180,
     "cold_snapshot_months": 3
   },
@@ -276,12 +276,12 @@ CREATE TABLE runs (
 CREATE TABLE run_links (
     link_id TEXT PRIMARY KEY,
     parent_obligation_id TEXT NOT NULL,
-    child_run_id TEXT NOT NULL,
+    child_obligation_id TEXT NOT NULL,
     depth INTEGER,
-    FOREIGN KEY (parent_obligation_id) REFERENCES runs(run_id),
-    FOREIGN KEY (child_run_id) REFERENCES runs(run_id),
+    FOREIGN KEY (parent_obligation_id) REFERENCES obligations(obligation_id),
+    FOREIGN KEY (child_obligation_id) REFERENCES obligations(obligation_id),
     INDEX idx_links_parent ON parent_obligation_id,
-    INDEX idx_links_child ON child_run_id
+    INDEX idx_links_child ON child_obligation_id
 );
 ```
 
@@ -291,23 +291,23 @@ CREATE TABLE _flowlet_metadata (
     key TEXT PRIMARY KEY,
     value TEXT
 );
--- Keys: last_synced_log, run_count, earliest_run, latest_run
+-- Keys: last_synced_log, run_count, earliest_obligation, latest_obligation
 ```
 
 ## Performance Expectations
 
 **Snapshot Build:**
-- 10k runs: ~5-10 seconds
-- 100k runs: ~30-60 seconds
+- 10k obligations: ~5-10 seconds
+- 100k obligations: ~30-60 seconds
 - Cold snapshot creation: ~10-20 seconds
 
 **Client Sync:**
 - Initial download: ~2-5 seconds (for hot snapshot)
-- Incremental sync: <1 second (for typical batch of new runs)
+- Incremental sync: <1 second (for typical batch of new obligations)
 - Query performance: <100ms (indexed SQLite queries)
 
 **Storage:**
-- Hot snapshot: ~1KB per run → 10k runs = 10MB
+- Hot snapshot: ~1KB per obligation → 10k obligations = 10MB
 - Cold snapshots: Similar, but immutable
 - Log files: ~500 bytes per RunLog → Keep indefinitely
 
@@ -347,7 +347,7 @@ CREATE TABLE _flowlet_metadata (
 
 3. **Add integration tests** for:
    - End-to-end: Run flows → Build snapshot → Query via client
-   - Large dataset: 100k runs
+   - Large dataset: 100k obligations
    - Concurrent clients syncing simultaneously
    - Roll-out: Trigger cold snapshot creation
 
@@ -357,7 +357,7 @@ CREATE TABLE _flowlet_metadata (
    - On-demand API endpoint
 
 5. **Add web dashboard integration:**
-   - Real-time run monitoring
+   - Real-time obligation monitoring
    - Run history visualization
    - Background sync status indicator
 

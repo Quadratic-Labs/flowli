@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* Entrance for content blocks that appear on poll-driven state changes
-   (placeholder -> full record on RunDetail): fade in instead of popping. */
+   (placeholder -> full record on ObligationDetail): fade in instead of popping. */
 @keyframes fade-slide-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }

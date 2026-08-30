@@ -2,7 +2,7 @@
 Unit tests for analysis.summarise.
 
 Covers:
-- Single-span run: status and timestamps taken straight from the span
+- Single-span obligation: status and timestamps taken straight from the span
 - Parent-child hierarchy wired from parent_span_id
 - Latest attempt selected when spans from several attempts are present
 - ValueError raised when no spans / no root span

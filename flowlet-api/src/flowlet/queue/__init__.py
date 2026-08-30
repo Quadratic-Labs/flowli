@@ -4,7 +4,7 @@ Job queue implementations for asynchronous flow execution.
 The queue is a pure wake-up mechanism: it distributes FlowJob messages to
 workers, nothing more.  Ownership, retry accounting, and failure handling
 all live in the state store (ObligationSummary + CAS writes); workers ack a message
-as soon as the run's state is resolved, and duplicate deliveries are dropped
+as soon as the obligation's state is resolved, and duplicate deliveries are dropped
 by the worker state machine.
 
 Available implementations:
@@ -37,7 +37,7 @@ class JobQueueProtocol(Protocol):
     Protocol for job queue implementations.
 
     Defines the minimal wake-up interface: enqueue a job (optionally
-    delayed), dequeue one for processing, and ack it once the run's state
+    delayed), dequeue one for processing, and ack it once the obligation's state
     has been resolved.
 
     Implementations must be thread-safe as they may be accessed
@@ -79,7 +79,7 @@ class JobQueueProtocol(Protocol):
         Get the next visible job from the queue.
 
         The message becomes invisible to other workers for a short claim
-        window; the worker is expected to resolve the run's state and ack
+        window; the worker is expected to resolve the obligation's state and ack
         well within it.  An unacked message (crashed worker) simply becomes
         visible again — the state machine makes redelivery harmless.
 
@@ -96,7 +96,7 @@ class JobQueueProtocol(Protocol):
         """
         Acknowledge a message, permanently removing it from the queue.
 
-        Called as soon as the run's state has been resolved (claimed,
+        Called as soon as the obligation's state has been resolved (claimed,
         or recognised as closed/busy) — not after execution.
 
         Args:

@@ -1,7 +1,7 @@
-"""Unit tests for the run-history CairnDB projection.
+"""Unit tests for the obligation-history CairnDB projection.
 
 Covers:
-- RunHistory.record_many: durable append of run.archived events
+- ObligationHistory.record_many: durable append of obligation.archived events
 - refresh_history_db: projection round trip, idempotent upserts, incremental replay
 - sweeper integration: record-before-archive ordering and failure handling
 """
@@ -14,7 +14,12 @@ import pytest
 from cairndb.engine.logs import NamespacedStorage
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.history import HISTORY_LOG_NAME, RUN_ARCHIVED, RunHistory, refresh_history_db
+from flowlet.history import (
+    HISTORY_LOG_NAME,
+    OBLIGATION_ARCHIVED,
+    ObligationHistory,
+    refresh_history_db,
+)
 from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.sweeper import sweep
@@ -34,27 +39,27 @@ def history_log(store):
 
 @pytest.fixture
 def history(store):
-    return RunHistory(store=store)
+    return ObligationHistory(store=store)
 
 
 def _rows(db_path):
     async def inner():
         async with aiosqlite.connect(db_path) as db:
             cursor = await db.execute(
-                "SELECT run_id, flow_name, status, state_json FROM runs ORDER BY run_id"
+                "SELECT obligation_id, flow_name, status, state_json FROM obligations ORDER BY obligation_id"
             )
             return await cursor.fetchall()
 
     return asyncio.run(inner())
 
 
-def _closed(make_run_state, **overrides):
+def _closed(make_obligation_summary, **overrides):
     defaults: dict = {
         "status": ReportedStatus.completed,
         "ended_at": Timestamp(datetime.now(UTC) - timedelta(hours=2)),
     }
     defaults.update(overrides)
-    return make_run_state(**defaults)
+    return make_obligation_summary(**defaults)
 
 
 def _seed(store, state):
@@ -65,11 +70,11 @@ def _seed(store, state):
 
 
 @pytest.mark.unit
-class TestRunHistory:
+class TestObligationHistory:
     def test_record_and_project_round_trip(
-        self, store, history, tmp_path, make_run_state
+        self, store, history, tmp_path, make_obligation_summary
     ):
-        states = [_closed(make_run_state, flow_name="etl") for _ in range(3)]
+        states = [_closed(make_obligation_summary, flow_name="etl") for _ in range(3)]
         history.record_many(states)
 
         db_path = str(tmp_path / "history.db")
@@ -87,10 +92,10 @@ class TestRunHistory:
         assert asyncio.run(history_log.list_commits()) == []
 
     def test_re_recording_is_idempotent(
-        self, store, history_log, history, tmp_path, make_run_state
+        self, store, history_log, history, tmp_path, make_obligation_summary
     ):
-        """A sweep crash between record and archive re-records the run."""
-        state = _closed(make_run_state)
+        """A sweep crash between record and archive re-records the obligation."""
+        state = _closed(make_obligation_summary)
         history.record_many([state])
         history.record_many([state])  # second sweep pass
 
@@ -101,25 +106,25 @@ class TestRunHistory:
         assert len(_rows(db_path)) == 1  # but one projected row
 
     def test_incremental_refresh_applies_only_the_tail(
-        self, store, history, tmp_path, make_run_state
+        self, store, history, tmp_path, make_obligation_summary
     ):
         db_path = str(tmp_path / "history.db")
 
-        history.record_many([_closed(make_run_state)])
+        history.record_many([_closed(make_obligation_summary)])
         asyncio.run(refresh_history_db(store, db_path))
         assert len(_rows(db_path)) == 1
 
-        history.record_many([_closed(make_run_state), _closed(make_run_state)])
+        history.record_many([_closed(make_obligation_summary), _closed(make_obligation_summary)])
         asyncio.run(refresh_history_db(store, db_path))
         assert len(_rows(db_path)) == 3
 
-    def test_events_carry_the_archived_type(self, history_log, history, make_run_state):
+    def test_events_carry_the_archived_type(self, history_log, history, make_obligation_summary):
         from cairndb import Commit
 
-        history.record_many([_closed(make_run_state)])
+        history.record_many([_closed(make_obligation_summary)])
         raw = asyncio.run(history_log.get_commit(1))
         commit = Commit.from_msgpack(raw)
-        assert [e.event_type for e in commit.events] == [RUN_ARCHIVED]
+        assert [e.event_type for e in commit.events] == [OBLIGATION_ARCHIVED]
 
 
 @pytest.fixture
@@ -129,51 +134,51 @@ def history_db_path(tmp_path):
 
 @pytest.fixture
 def readable_history(store, history_db_path):
-    """RunHistory pointed at a tmp_path projection file, TTL disabled."""
-    return RunHistory(store=store, db_path=history_db_path, ttl=0.0)
+    """ObligationHistory pointed at a tmp_path projection file, TTL disabled."""
+    return ObligationHistory(store=store, db_path=history_db_path, ttl=0.0)
 
 
 @pytest.mark.unit
-class TestRunHistoryQuerying:
-    """RunHistory's read side: refresh() + list_states()/known_flow_names()."""
+class TestObligationHistoryQuerying:
+    """ObligationHistory's read side: refresh() + list_states()/known_flow_names()."""
 
-    def test_list_states_reflects_recorded_runs(self, readable_history, make_run_state):
-        states = [_closed(make_run_state, flow_name="etl") for _ in range(2)]
+    def test_list_states_reflects_recorded_obligations(self, readable_history, make_obligation_summary):
+        states = [_closed(make_obligation_summary, flow_name="etl") for _ in range(2)]
         readable_history.record_many(states)
 
         rows = asyncio.run(readable_history.list_states(["etl"]))
         assert {r.obligation_id for r in rows} == {s.obligation_id for s in states}
         assert all(r.status == ReportedStatus.completed for r in rows)
 
-    def test_list_states_respects_last_n(self, readable_history, make_run_state):
+    def test_list_states_respects_last_n(self, readable_history, make_obligation_summary):
         readable_history.record_many(
-            [_closed(make_run_state, flow_name="etl") for _ in range(3)]
+            [_closed(make_obligation_summary, flow_name="etl") for _ in range(3)]
         )
         rows = asyncio.run(readable_history.list_states(["etl"], last_n=2))
         assert len(rows) == 2
 
     def test_known_flow_names_covers_every_recorded_flow(
-        self, readable_history, make_run_state
+        self, readable_history, make_obligation_summary
     ):
-        readable_history.record_many([_closed(make_run_state, flow_name="a")])
-        readable_history.record_many([_closed(make_run_state, flow_name="b")])
+        readable_history.record_many([_closed(make_obligation_summary, flow_name="a")])
+        readable_history.record_many([_closed(make_obligation_summary, flow_name="b")])
 
         assert asyncio.run(readable_history.known_flow_names()) == ["a", "b"]
 
     def test_list_states_with_no_flow_names_covers_all(
-        self, readable_history, make_run_state
+        self, readable_history, make_obligation_summary
     ):
-        readable_history.record_many([_closed(make_run_state, flow_name="etl")])
+        readable_history.record_many([_closed(make_obligation_summary, flow_name="etl")])
         rows = asyncio.run(readable_history.list_states())
         assert len(rows) == 1
 
-    def test_refresh_is_ttl_throttled(self, store, history_db_path, make_run_state):
-        history = RunHistory(store=store, db_path=history_db_path, ttl=3600)
-        history.record_many([_closed(make_run_state, flow_name="etl")])
+    def test_refresh_is_ttl_throttled(self, store, history_db_path, make_obligation_summary):
+        history = ObligationHistory(store=store, db_path=history_db_path, ttl=3600)
+        history.record_many([_closed(make_obligation_summary, flow_name="etl")])
         asyncio.run(history.refresh())
         assert asyncio.run(history.known_flow_names()) == ["etl"]
 
-        history.record_many([_closed(make_run_state, flow_name="other")])
+        history.record_many([_closed(make_obligation_summary, flow_name="other")])
         asyncio.run(history.refresh())  # within TTL — must not replay the new commit
         assert asyncio.run(history.known_flow_names()) == ["etl"]
 
@@ -194,10 +199,10 @@ class TestSweeperHistoryIntegration:
             pass
 
     def test_sweep_records_then_archives(
-        self, store, history_log, history, make_run_state
+        self, store, history_log, history, make_obligation_summary
     ):
         state_repo = StateRepository(store=store)
-        state = _closed(make_run_state)
+        state = _closed(make_obligation_summary)
         _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)
@@ -206,16 +211,16 @@ class TestSweeperHistoryIntegration:
         assert state_repo.read(state.flow_name, state.obligation_id) is None
         assert asyncio.run(history_log.list_commits()) == [1]
 
-    def test_sweep_without_history_archives_as_before(self, store, make_run_state):
+    def test_sweep_without_history_archives_as_before(self, store, make_obligation_summary):
         state_repo = StateRepository(store=store)
-        state = _closed(make_run_state)
+        state = _closed(make_obligation_summary)
         _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600)
 
         assert stats.archived == 1
 
-    def test_failed_recording_blocks_archiving(self, store, make_run_state):
+    def test_failed_recording_blocks_archiving(self, store, make_obligation_summary):
         """If the history write fails the state file must stay for a retry."""
 
         class BoomHistory:
@@ -223,7 +228,7 @@ class TestSweeperHistoryIntegration:
                 raise RuntimeError("history log unavailable")
 
         state_repo = StateRepository(store=store)
-        state = _closed(make_run_state)
+        state = _closed(make_obligation_summary)
         _seed(store, state)
 
         stats = sweep(
@@ -234,12 +239,12 @@ class TestSweeperHistoryIntegration:
         assert stats.errors == 1
         assert state_repo.read(state.flow_name, state.obligation_id) is not None
 
-    def test_recent_closed_run_not_recorded(
-        self, store, history_log, history, make_run_state
+    def test_recent_closed_obligation_not_recorded(
+        self, store, history_log, history, make_obligation_summary
     ):
         """Runs inside the grace window are neither recorded nor archived."""
         state_repo = StateRepository(store=store)
-        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
+        state = make_obligation_summary(status=ReportedStatus.completed, ended_at=Timestamp.now())
         _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)

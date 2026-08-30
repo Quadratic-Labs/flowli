@@ -46,7 +46,7 @@ All planned components for the Flowlet Snapshot System have been successfully im
 
 Implemented within `snapshot.py`:
 - Hot/cold snapshot transition logic
-- Configurable thresholds (max_hot_runs, max_hot_age_days)
+- Configurable thresholds (max_hot_obligations, max_hot_age_days)
 - Automatic roll-out when thresholds exceeded
 - Date-based cold snapshot naming
 
@@ -77,12 +77,12 @@ Implemented within `snapshot.py`:
 ### Phase 4: Query API
 
 Implemented in `client.py`:
-- `get_run(obligation_id)` - Fetch specific run
-- `list_runs(flow_name, status, limit, offset)` - List with filtering
-- `get_run_summary(obligation_id)` - Hierarchical tree reconstruction
-- `count_runs(flow_name, status)` - Count matching runs
-- `get_run_children(obligation_id)` - Get child tasks
-- `get_run_parent(obligation_id)` - Get parent flow
+- `get_trace(obligation_id)` - Fetch specific obligation
+- `list_obligations(flow_name, status, limit, offset)` - List with filtering
+- `get_obligation_summary(obligation_id)` - Hierarchical tree reconstruction
+- `count_obligations(flow_name, status)` - Count matching obligations
+- `get_obligation_children(obligation_id)` - Get child tasks
+- `get_obligation_parent(obligation_id)` - Get parent flow
 - `sync_now()` - Manual sync trigger
 - `refresh()` - Force snapshot re-download
 
@@ -184,8 +184,8 @@ Implemented in `client.py`:
 ## Performance Characteristics
 
 ### Server-Side (Snapshot Building)
-- **10k runs**: ~5-10 seconds
-- **100k runs**: ~30-60 seconds (estimated)
+- **10k obligations**: ~5-10 seconds
+- **100k obligations**: ~30-60 seconds (estimated)
 - **Cold snapshot creation**: ~10-20 seconds
 - **Incremental update**: <1 second for typical batch
 
@@ -196,9 +196,9 @@ Implemented in `client.py`:
 - **Background sync overhead**: Minimal (30s default interval)
 
 ### Storage Efficiency
-- **Hot snapshot**: ~1KB per run
+- **Hot snapshot**: ~1KB per obligation
 - **Cold snapshot**: Similar, but immutable
-- **Total for 10k runs**: ~10MB
+- **Total for 10k obligations**: ~10MB
 - **Manifest**: <1KB
 
 ## Tested Scenarios
@@ -211,7 +211,7 @@ Implemented in `client.py`:
 - [x] Client initialization and querying
 
 ### ⚠️ Advanced Scenarios (Not Yet Tested)
-- [ ] Large dataset (100k runs)
+- [ ] Large dataset (100k obligations)
 - [ ] Hot-to-cold roll-out
 - [ ] Concurrent client access
 - [ ] Azure Blob Storage integration
@@ -222,7 +222,7 @@ Implemented in `client.py`:
 
 1. **No WAL System**: The implementation reads log files directly instead of using a Write-Ahead Log, as specified in the plan.
 
-2. **Snapshot Size**: Hot snapshots can grow large if thresholds are set too high. Recommend keeping max_hot_runs <= 10,000.
+2. **Snapshot Size**: Hot snapshots can grow large if thresholds are set too high. Recommend keeping max_hot_obligations <= 10,000.
 
 3. **Concurrent Writers**: Multiple snapshot builders writing simultaneously may conflict. Recommend single scheduled task for building.
 
@@ -263,13 +263,13 @@ Implemented in `client.py`:
 
 #### Medium Priority
 5. **Web Dashboard Integration**
-   - [ ] Real-time run monitoring UI
+   - [ ] Real-time obligation monitoring UI
    - [ ] Background sync status indicator
    - [ ] Snapshot statistics dashboard
    - [ ] Run history visualization
 
 6. **Performance Testing**
-   - [ ] Benchmark with 100k runs
+   - [ ] Benchmark with 100k obligations
    - [ ] Measure query performance with indexes
    - [ ] Test concurrent client access
    - [ ] Profile memory usage
@@ -303,7 +303,7 @@ All implementation uses **existing dependencies only**:
 
 ### Server-Side (Snapshot Building)
 1. **Scheduled Task**: Run every 15-30 minutes via cron or background worker
-2. **Resource Allocation**: 256MB RAM, 1 CPU core sufficient for <100k runs
+2. **Resource Allocation**: 256MB RAM, 1 CPU core sufficient for <100k obligations
 3. **Storage**: Ensure blob storage has write permissions
 4. **Monitoring**: Log snapshot build times and sizes
 
@@ -325,7 +325,7 @@ All implementation uses **existing dependencies only**:
 The Flowlet Snapshot System has been **fully implemented** according to the design specification. All core components (Phases 1-4) are complete and ready for testing and integration.
 
 The implementation provides:
-- ✅ Efficient run history querying via SQLite
+- ✅ Efficient obligation history querying via SQLite
 - ✅ Incremental snapshot updates
 - ✅ Hot/cold snapshot layering
 - ✅ Client-side caching and background sync

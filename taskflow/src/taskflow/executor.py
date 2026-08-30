@@ -3,7 +3,7 @@
 The kernel's :class:`flowlet.worker.Executor` protocol is the boundary
 between claim machinery and work.  This implementation resolves the
 obligation's flow to a registered Python callable and invokes it under the
-run's tracing root, flushing spans before the kernel writes the terminal
+obligation's tracing root, flushing spans before the kernel writes the terminal
 account state.  It is taskflow's half of the same role CodeFlow's harness
 plays for detached agents.
 """
@@ -33,13 +33,13 @@ class RegistryExecutor:
         """Invoke the registered callable under the attempt's trace root.
 
         Exceptions propagate to the kernel, which accounts them
-        (RunCancelled → interrupted, anything else → raised); spans flush
-        in ``finally`` so the run record is complete before the terminal
+        (ObligationCancelled → interrupted, anything else → raised); spans flush
+        in ``finally`` so the obligation record is complete before the terminal
         account write.
         """
         fn = self.registry.get_flow(obligation.flow_name)
         try:
-            with tracing.run_root(
+            with tracing.obligation_root(
                 obligation.id, obligation.flow_name, attempt=attempt
             ):
                 fn(**obligation.kwargs)

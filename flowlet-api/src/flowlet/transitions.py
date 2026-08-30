@@ -5,7 +5,7 @@ obligations from completion events — dependency controllers, reviewer
 dispatch — need lifecycle transitions cheaply and *orderedly* observable.
 Polling ``list_views`` is O(active set) per tick with neither ordering nor
 a cursor; the feed is the CairnDB named log ``transitions`` (keys under
-``logs/transitions/``), fed by the same emission sites as the per-run
+``logs/transitions/``), fed by the same emission sites as the per-obligation
 event log — every :meth:`flowlet.events.EventLog.append` also lands one
 ``account.transition`` event here when the feed is configured.
 
@@ -47,7 +47,7 @@ class TransitionPage:
     """One page of the feed.
 
     Attributes:
-        entries: Transition records in log order — the per-run event record
+        entries: Transition records in log order — the per-obligation event record
             (ts, obligation_id, flow_name, event, actor, attempt, from/to, cause)
             plus ``seq``, the entry's ``<commit>.<index>`` position.
         cursor: Commit number of the last fully-consumed commit; pass it
@@ -76,7 +76,7 @@ class TransitionFeed:
         truth, and reconcilers' fallback poll covers the gap.
 
         Args:
-            record: The per-run event record (see EventLog.append).
+            record: The per-obligation event record (see EventLog.append).
         """
         try:
             asyncio.run(self._append(record))

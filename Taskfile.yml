@@ -43,11 +43,11 @@ tasks:
           -H "Content-Type: application/json" \
           -d "{\"kwargs\": {{.KWARGS}}}" | python3 -m json.tool
 
-  runs:
-    desc: List the most recent run states
+  obligations:
+    desc: List the most recent obligation summaries
     cmds:
       - |
-        curl -s -X POST http://localhost:{{.API_PORT}}/runs/query \
+        curl -s -X POST http://localhost:{{.API_PORT}}/obligations/query \
           -H "Content-Type: application/json" -d '{"last_n": 10}' | python3 -m json.tool
 
   worker:
@@ -56,7 +56,7 @@ tasks:
       - .venv/bin/taskflow work --app taskflow_example.flows:tf
 
   sweep:
-    desc: Run one sweep pass (crash recovery / archival of closed runs)
+    desc: Run one sweep pass (crash recovery / archival of closed obligations)
     cmds:
       - .venv/bin/flowlet sweep --app taskflow_example.flows:tf
 

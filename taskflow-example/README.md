@@ -69,8 +69,8 @@ curl -s http://localhost:8001/flows | python3 -m json.tool
 curl -s http://localhost:8001/flows/hello_world/schema | python3 -m json.tool
 
 # Execute synchronously (blocks until the flow returns).
-# Response body is empty (run_flow -> None by design) -- check /runs/query
-# or /runs/{obligation_id} below to see the recorded state/result.
+# Response body is empty (run_flow -> None by design) -- check /obligations/query
+# or /obligations/{obligation_id} below to see the recorded state/result.
 curl -s -X POST http://localhost:8001/execute/hello_world \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"name": "Taskflow"}}'
@@ -80,19 +80,19 @@ curl -s -X POST http://localhost:8001/submit/simple_etl \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"source": "api"}}'
 
-# List recent run states
-curl -s -X POST http://localhost:8001/runs/query \
+# List recent obligation summaries
+curl -s -X POST http://localhost:8001/obligations/query \
   -H "Content-Type: application/json" -d '{"last_n": 10}' | python3 -m json.tool
 
-# Fetch one run (with logs) and its lifecycle event timeline
-curl -s http://localhost:8001/runs/<obligation_id> | python3 -m json.tool
-curl -s http://localhost:8001/runs/<obligation_id>/events | python3 -m json.tool
+# Fetch one obligation (with logs) and its lifecycle event timeline
+curl -s http://localhost:8001/obligations/<obligation_id> | python3 -m json.tool
+curl -s http://localhost:8001/obligations/<obligation_id>/events | python3 -m json.tool
 
-# Cooperatively cancel a running run
-curl -s -X POST http://localhost:8001/runs/<obligation_id>/cancel
+# Cooperatively cancel a running obligation
+curl -s -X POST http://localhost:8001/obligations/<obligation_id>/cancel
 
 # Resolve a gated obligation (see deploy_to_prod below)
-curl -s -X POST http://localhost:8001/runs/<obligation_id>/review \
+curl -s -X POST http://localhost:8001/obligations/<obligation_id>/review \
   -H "Content-Type: application/json" -d '{"decision": "approved", "actor": "lead"}'
 ```
 
@@ -101,10 +101,10 @@ Flows worth trying:
 | Flow | What it shows |
 |---|---|
 | `hello_world` | Fast, near-instant — good for `/execute`. |
-| `simple_etl`, `data_pipeline` | `fetch_data` sleeps 15s — submit via `/submit` and watch the run sit in `running` on the dashboard/`/runs/query`. |
-| `error_handling_demo` | `risky_operation` fails ~50% of the time; `max_retries=2` — watch the run retry then land on `completed` or `failed`. |
+| `simple_etl`, `data_pipeline` | `fetch_data` sleeps 15s — submit via `/submit` and watch the obligation sit in `running` on the dashboard/`/obligations/query`. |
+| `error_handling_demo` | `risky_operation` fails ~50% of the time; `max_retries=2` — watch the obligation retry then land on `completed` or `failed`. |
 | `parallel_tasks` | Several sequential task calls in one flow. |
-| `deploy_to_prod` | `gated=True` with a `gate` policy restricting review to actor `"lead"`. Submit it, watch it land on `gated` in `/runs/query`, then `POST /runs/{obligation_id}/review` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
+| `deploy_to_prod` | `gated=True` with a `gate` policy restricting review to actor `"lead"`. Submit it, watch it land on `gated` in `/obligations/query`, then `POST /obligations/{obligation_id}/review` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
 
 ## 3. Run the dashboard
 
@@ -146,7 +146,7 @@ job to create a state document in the first place). This topology only
 demonstrates independent scaling/deployment shape, not actual cross-process
 job handoff or sweeper-driven crash recovery.
 
-For a real multi-process demo (e.g. to see the sweeper reclaim a run after
+For a real multi-process demo (e.g. to see the sweeper reclaim an obligation after
 `kill -9`-ing a worker), swap `queue` in `flows.py` for
 `{"type": "account"}`: the queue-less account-backed job source records
 submissions directly in the shared `./storage` state directory, so the

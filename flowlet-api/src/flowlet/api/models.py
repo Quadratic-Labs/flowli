@@ -100,7 +100,7 @@ class FlowArguments(Base):
     Attributes:
         kwargs: Dictionary of keyword arguments for flow execution.
         dispatch_key: Optional idempotency key.  Submissions of the same
-            flow with the same key all resolve to the same run: the first
+            flow with the same key all resolve to the same obligation: the first
             one creates it, later ones are deduplicated (see the
             ``deduplicated`` response field).  Use a webhook delivery id,
             an event id, or ``"<flow>:<schedule tick>"`` for cron overlap
@@ -119,13 +119,13 @@ class FlowArguments(Base):
         max_length=512,
         description=(
             "Idempotency key: repeated submissions with the same key "
-            "collapse onto one run"
+            "collapse onto one obligation"
         ),
     )
     parent_obligation_id: UUID | None = Field(
         None,
         description=(
-            "Submit as a sub-obligation of this run: the child gets its own "
+            "Submit as a sub-obligation of this obligation: the child gets its own "
             "state document and failure domain, linked through "
             "parent_id/root_id"
         ),
@@ -147,16 +147,16 @@ class FlowArguments(Base):
         pattern="^(auto|gated)$",
         description=(
             "Entry gate: 'gated' records the obligation durably but born "
-            "held — not claimable until POST /runs/{obligation_id}/admit releases "
+            "held — not claimable until POST /obligations/{obligation_id}/admit releases "
             "it. Requires storage. Default 'auto' (claimable immediately)."
         ),
     )
     reviews: UUID | None = Field(
         None,
         description=(
-            "Submit this obligation as the reviewer of the given run "
+            "Submit this obligation as the reviewer of the given obligation "
             "(which must be awaiting_review): its job is to record "
-            "the review, its terminal effect a call to that run's "
+            "the review, its terminal effect a call to that obligation's "
             "review endpoint. Stamps caused_by 'review:<obligation_id>' "
             "and records this obligation's id as the target's "
             "reviewer_id — the parked account answers 'who owes me the "
@@ -209,7 +209,7 @@ class ExecutorClaimResponse(Base):
             on a returned outcome instead of self-discharging.
         signals: Signals already pending at claim time.
         messages: Unconsumed message counts per topic at claim time —
-            consume them via POST /runs/{obligation_id}/recv.
+            consume them via POST /obligations/{obligation_id}/recv.
         flow_version: The version the obligation was minted against, when
             recorded (see FlowArguments.flow_version).
     """
@@ -234,7 +234,7 @@ class ExecutorRenewRequest(Base):
 
 class ExecutorRenewResponse(Base):
     """Renewal outcome: new deadline, pending signals, and unconsumed
-    message counts per topic (consume via POST /runs/{obligation_id}/recv)."""
+    message counts per topic (consume via POST /obligations/{obligation_id}/recv)."""
     obligation_id: UUID
     deadline_at: TimestampDTO
     signals: dict[str, Any]
@@ -289,16 +289,16 @@ class ExecutorOutcomeResponse(Base):
     status: str
 
 
-class RunMessageRequest(Base):
-    """Send an ordered message to a run's topic (the message channel).
+class MessageRequest(Base):
+    """Send an ordered message to an obligation's topic (the message channel).
 
     Unlike a signal (a single-shot latch), messages queue: every send
-    appends one, and the run's executor consumes them in send order via
+    appends one, and the obligation's executor consumes them in send order via
     recv.  A ``dedup_key`` makes the send idempotent — duplicate sends with
     the same key converge on one message.
 
     Attributes:
-        flow_name: Flow the run belongs to (part of its key).
+        flow_name: Flow the obligation belongs to (part of its key).
         actor: Who sends the message — recorded in it.
         body: JSON-safe message payload.
         dedup_key: Optional idempotency key (webhook delivery id, event id).
@@ -309,7 +309,7 @@ class RunMessageRequest(Base):
     dedup_key: str | None = Field(None, min_length=1, max_length=512)
 
 
-class RunMessageResponse(Base):
+class MessageResponse(Base):
     """The appended (or converged-on) message.
 
     ``deduplicated`` is True when the dedup_key resolved to a message an
@@ -332,7 +332,7 @@ class ExecutorRecvRequest(Base):
     skipped ordinal would break replay determinism).
 
     Attributes:
-        flow_name: Flow the run belongs to.
+        flow_name: Flow the obligation belongs to.
         executor: The lease holder (same as claimed).
         epoch: The fence token from the claim.
         topic: Channel to consume from.
@@ -353,7 +353,7 @@ class ExecutorRecvResponse(Base):
         topic: Channel consumed from.
         seq: The recv ordinal answered.
         message: ``{"id", "body", "actor", "sent_at"}``, or None when no
-            unconsumed message is pending (retry later, or park the run).
+            unconsumed message is pending (retry later, or park the obligation).
         replayed: True when the ordinal was already recorded and the same
             message was returned again.
         pending: Unconsumed messages left on the topic after this call.
@@ -449,13 +449,13 @@ class FlowSubmissionResponse(Base):
 
     Attributes:
         job_id: Unique job identifier in the queue.
-        obligation_id: Identifier of the run this submission maps to — the
-            pre-existing run when ``deduplicated`` is True.
+        obligation_id: Identifier of the obligation this submission maps to — the
+            pre-existing obligation when ``deduplicated`` is True.
         status: Initial status — ``pending``, or ``held`` when the
             submission declared ``admission: gated``.
         submitted_at: Timestamp when job was submitted.
-        deduplicated: True when a dispatch_key resolved to a run created by
-            an earlier submission; no new run was created.
+        deduplicated: True when a dispatch_key resolved to an obligation created by
+            an earlier submission; no new obligation was created.
 
     Example:
         >>> response = FlowSubmissionResponse(
@@ -471,15 +471,15 @@ class FlowSubmissionResponse(Base):
     deduplicated: bool = False
 
 
-class CancelRunResponse(Base):
-    """API model for a run-cancellation request's outcome.
+class CancelObligationResponse(Base):
+    """API model for an obligation-cancellation request's outcome.
 
     Attributes:
-        obligation_id: The targeted run.
-        status: Run status after the request — ``canceled`` when the run
+        obligation_id: The targeted obligation.
+        status: Obligation status after the request — ``canceled`` when the obligation
             was closed directly (it was not executing), ``running`` when a
             cooperative cancel was flagged for the owning worker, or the
-            pre-existing terminal status when the run was already closed.
+            pre-existing terminal status when the obligation was already closed.
         cancel_requested: Whether the cooperative-cancellation flag is set.
     """
     obligation_id: UUID
@@ -487,16 +487,16 @@ class CancelRunResponse(Base):
     cancel_requested: bool
 
 
-class RunQueryRequest(Base):
-    """API model for querying recent run states.
+class ObligationQueryRequest(Base):
+    """API model for querying recent obligation summaries.
 
     Attributes:
         names: Optional list of flow names to filter by; ``None`` means all
             registered flows.
-        last_n: Maximum number of most-recent runs to return per flow.
+        last_n: Maximum number of most-recent obligations to return per flow.
 
     Example:
-        >>> request = RunQueryRequest(names=["ingest", "transform"], last_n=10)
+        >>> request = ObligationQueryRequest(names=["ingest", "transform"], last_n=10)
     """
     names: list[str] | None = Field(
         None,
@@ -504,18 +504,18 @@ class RunQueryRequest(Base):
     )
     last_n: int = Field(
         5,
-        description="Most recent runs per flow to return"
+        description="Most recent obligations per flow to return"
     )
 
 
 class LogQueryRequest(Base):
-    """API model for fetching a single run with its log entries.
+    """API model for fetching a single obligation with its log entries.
 
     Attributes:
-        flow_name: Name of the flow that owns the run.
-        obligation_id: UUID of the run to fetch.
+        flow_name: Name of the flow that owns the obligation.
+        obligation_id: UUID of the obligation to fetch.
         with_logs: When ``True`` (default) the response includes all log
-            entries recorded during the run.
+            entries recorded during the obligation.
 
     Example:
         >>> request = LogQueryRequest(
@@ -523,8 +523,8 @@ class LogQueryRequest(Base):
         ...     obligation_id=UUID("018f..."),
         ... )
     """
-    flow_name: str = Field(description="Name of the flow that owns the run")
-    obligation_id: UUID = Field(description="UUID of the run to fetch")
+    flow_name: str = Field(description="Name of the flow that owns the obligation")
+    obligation_id: UUID = Field(description="UUID of the obligation to fetch")
     with_logs: bool = Field(True, description="Include log entries in the response")
 
 
@@ -544,12 +544,12 @@ class SpanEventDTO(Base):
 
 
 class SpanRecordDTO(Base):
-    """API DTO for one finished span of a run.
+    """API DTO for one finished span of an obligation.
 
     Mirrors :class:`~flowlet.models.SpanRecord`.
 
     Attributes:
-        obligation_id: Identifier of the enclosing run (equals the trace id).
+        obligation_id: Identifier of the enclosing obligation (equals the trace id).
         span_id: OTel span id, 16-char hex string.
         parent_span_id: Parent span id, or ``None`` for the root span.
         name: Span (flow/task) name.
@@ -579,10 +579,10 @@ class SpanRecordDTO(Base):
 
 
 class TraceSummaryDTO(Base):
-    """API DTO for a single span's summary within a run.
+    """API DTO for a single span's summary within an obligation.
 
     Mirrors :class:`~flowlet.models.TraceSummary`. The tree of ``children``
-    recursively represents the full span hierarchy of a run.
+    recursively represents the full span hierarchy of an obligation.
 
     Attributes:
         span_id: Unique identifier of the span.
@@ -618,29 +618,29 @@ class TraceSummaryDTO(Base):
 
 
 class TraceDTO(TraceSummaryDTO):
-    """API DTO for a complete run including its log entries.
+    """API DTO for a complete trace including its log entries.
 
     Extends :class:`TraceSummaryDTO` with the full list of recorded spans.
 
     Attributes:
-        logs: All span records for this run (all attempts), in file order.
+        logs: All span records for this obligation (all attempts), in file order.
     """
     logs: list[SpanRecordDTO]
 
 
 class ObligationSummaryDTO(Base):
-    """API DTO for the worker-owned execution state of a run.
+    """API DTO for the worker-owned execution state of an obligation.
 
     Mirrors :class:`~flowlet.models.ObligationSummary`. Exposes liveness and retry
     metadata written atomically by the owning worker on every state transition.
 
     Attributes:
-        obligation_id: Unique identifier of the run.
+        obligation_id: Unique identifier of the obligation.
         flow_name: Name of the flow being executed.
         status: Current execution status.
         worker_id: Identifier of the owning worker process.
-        started_at: Timestamp when the run was first started.
-        ended_at: Timestamp when the run finished, or ``None`` if still active.
+        started_at: Timestamp when the obligation was first started.
+        ended_at: Timestamp when the obligation finished, or ``None`` if still active.
         attempt: Current attempt number (1-based).
         max_retries: Maximum number of retry attempts allowed.
     """

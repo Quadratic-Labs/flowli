@@ -1,13 +1,13 @@
 """
-Run analysis: derives structured summaries from recorded spans.
+Trace analysis: derives structured summaries from recorded spans.
 """
 from flowlet.models import TraceSummary, SpanRecord
 
 def summarise(spans: list[SpanRecord]) -> TraceSummary:
-    """Build the run's summary tree from its recorded spans.
+    """Build the obligation's summary tree from its recorded spans.
 
     Args:
-        spans: All SpanRecords of a run, any order, possibly spanning
+        spans: All SpanRecords of an obligation, any order, possibly spanning
             multiple attempts.
 
     Returns:

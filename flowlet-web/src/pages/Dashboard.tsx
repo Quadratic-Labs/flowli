@@ -20,7 +20,7 @@ export default function Dashboard() {
   const healthColor = !metrics ? '#9e9e9e' : metrics.healthStatus === 'green' ? '#4caf50' : metrics.healthStatus === 'orange' ? '#ff9800' : '#f44336';
   const healthText = !metrics ? 'Unknown' : metrics.healthStatus === 'green' ? 'Healthy' : metrics.healthStatus === 'orange' ? 'Warning' : 'Degraded';
 
-  const allFailures = metrics ? [...metrics.failedRuns, ...metrics.longRunningFlows] : [];
+  const allFailures = metrics ? [...metrics.failedObligations, ...metrics.longRunningFlows] : [];
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -56,7 +56,7 @@ export default function Dashboard() {
               { label: `Successful (${metrics.successRate.toFixed(1)}%)`, value: metrics.successfulFlows, color: 'text-green-600' },
               { label: `Failed (${metrics.failureRate.toFixed(1)}%)`, value: metrics.failedFlows, color: 'text-red-600' },
               { label: 'Currently Running', value: metrics.runningFlows, color: 'text-orange-500' },
-              { label: 'Needs Review', value: metrics.gatedRuns.length, color: 'text-purple-600' },
+              { label: 'Needs Review', value: metrics.gatedObligations.length, color: 'text-purple-600' },
             ].map(card => (
               <div key={card.label} className="bg-white rounded shadow p-6 text-center">
                 <div className={`text-5xl font-medium mb-2 ${card.color}`}>{card.value}</div>
@@ -65,8 +65,8 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Gated runs — need a human review, not a failure */}
-          {metrics.gatedRuns.length > 0 && (
+          {/* Gated obligations — need a human review, not a failure */}
+          {metrics.gatedObligations.length > 0 && (
             <div className="bg-white rounded shadow p-6 border-l-4" style={{ borderLeftColor: '#9c27b0' }}>
               <h2 className="text-lg font-medium mb-4">Needs Review</h2>
               <table className="w-full text-sm">
@@ -74,13 +74,13 @@ export default function Dashboard() {
                   <th className="py-2 pr-4">Flow Name</th><th className="py-2 pr-4">Status</th>
                   <th className="py-2 pr-4">Started</th><th className="py-2">Actions</th>
                 </tr></thead>
-                <tbody>{metrics.gatedRuns.map(run => (
-                  <tr key={run.obligation_id} className="border-b hover:bg-gray-50">
-                    <td className="py-2 pr-4 font-medium">{run.flow_name}</td>
-                    <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
-                    <td className="py-2 pr-4">{timeAgo(run.started_at)}</td>
+                <tbody>{metrics.gatedObligations.map(obligation => (
+                  <tr key={obligation.obligation_id} className="border-b hover:bg-gray-50">
+                    <td className="py-2 pr-4 font-medium">{obligation.flow_name}</td>
+                    <td className="py-2 pr-4"><StatusBadge status={obligation.status} /></td>
+                    <td className="py-2 pr-4">{timeAgo(obligation.started_at)}</td>
                     <td className="py-2">
-                      <button onClick={() => nav(`/runs/${run.obligation_id}`)}
+                      <button onClick={() => nav(`/obligations/${obligation.obligation_id}`)}
                         className="text-blue-600 hover:underline">Review</button>
                     </td>
                   </tr>
@@ -103,14 +103,14 @@ export default function Dashboard() {
                   <th className="py-2 pr-4">Duration</th><th className="py-2 pr-4">Started</th>
                   <th className="py-2">Actions</th>
                 </tr></thead>
-                <tbody>{allFailures.map(run => (
-                  <tr key={run.obligation_id} className="border-b hover:bg-gray-50">
-                    <td className="py-2 pr-4 font-medium">{run.flow_name}</td>
-                    <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
+                <tbody>{allFailures.map(obligation => (
+                  <tr key={obligation.obligation_id} className="border-b hover:bg-gray-50">
+                    <td className="py-2 pr-4 font-medium">{obligation.flow_name}</td>
+                    <td className="py-2 pr-4"><StatusBadge status={obligation.status} /></td>
                     <td className="py-2 pr-4">—</td>
-                    <td className="py-2 pr-4">{timeAgo(run.started_at)}</td>
+                    <td className="py-2 pr-4">{timeAgo(obligation.started_at)}</td>
                     <td className="py-2">
-                      <button onClick={() => nav(`/runs/${run.obligation_id}`)}
+                      <button onClick={() => nav(`/obligations/${obligation.obligation_id}`)}
                         className="text-blue-600 hover:underline">View Details</button>
                     </td>
                   </tr>

@@ -1,4 +1,4 @@
-"""Run-scoped message channels — ordered, durable, consumed exactly once.
+"""Obligation-scoped message channels — ordered, durable, consumed exactly once.
 
 Where a signal is a single-shot latch (one name, first payload wins), a
 message channel is a stream: senders append immutable objects under
@@ -68,7 +68,7 @@ class MessageDoc:
 
 @define(slots=True, kw_only=True)
 class MessageRepository:
-    """Repository for immutable, ordered run-scoped messages.
+    """Repository for immutable, ordered obligation-scoped messages.
 
     Attributes:
         store: CairnDB blob store the messages live in.
@@ -100,7 +100,7 @@ class MessageRepository:
         actor: str,
         dedup_key: str | None = None,
     ) -> tuple[str, bool]:
-        """Append a message to a run's topic, optionally idempotently.
+        """Append a message to an obligation's topic, optionally idempotently.
 
         With a ``dedup_key``, the key's claim decides the message id once;
         the message object itself is then written put-if-absent under that
@@ -108,8 +108,8 @@ class MessageRepository:
         duplicate sender converges on one message.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
             topic: Channel name (see :func:`validate_topic`).
             body: JSON-safe message payload.
             actor: Who sent it — recorded in the message.
@@ -184,8 +184,8 @@ class MessageRepository:
         """List a topic's messages in send order, optionally past a cursor.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
             topic: Channel name.
             after: Message id to resume past (exclusive); None from the start.
         """
@@ -205,7 +205,7 @@ class MessageRepository:
         return found
 
     def counts(self, flow_name: str, obligation_id: UUID) -> dict[str, int]:
-        """Total messages per topic for a run (dedup claims excluded)."""
+        """Total messages per topic for an obligation (dedup claims excluded)."""
         prefix = self._prefix(flow_name, obligation_id)
         totals: dict[str, int] = {}
         for key in self.store.list_objects_sync(prefix):
@@ -216,7 +216,7 @@ class MessageRepository:
         return totals
 
     def clear(self, flow_name: str, obligation_id: UUID) -> None:
-        """Remove all of a run's messages (archive-time cleanup)."""
+        """Remove all of an obligation's messages (archive-time cleanup)."""
         for key in self.store.list_objects_sync(self._prefix(flow_name, obligation_id)):
             try:
                 self.store.delete_object_sync(key)

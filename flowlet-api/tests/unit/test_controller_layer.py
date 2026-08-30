@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from flowlet.api.controller import FlowController
-from flowlet.api.models import FlowArguments, LogQueryRequest, RunQueryRequest
+from flowlet.api.models import FlowArguments, LogQueryRequest, ObligationQueryRequest
 
 
 @pytest.mark.unit
@@ -75,15 +75,15 @@ class TestSubmitFlow:
 
 
 @pytest.mark.unit
-class TestQueryRuns:
+class TestQueryObligations:
     async def test_no_querier_raises_503(self, controller: FlowController):
         with pytest.raises(HTTPException) as exc:
-            await controller.query_runs(RunQueryRequest())
+            await controller.query_obligations(ObligationQueryRequest())
         assert exc.value.status_code == 503
 
     async def test_delegates_to_querier(self, controller_with_querier, mock_querier):
         mock_querier.list_recent_states = AsyncMock(return_value=[])
-        result = await controller_with_querier.query_runs(RunQueryRequest())
+        result = await controller_with_querier.query_obligations(ObligationQueryRequest())
         assert result == []
         assert mock_querier.list_recent_states.called
 
@@ -92,7 +92,7 @@ class TestQueryRuns:
     ):
         mock_querier.list_recent_states = AsyncMock(side_effect=RuntimeError("db"))
         with pytest.raises(HTTPException) as exc:
-            await controller_with_querier.query_runs(RunQueryRequest())
+            await controller_with_querier.query_obligations(ObligationQueryRequest())
         assert exc.value.status_code == 400
 
 
@@ -104,7 +104,7 @@ class TestQueryLogs:
         assert exc.value.status_code == 503
 
     def test_value_error_raises_404(self, controller_with_querier, mock_querier):
-        mock_querier.get_run = Mock(side_effect=ValueError("not found"))
+        mock_querier.get_trace = Mock(side_effect=ValueError("not found"))
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
                 LogQueryRequest(flow_name="f", obligation_id=uuid7())
@@ -114,7 +114,7 @@ class TestQueryLogs:
     def test_generic_exception_raises_400(
         self, controller_with_querier, mock_querier
     ):
-        mock_querier.get_run = Mock(side_effect=RuntimeError("boom"))
+        mock_querier.get_trace = Mock(side_effect=RuntimeError("boom"))
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
                 LogQueryRequest(flow_name="f", obligation_id=uuid7())
@@ -126,7 +126,7 @@ class TestQueryLogs:
     ):
         # ValidationError extends ValueError: a response-contract violation
         # must surface as a server bug, never masquerade as "run not found".
-        mock_querier.get_run = Mock(return_value={"span_id": "not-a-valid-run"})
+        mock_querier.get_trace = Mock(return_value={"span_id": "not-a-valid-run"})
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
                 LogQueryRequest(flow_name="f", obligation_id=uuid7())

@@ -16,7 +16,7 @@ from flowlet.models import FlowJob, ReportedStatus, TraceSummary
 
 
 @pytest.mark.unit
-class TestRunStatus:
+class TestReportedStatus:
     """is_closed gates terminal states; ReportedStatus is a projection only."""
 
     @pytest.mark.parametrize(
@@ -37,7 +37,7 @@ class TestRunStatus:
 
 
 @pytest.mark.unit
-class TestRunSummary:
+class TestTraceSummary:
     """TraceSummary.duration is the elapsed time between start and end."""
 
     def test_duration_with_timestamps(self, make_ts):
@@ -86,25 +86,25 @@ class TestRunSummary:
 
 
 @pytest.mark.unit
-class TestRunState:
+class TestObligationSummary:
     """ObligationSummary construction and default values."""
 
-    def test_basic_construction(self, make_run_state):
-        state = make_run_state()
+    def test_basic_construction(self, make_obligation_summary):
+        state = make_obligation_summary()
         assert state.flow_name == "test_flow"
         assert state.status == ReportedStatus.running
         assert state.attempt == 1
         assert state.max_retries == 3
         assert state.ended_at is None
 
-    def test_ended_at_can_be_set(self, make_run_state, make_ts):
+    def test_ended_at_can_be_set(self, make_obligation_summary, make_ts):
         end_ts = make_ts()
-        state  = make_run_state(status=ReportedStatus.completed, ended_at=end_ts)
+        state  = make_obligation_summary(status=ReportedStatus.completed, ended_at=end_ts)
         assert state.ended_at is end_ts
         assert state.status.is_closed()
 
-    def test_run_id_is_uuid(self, make_run_state):
-        state = make_run_state()
+    def test_obligation_id_is_uuid(self, make_obligation_summary):
+        state = make_obligation_summary()
         assert isinstance(state.obligation_id, UUID)
 
 
@@ -121,7 +121,7 @@ class TestFlowJob:
         assert job.job_id is not None
         assert job.obligation_id is not None
 
-    def test_job_id_differs_from_run_id(self):
+    def test_job_id_differs_from_obligation_id(self):
         job = FlowJob(flow_name="my_flow")
         assert job.job_id != job.obligation_id
 

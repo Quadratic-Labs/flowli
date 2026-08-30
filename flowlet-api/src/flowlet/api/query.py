@@ -1,5 +1,5 @@
 """
-Query layer for run history: ObligationSummary from SQLite, full Run from logs.
+Query layer for obligation history: ObligationSummary from SQLite, full Trace from logs.
 
 Three query patterns are served:
 
@@ -8,7 +8,7 @@ Three query patterns are served:
    never been run, which simply produce no rows).
 2. ``list_states``        — paginated, filterable list of ObligationSummary rows for
    list / table views.
-3. ``get_run``            — full run detail built by loading log files
+3. ``get_trace``            — full trace detail built by loading log files
    recursively (all subflows / subtasks) and deriving a ``TraceSummary`` tree via
    :func:`~flowlet.analysis.summarise`.
 """
@@ -26,17 +26,17 @@ from flowlet.serdes import destructure
 from flowlet.api.cache import CacheRepository, ObligationRow
 
 if TYPE_CHECKING:
-    from flowlet.history import RunHistory
+    from flowlet.history import ObligationHistory
 
 logger = logging.getLogger(__name__)
 
 
-class RunQuery:
-    """Read-only query object for run history.
+class ObligationQuery:
+    """Read-only query object for obligation history.
 
-    Combines the run cache (ObligationSummary rows, pull-refreshed from state files)
+    Combines the obligation cache (ObligationSummary rows, pull-refreshed from state files)
     with span-file data to serve all read operations required by the API.
-    When a RunHistory is configured, its durable SQLite projection is an
+    When a ObligationHistory is configured, its durable SQLite projection is an
     additive long-horizon source, merged into ``list_recent_states``.
 
     Attributes:
@@ -44,8 +44,8 @@ class RunQuery:
             on demand from storage.
         cache: Also enumerates known flow names when no explicit filter is
             given to ``list_recent_states``.
-        log_repo: Loads span files from run folders.
-        history: Optional RunHistory; None when ``configs.history`` is off.
+        log_repo: Loads span files from obligation folders.
+        history: Optional ObligationHistory; None when ``configs.history`` is off.
     """
     SQL_RECENT_STATES = (
         select(ObligationRow)
@@ -63,7 +63,7 @@ class RunQuery:
         *,
         cache_repo: CacheRepository,
         log_repo: LogRepository,
-        history: "RunHistory | None" = None,
+        history: "ObligationHistory | None" = None,
         **_,
     ):
         """Initialise the query object.
@@ -71,7 +71,7 @@ class RunQuery:
         Args:
             cache_repo: CacheRepository owning the local SQLite engine.
             log_repo: LogRepository for reading span files from storage.
-            history: Optional RunHistory providing the durable long-horizon
+            history: Optional ObligationHistory providing the durable long-horizon
                 projection; None when ``configs.history`` is off.
             **_: Unused keyword arguments accepted for dependency-injection
                 compatibility.
@@ -107,7 +107,7 @@ class RunQuery:
 
         async with self._session_factory()() as session:
             result = await session.execute(
-                text("SELECT DISTINCT flow_name FROM runs ORDER BY flow_name")
+                text("SELECT DISTINCT flow_name FROM obligations ORDER BY flow_name")
             )
             return [row[0] for row in result.fetchall()]
 
@@ -121,10 +121,10 @@ class RunQuery:
 
         When *flow_names* is ``None`` the cache's and (if configured) the
         history projection's distinct flow names are used, so every flow
-        that ever produced a run is represented — including one whose only
-        runs have aged out of the ephemeral cache since the last cold start.
+        that ever produced an obligation is represented — including one whose only
+        obligations have aged out of the ephemeral cache since the last cold start.
 
-        When a RunHistory is configured, its rows are merged in per flow,
+        When a ObligationHistory is configured, its rows are merged in per flow,
         additively: a obligation_id already present from the cache is never
         duplicated or overwritten (the cache is live and always wins), and
         the merged list per flow is still capped at *last_n*.
@@ -186,7 +186,7 @@ class RunQuery:
     ) -> list[ObligationRow]:
         """List ObligationSummary rows with flexible filters, ordered newest first.
 
-        Intended for paginated list or table views where runs from all flows are
+        Intended for paginated list or table views where obligations from all flows are
         shown together without per-flow grouping.
 
         Args:
@@ -226,10 +226,10 @@ class RunQuery:
         """Resolve the flow that owns *obligation_id*, or None when unknown.
 
         Args:
-            obligation_id: UUID of the run to resolve.
+            obligation_id: UUID of the obligation to resolve.
 
         Returns:
-            The owning flow's name, or None if the run is not in the cache.
+            The owning flow's name, or None if the obligation is not in the cache.
         """
         await self.cache.refresh()
         async with self._session_factory()() as session:
@@ -238,14 +238,14 @@ class RunQuery:
             )
             return result.scalar_one_or_none()
 
-    async def get_run_by_run_id(self, obligation_id: UUID, with_logs: bool = True) -> dict:
-        """Load a run by obligation_id alone, looking up flow_name from the database.
+    async def get_trace_by_id(self, obligation_id: UUID, with_logs: bool = True) -> dict:
+        """Load an obligation by obligation_id alone, looking up flow_name from the database.
 
-        Convenience wrapper around ``get_run`` that first queries the SQLite
-        snapshot to discover which flow owns the run.
+        Convenience wrapper around ``get_trace`` that first queries the SQLite
+        snapshot to discover which flow owns the obligation.
 
         Args:
-            obligation_id: UUID of the run to fetch.
+            obligation_id: UUID of the obligation to fetch.
             with_logs: should or not include logs in the return value
 
         Returns:
@@ -253,7 +253,7 @@ class RunQuery:
             if requested.  Suitable for ``TraceDTO.model_validate(result)``.
 
         Raises:
-            ValueError: When no run with the given ``obligation_id`` exists.
+            ValueError: When no obligation with the given ``obligation_id`` exists.
         """
         await self.cache.refresh()
         async with self._session_factory()() as session:
@@ -262,15 +262,15 @@ class RunQuery:
             )
             row = result.scalar_one_or_none()
             if row is None:
-                raise ValueError(f"Run {obligation_id} not found")
-            return self.get_run(row.flow_name, obligation_id, with_logs)
+                raise ValueError(f"Obligation {obligation_id} not found")
+            return self.get_trace(row.flow_name, obligation_id, with_logs)
 
-    def get_run(self, flow_name: str, obligation_id: UUID, with_logs: bool = True) -> dict:
-        """Load all logs for a run and compute its hierarchical summary.
+    def get_trace(self, flow_name: str, obligation_id: UUID, with_logs: bool = True) -> dict:
+        """Load all logs for an obligation and compute its hierarchical summary.
 
         Reads log entries recursively from storage starting at the root span
         identified by (*flow_name*, *obligation_id*), following every
-        the run folder — every span of the run lives there, so subflow and
+        the obligation folder — every span of the obligation lives there, so subflow and
         all nested subflows and subtasks are included.
 
         Derives a :class:`~flowlet.models.TraceSummary` tree from those logs via
@@ -295,7 +295,7 @@ class RunQuery:
         """
         logs = self.log_repo.get_spans(flow_name, obligation_id)
         logger.debug(
-            "get_run",
+            "get_trace",
             extra={"flow_name": flow_name, "obligation_id": str(obligation_id), "logs": len(logs)},
         )
         summary = analysis.summarise(logs)

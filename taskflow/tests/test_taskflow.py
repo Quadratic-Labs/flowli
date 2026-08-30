@@ -93,7 +93,7 @@ class TestSubmitValidation:
 
 
 class TestSyncExecute:
-    def test_execute_accounts_the_run(self, tf, http):
+    def test_execute_accounts_the_obligation(self, tf, http):
         seen = []
 
         @tf.flow()
@@ -104,7 +104,7 @@ class TestSyncExecute:
         assert resp.status_code == 200
         assert seen == ["ada"]
 
-        # The synchronous run left a full account.
+        # The synchronous execution left a full account.
         views = tf.state_repo.list_views("greet")
         assert len(views) == 1
         record = views[0].record
@@ -147,7 +147,7 @@ class TestWorkerLoop:
         assert _work_once(tf) == 0
         assert results == [42]
         state = http.post(
-            "/runs/query", json={"flow_name": "pipeline", "limit": 10}
+            "/obligations/query", json={"flow_name": "pipeline", "limit": 10}
         ).json()
         assert state[0]["obligation_id"] == obligation_id
         assert state[0]["status"] == "completed"
@@ -165,13 +165,13 @@ class TestWorkerLoop:
         obligation_id = str(view.record.obligation.id)
 
         refused = http.post(
-            f"/runs/{obligation_id}/review",
+            f"/obligations/{obligation_id}/review",
             json={"decision": "approved", "actor": "intern"},
         )
         assert refused.status_code == 403
 
         approved = http.post(
-            f"/runs/{obligation_id}/review",
+            f"/obligations/{obligation_id}/review",
             json={"decision": "approved", "actor": "lead"},
         )
         assert approved.status_code == 200

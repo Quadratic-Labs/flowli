@@ -92,7 +92,7 @@ class TestHeldObligation:
 
 @pytest.mark.unit
 class TestHeldIsNotClaimable:
-    def test_wakeup_for_held_run_is_dropped(
+    def test_wakeup_for_held_obligation_is_dropped(
         self, state_repo, signals, make_flow_job
     ):
         job = make_flow_job()
@@ -133,7 +133,7 @@ class TestHeldIsNotClaimable:
         assert wake is not None
         assert wake.obligation_id == obligation.id
 
-    def test_sweeper_leaves_held_runs_alone(self, state_repo, signals):
+    def test_sweeper_leaves_held_obligations_alone(self, state_repo, signals):
         record = _held_record()
         obligation = record.obligation
         state_repo.create(obligation.flow_name, obligation.id, record)
@@ -203,7 +203,7 @@ class TestAdmissionEndpoints:
             "test_flow", FlowArguments(kwargs={"x": 1}, admission="gated")
         )
 
-        admitted = controller.admit_run(
+        admitted = controller.admit_obligation(
             resp.obligation_id,
             AdmissionRequest(actor="dep-controller", reason="dep_discharged"),
         )
@@ -216,16 +216,16 @@ class TestAdmissionEndpoints:
         assert wake.obligation_id == resp.obligation_id
         assert wake.caused_by == "admission:released_by:dep-controller"
 
-    def test_admit_on_non_held_run_is_409(self, state_repo, signals):
+    def test_admit_on_non_held_obligation_is_409(self, state_repo, signals):
         queue = FakeQueue([])
         controller = self._controller(state_repo, signals, queue=queue)
         resp = controller.submit_flow(
             "test_flow", FlowArguments(admission="gated")
         )
-        controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
+        controller.admit_obligation(resp.obligation_id, AdmissionRequest(actor="dep"))
 
         with pytest.raises(HTTPException) as exc:
-            controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
+            controller.admit_obligation(resp.obligation_id, AdmissionRequest(actor="dep"))
         assert exc.value.status_code == 409
 
     def test_full_loop_held_admitted_executed(
@@ -238,7 +238,7 @@ class TestAdmissionEndpoints:
         resp = controller.submit_flow(
             "test_flow", FlowArguments(kwargs={"x": 1}, admission="gated")
         )
-        controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
+        controller.admit_obligation(resp.obligation_id, AdmissionRequest(actor="dep"))
 
         seen = []
         wake, _ = queue.enqueued[0]

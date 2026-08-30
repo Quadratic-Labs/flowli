@@ -100,7 +100,7 @@ class TestTransitionFeed:
         obligation_id = uuid7()
         _append(events, obligation_id, "claimed")  # must not raise
 
-        # The per-run event log still has the event; the feed simply lost it.
+        # The per-obligation event log still has the event; the feed simply lost it.
         assert [e["event"] for e in events.read("test_flow", obligation_id)] == [
             "claimed"
         ]
@@ -108,7 +108,7 @@ class TestTransitionFeed:
 
 @pytest.mark.unit
 class TestWorkerLifecycleOnTheFeed:
-    def test_completed_run_is_observable_with_a_cursor(
+    def test_completed_obligation_is_observable_with_a_cursor(
         self, store, feed, events, make_flow_job
     ):
         from flowlet.worker import execute_job

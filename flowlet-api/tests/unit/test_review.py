@@ -119,7 +119,7 @@ class TestGatedSuspension:
         assert view.holder is None  # parked, passive
         assert view.state.status == ReportedStatus.gated
 
-    def test_wakeup_for_gated_run_is_dropped(
+    def test_wakeup_for_gated_obligation_is_dropped(
         self, state_repo, signals, make_flow_job
     ):
         job = make_flow_job()
@@ -137,7 +137,7 @@ class TestGatedSuspension:
         assert executed == []
         assert state_repo.read(job.flow_name, job.obligation_id).epoch == epoch_before
 
-    def test_sweeper_leaves_gated_runs_alone(
+    def test_sweeper_leaves_gated_obligations_alone(
         self, state_repo, signals, make_flow_job
     ):
         job = make_flow_job()
@@ -164,7 +164,7 @@ class TestReview:
         _run_gated(state_repo, signals, job)
         controller = _Controller(state_repo, signals)
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(
                 decision="approved", actor="reviewer-7", reason="looks good"
@@ -187,7 +187,7 @@ class TestReview:
         queue = FakeQueue([])
         controller = _Controller(state_repo, signals, queue=queue)
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="rejected", actor="reviewer-7"),
         )
@@ -221,7 +221,7 @@ class TestReview:
         _run_gated(state_repo, signals, job)
         controller = _Controller(state_repo, signals)
 
-        controller.review_run(
+        controller.review_obligation(
             job.obligation_id,
             ReviewRequest(
                 decision="rejected", actor="reviewer-7",
@@ -242,7 +242,7 @@ class TestReview:
         _run_gated(state_repo, signals, job)
         controller = _Controller(state_repo, signals)
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="rejected", actor="reviewer-7"),
         )
@@ -261,7 +261,7 @@ class TestReview:
         controller = _Controller(state_repo, signals, gate=gate)
 
         with pytest.raises(HTTPException) as exc:
-            controller.review_run(
+            controller.review_obligation(
                 job.obligation_id,
                 ReviewRequest(decision="approved", actor="intern-1"),
             )
@@ -270,13 +270,13 @@ class TestReview:
         record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.awaiting_review
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="approved", actor="admin-2"),
         )
         assert resp.status == "completed"
 
-    def test_reviewing_a_non_gated_run_is_409(
+    def test_reviewing_a_non_gated_obligation_is_409(
         self, state_repo, signals, make_flow_job, make_record, seed_lease, store
     ):
         record = make_record(status=ReportedStatus.pending)
@@ -284,20 +284,20 @@ class TestReview:
         controller = _Controller(state_repo, signals)
 
         with pytest.raises(HTTPException) as exc:
-            controller.review_run(
+            controller.review_obligation(
                 record.obligation.id,
                 ReviewRequest(decision="approved", actor="reviewer"),
             )
         assert exc.value.status_code == 409
 
-    def test_gated_run_can_still_be_canceled(
+    def test_gated_obligation_can_still_be_canceled(
         self, state_repo, signals, make_flow_job
     ):
         job = make_flow_job()
         _run_gated(state_repo, signals, job)
         controller = _Controller(state_repo, signals)
 
-        resp = controller.cancel_run(job.obligation_id)
+        resp = controller.cancel_obligation(job.obligation_id)
 
         assert resp.status == ReportedStatus.canceled
         record = state_repo.read(job.flow_name, job.obligation_id).record
@@ -468,7 +468,7 @@ class TestGatedExhaustion:
 
         queue = FakeQueue([])
         controller = _Controller(state_repo, signals, queue=queue)
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(
                 decision="rejected", actor="human:tz",
@@ -493,7 +493,7 @@ class TestGatedExhaustion:
         assert len(record.attempts) == 2
         assert record.obligation.status == ObligationStatus.awaiting_review
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="approved", actor="human:tz"),
         )
@@ -512,7 +512,7 @@ class TestGatedExhaustion:
         _run_gated(state_repo, signals, job, fn=boom)
         controller = _Controller(state_repo, signals)
 
-        resp = controller.review_run(
+        resp = controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="rejected", actor="human:tz"),
         )
@@ -595,7 +595,7 @@ class TestEffects:
         record = state_repo.read(job.flow_name, job.obligation_id).record
         assert [e.occurrence for e in record.effects] == ["1", "manual-2"]
 
-    def test_effect_outside_run_context_is_a_plain_call(self):
+    def test_effect_outside_obligation_context_is_a_plain_call(self):
         assert flowlet_pkg.effect("adhoc", lambda: 42) == 42
 
 
@@ -671,7 +671,7 @@ class TestReviewAsWork:
         parked = state_repo.read(job.flow_name, job.obligation_id).record
         assert parked.obligation.reviewer_id == review.obligation_id
 
-        controller.review_run(
+        controller.review_obligation(
             job.obligation_id,
             ReviewRequest(decision="approved", actor="reviewer-flow"),
         )
@@ -751,7 +751,7 @@ class TestReviewAsWork:
         )
 
         def review_flow(**kw):
-            controller.review_run(
+            controller.review_obligation(
                 job.obligation_id,
                 ReviewRequest(
                     decision="approved", actor="reviewer-flow",

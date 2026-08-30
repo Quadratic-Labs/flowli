@@ -1,4 +1,4 @@
-"""Taskflow — the Prefect-like flow-run controller (layer 2).
+"""Taskflow — the Prefect-like flow controller (layer 2).
 
 Taskflow wraps the Flowlet kernel with the authoring experience: ``@flow``/
 ``@task`` decorators, schema-validated submission with per-flow defaults,

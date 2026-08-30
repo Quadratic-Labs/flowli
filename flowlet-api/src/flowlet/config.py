@@ -41,7 +41,7 @@ class FlowletConfig(BaseSettings):
             query endpoints are unavailable).
         queue: Optional queue backend for asynchronous flow submission. When
             absent only synchronous execution via ``POST /execute`` is available.
-        history: Record archived runs to the durable history log.
+        history: Record archived obligations to the durable history log.
         history_db_path: Local path for the history log's SQLite projection.
 
     Example:
@@ -84,8 +84,8 @@ class FlowletConfig(BaseSettings):
     history: bool = Field(
         default=False,
         description=(
-            "Record archived runs to a durable cairndb commit log "
-            "(logs/history/ on the storage backend) so long-horizon run "
+            "Record archived obligations to a durable cairndb commit log "
+            "(logs/history/ on the storage backend) so long-horizon obligation "
             "queries do not depend on rescanning state files. Requires "
             "storage."
         ),
@@ -102,10 +102,10 @@ class FlowletConfig(BaseSettings):
     transitions: bool = Field(
         default=False,
         description=(
-            "Feed every run lifecycle event into the ordered cairndb commit "
+            "Feed every obligation lifecycle event into the ordered cairndb commit "
             "log logs/transitions/ so reconcilers can tail account "
             "transitions with a cursor (GET /transitions) instead of polling "
-            "run states. A wake-up channel, never authority — appends are "
+            "obligation summaries. A wake-up channel, never authority — appends are "
             "best-effort after the account write. Requires storage."
         ),
     )

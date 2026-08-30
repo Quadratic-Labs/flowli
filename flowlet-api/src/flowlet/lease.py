@@ -1,8 +1,8 @@
 """Lease renewal and cooperative cancellation for running flows.
 
 ``flowlet.heartbeat()`` is the single user-facing call: inside a worker it
-renews the run's lease (epoch-fenced by the cairndb engine) and observes the
-run's ``cancel`` signal; outside any worker context it is a no-op, so flows
+renews the obligation's lease (epoch-fenced by the cairndb engine) and observes the
+obligation's ``cancel`` signal; outside any worker context it is a no-op, so flows
 remain plain callables.
 
 Cancellation travels out-of-band: the API sets an immutable signal object
@@ -30,26 +30,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_BEAT_INTERVAL = 5.0  # seconds between effective (I/O) heartbeats
 
 
-class RunCancelled(Exception):
-    """Raised inside a flow when its run has been cancelled via the API.
+class ObligationCancelled(Exception):
+    """Raised inside a flow when its obligation has been cancelled via the API.
 
-    The worker catches this and finalizes the run as ``canceled``.  Flows
+    The worker catches this and finalizes the obligation as ``canceled``.  Flows
     may catch it themselves to release resources, but should re-raise.
     """
 
 
 @define(kw_only=True)
-class RunLease:
-    """Live lease over a claimed run, owned by the executing worker.
+class ObligationLease:
+    """Live lease over a claimed obligation, owned by the executing worker.
 
     Attributes:
         lease: The owned StateLease; renewals and the terminal release go
             through it and are epoch-fenced.
         signals: Signal repository the cancel signal is read from.
         effects: Effect repository for exactly-once side-effect claims
-            (``flowlet.effect``); optional outside worker-managed runs.
+            (``flowlet.effect``); optional outside worker-managed obligations.
         messages: Message repository for the ordered channel
-            (``flowlet.recv``); optional outside worker-managed runs.
+            (``flowlet.recv``); optional outside worker-managed obligations.
         min_interval: Seconds below which heartbeat() calls are free no-ops,
             bounding state-store I/O regardless of call frequency.
     """
@@ -75,7 +75,7 @@ class RunLease:
             controller-defined names).  Empty when none are set.
 
         Raises:
-            LeaseLost: When the run is no longer owned by this worker.
+            LeaseLost: When the obligation is no longer owned by this worker.
         """
         if time.monotonic() - self._last_beat < self.min_interval:
             return {}
@@ -86,12 +86,12 @@ class RunLease:
         return self.signals.list(obligation.flow_name, obligation.id)
 
 
-_current_lease: contextvars.ContextVar[RunLease | None] = contextvars.ContextVar(
+_current_lease: contextvars.ContextVar[ObligationLease | None] = contextvars.ContextVar(
     "flowlet_current_lease", default=None
 )
 
 
-def bind_lease(lease: RunLease) -> contextvars.Token:
+def bind_lease(lease: ObligationLease) -> contextvars.Token:
     """Bind *lease* as the ambient lease for the current context (worker use)."""
     return _current_lease.set(lease)
 
@@ -101,22 +101,22 @@ def unbind_lease(token: contextvars.Token) -> None:
     _current_lease.reset(token)
 
 
-def current_lease() -> RunLease | None:
-    """Return the ambient RunLease, or None outside a worker-managed run."""
+def current_lease() -> ObligationLease | None:
+    """Return the ambient ObligationLease, or None outside a worker-managed obligation."""
     return _current_lease.get()
 
 
 def heartbeat(*, raise_on_cancel: bool = True) -> dict[str, dict]:
-    """Renew the current run's lease and observe pending signals.
+    """Renew the current obligation's lease and observe pending signals.
 
     Call between units of work in long-running flows.  Cheap to call often:
     actual state-store I/O happens at most once per ``min_interval``.
-    Outside a worker-managed run (direct call, sync API execution, tests)
+    Outside a worker-managed obligation (direct call, sync API execution, tests)
     this is a no-op returning an empty mapping.
 
     Args:
         raise_on_cancel: When True (default) a pending cancel signal raises
-            :class:`RunCancelled`, so unmodified flows stop at their next
+            :class:`ObligationCancelled`, so unmodified flows stop at their next
             heartbeat.  Pass False to receive it in the returned mapping
             and shut down gracefully.
 
@@ -126,8 +126,8 @@ def heartbeat(*, raise_on_cancel: bool = True) -> dict[str, dict]:
         Empty when nothing is pending.
 
     Raises:
-        RunCancelled: Cancel requested and ``raise_on_cancel`` is True.
-        LeaseLost: The run was reclaimed by another owner; stop immediately.
+        ObligationCancelled: Cancel requested and ``raise_on_cancel`` is True.
+        LeaseLost: The obligation was reclaimed by another owner; stop immediately.
 
     Example:
         >>> for batch in batches:
@@ -141,7 +141,7 @@ def heartbeat(*, raise_on_cancel: bool = True) -> dict[str, dict]:
         return {}
     pending = lease.beat()
     if CANCEL in pending and raise_on_cancel:
-        raise RunCancelled(
+        raise ObligationCancelled(
             f"obligation {lease.lease.record.obligation.id} cancelled"
         )
     return pending
@@ -159,7 +159,7 @@ def effect(name: str, body, *, occurrence: str = "1"):
     step contract): in a crash window the body may run twice, so keep effect
     bodies idempotent where possible.
 
-    Outside a worker-managed run this degrades to a plain call.
+    Outside a worker-managed obligation this degrades to a plain call.
 
     Args:
         name: Stable effect name (e.g. ``"send_email"``).
@@ -205,7 +205,7 @@ def recv(topic: str) -> dict | None:
     """Consume the next message on *topic*, checkpointed in the account.
 
     The obligation's message channel: senders append ordered messages
-    (POST ``/runs/{obligation_id}/messages/{topic}``, or
+    (POST ``/obligations/{obligation_id}/messages/{topic}``, or
     ``MessageRepository.send``); the running attempt consumes them in send
     order.  Each consumption is recorded in the account under the lease
     fence, so consumption is exactly-once per obligation and deterministic
@@ -218,7 +218,7 @@ def recv(topic: str) -> dict | None:
     review gates), optionally with a timer for the timeout — waiting
     is an obligation state, never a code position.
 
-    Outside a worker-managed run this is a no-op returning None.
+    Outside a worker-managed obligation this is a no-op returning None.
 
     Args:
         topic: Channel name (e.g. ``"steering"``).
@@ -228,7 +228,7 @@ def recv(topic: str) -> dict | None:
         None when nothing is pending.
 
     Raises:
-        LeaseLost: The run was reclaimed by another owner; stop immediately.
+        LeaseLost: The obligation was reclaimed by another owner; stop immediately.
         LookupError: A recorded consumption's message object is missing
             from the store (replay is impossible — the store was tampered
             with or cleaned prematurely).

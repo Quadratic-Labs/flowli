@@ -1,9 +1,9 @@
-"""Run-scoped signal objects — durable, idempotent, out-of-band messages.
+"""Obligation-scoped signal objects — durable, idempotent, out-of-band messages.
 
 A signal is a small immutable object at
 ``signals/<flow_name>/<obligation_id>/<name>.json`` set through a cairndb claim
 (put-if-absent): duplicate senders converge on the first payload, and the
-receiver observes it with a plain read.  Signals never touch the run's
+receiver observes it with a plain read.  Signals never touch the obligation's
 lease document, so a holder's renewals can never clobber one and a signal
 write can never fence a holder.
 
@@ -27,16 +27,16 @@ CANCEL = "cancel"
 INTERRUPT = "interrupt"
 PAUSE = "pause"
 
-# Scoped control signals: unlike run-scoped signals (immutable facts),
+# Scoped control signals: unlike obligation-scoped signals (immutable facts),
 # scope signals are *modes* — revocable by design (RESUME revokes a pause).
 SCOPE_GLOBAL = "signals/_scopes/global/"
 SCOPE_FLOW = "signals/_scopes/flow/"
-SCOPE_RUN = "signals/_scopes/run/"
+SCOPE_OBLIGATION = "signals/_scopes/obligation/"
 
 
 @define(slots=True, kw_only=True)
 class SignalRepository:
-    """Repository for immutable run-scoped signal objects.
+    """Repository for immutable obligation-scoped signal objects.
 
     Attributes:
         store: CairnDB blob store the signals live in.
@@ -61,11 +61,11 @@ class SignalRepository:
         actor: str,
         details: dict[str, Any] | None = None,
     ) -> bool:
-        """Set a signal for a run, idempotently.
+        """Set a signal for an obligation, idempotently.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
             name: Signal name (e.g. ``cancel``).
             actor: Who sent it — recorded in the signal payload.
             details: Optional structured context (kept small).
@@ -87,8 +87,8 @@ class SignalRepository:
         """Read a signal's payload, or None when it was never sent.
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
             name: Signal name.
         """
         obj = self.store.get_object_sync(self._key(flow_name, obligation_id, name))
@@ -104,14 +104,14 @@ class SignalRepository:
             return None
 
     def list(self, flow_name: str, obligation_id: UUID) -> dict[str, dict[str, Any]]:
-        """Read all pending signals for a run, name → payload.
+        """Read all pending signals for an obligation, name → payload.
 
         This is the heartbeat's observation: one LIST plus one GET per
         pending signal (normally zero).
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
         """
         prefix = self._prefix(flow_name, obligation_id)
         pending: dict[str, dict[str, Any]] = {}
@@ -132,8 +132,8 @@ class SignalRepository:
     def _scope_key(scope: str, name: str) -> str:
         """Key for a scoped control signal.
 
-        Scopes: ``"global"``, ``"flow:<flow_name>"``, ``"run:<obligation_id>"``.
-        Run scopes are keyed by obligation id alone (flow-agnostic) so an
+        Scopes: ``"global"``, ``"flow:<flow_name>"``, ``"obligation:<obligation_id>"``.
+        Obligation scopes are keyed by obligation id alone (flow-agnostic) so an
         ancestor's scope can be checked from a child's parent/root refs
         without knowing the ancestor's flow.
         """
@@ -142,8 +142,8 @@ class SignalRepository:
         kind, _, ident = scope.partition(":")
         if kind == "flow" and ident:
             return f"{SCOPE_FLOW}{ident}/{name}.json"
-        if kind == "run" and ident:
-            return f"{SCOPE_RUN}{ident}/{name}.json"
+        if kind == "obligation" and ident:
+            return f"{SCOPE_OBLIGATION}{ident}/{name}.json"
         raise ValueError(f"invalid scope {scope!r}")
 
     def send_scoped(
@@ -157,7 +157,7 @@ class SignalRepository:
         """Set a scoped control signal (idempotent put-if-absent).
 
         Args:
-            scope: ``"global"``, ``"flow:<flow_name>"``, or ``"run:<id>"``.
+            scope: ``"global"``, ``"flow:<flow_name>"``, or ``"obligation:<id>"``.
             name: Signal name (e.g. ``pause``).
             actor: Who set the mode — recorded in the payload.
             details: Optional structured context.
@@ -209,23 +209,23 @@ class SignalRepository:
         sufficient for trees of depth ≤ 3, which covers CodeFlow's
         milestone/feature/task.
         """
-        scopes = ["global", f"flow:{flow_name}", f"run:{obligation_id}"]
+        scopes = ["global", f"flow:{flow_name}", f"obligation:{obligation_id}"]
         if parent_id is not None:
-            scopes.append(f"run:{parent_id}")
+            scopes.append(f"obligation:{parent_id}")
         if root_id is not None and root_id != parent_id:
-            scopes.append(f"run:{root_id}")
+            scopes.append(f"obligation:{root_id}")
         return [s for s in scopes if self.get_scoped(s, PAUSE) is not None]
 
     def clear(self, flow_name: str, obligation_id: UUID) -> None:
-        """Remove all of a run's signals (archive-time cleanup).
+        """Remove all of an obligation's signals (archive-time cleanup).
 
         Args:
-            flow_name: Flow the run belongs to.
-            obligation_id: The run's UUID.
+            flow_name: Flow the obligation belongs to.
+            obligation_id: The obligation's UUID.
         """
         for key in self.store.list_objects_sync(self._prefix(flow_name, obligation_id)):
             try:
                 self.store.delete_object_sync(key)
             except Exception:
                 logger.exception("signal_delete_error", extra={"key": key})
-        self.revoke_scoped(f"run:{obligation_id}", PAUSE)
+        self.revoke_scoped(f"obligation:{obligation_id}", PAUSE)

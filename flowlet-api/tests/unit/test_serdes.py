@@ -58,7 +58,7 @@ class TestDestructure:
         assert d["name"] == record.name
         json.dumps(d)  # must not raise: the tree is the wire format as data
 
-    def test_run_summary_with_children_is_json_safe(self):
+    def test_trace_summary_with_children_is_json_safe(self):
         # Regression: TraceSummary.children is self-referential; under lazy
         # annotations the attrs field type was an unhashable ForwardRef,
         # which broke cattrs' hook cache ("cannot use 'types.GenericAlias'
@@ -108,8 +108,8 @@ class TestStructure:
         assert restored.status == original.status
         assert restored.span_type == original.span_type
 
-    def test_run_state_round_trip(self, make_run_state):
-        original = make_run_state()
+    def test_obligation_summary_round_trip(self, make_obligation_summary):
+        original = make_obligation_summary()
         d = destructure(original)
         restored = structure(ObligationSummary)(d)
 
@@ -119,9 +119,9 @@ class TestStructure:
         assert restored.started_at == original.started_at
         assert restored.ended_at is None
 
-    def test_run_state_with_optional_fields_round_trip(self, make_run_state, make_ts):
+    def test_obligation_summary_with_optional_fields_round_trip(self, make_obligation_summary, make_ts):
         end_ts = make_ts()
-        original = make_run_state(status=ReportedStatus.completed, ended_at=end_ts)
+        original = make_obligation_summary(status=ReportedStatus.completed, ended_at=end_ts)
         d = destructure(original)
         restored = structure(ObligationSummary)(d)
 
@@ -214,8 +214,8 @@ class TestFromJson:
         restored = from_json(SpanRecord)(to_json(original))
         assert restored.parent_span_id == "00f067aa0ba902b7"
 
-    def test_run_state_round_trip(self, make_run_state):
-        original = make_run_state()
+    def test_obligation_summary_round_trip(self, make_obligation_summary):
+        original = make_obligation_summary()
         restored = from_json(ObligationSummary)(to_json(original))
 
         assert isinstance(restored, ObligationSummary)
@@ -227,17 +227,17 @@ class TestFromJson:
         assert isinstance(restored.started_at, Timestamp)
         assert restored.ended_at is None
 
-    def test_run_state_optional_fields_restored(self, make_run_state, make_ts):
+    def test_obligation_summary_optional_fields_restored(self, make_obligation_summary, make_ts):
         end_ts = make_ts()
-        original = make_run_state(status=ReportedStatus.completed, ended_at=end_ts)
+        original = make_obligation_summary(status=ReportedStatus.completed, ended_at=end_ts)
         restored = from_json(ObligationSummary)(to_json(original))
 
         assert isinstance(restored.ended_at, Timestamp)
         assert restored.ended_at == original.ended_at
         assert restored.status == ReportedStatus.completed
 
-    def test_run_state_attempt_and_max_retries_preserved(self, make_run_state):
-        original = make_run_state(attempt=2, max_retries=5)
+    def test_obligation_summary_attempt_and_max_retries_preserved(self, make_obligation_summary):
+        original = make_obligation_summary(attempt=2, max_retries=5)
         restored = from_json(ObligationSummary)(to_json(original))
 
         assert restored.attempt == 2

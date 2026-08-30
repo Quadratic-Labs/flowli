@@ -55,9 +55,9 @@ def _at(seconds: float) -> datetime:
 
 class TestLeaseRecovery:
     def test_live_lease_left_alone(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         seed_lease(store, state, holder="w1", deadline=_at(300))
 
         stats = sweep(state_repo, queue)
@@ -68,9 +68,9 @@ class TestLeaseRecovery:
         assert view.epoch == 1  # never touched
 
     def test_expired_lease_requeued_as_pending(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.running,
             attempt=1,
             max_retries=3,
@@ -84,18 +84,18 @@ class TestLeaseRecovery:
         view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.pending
         assert view.state.attempt == 1  # attempt increments at claim, not at sweep
-        assert view.holder is None  # recovered runs are parked, released
+        assert view.holder is None  # recovered obligations are parked, released
         assert view.epoch == 2  # the recovery was a fenced steal
         job, _ = queue.enqueued[0]
         assert job.obligation_id == state.obligation_id
         assert job.kwargs == {"x": 1}  # rebuilt from the state payload
 
     def test_expired_lease_with_exhausted_retries_failed(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
         # attempt=4: the budget is spent by three consuming attempts; the
         # dead in-flight attempt is a free crash (v0.3 delta 1).
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.running,
             attempt=4,
             max_retries=3,
@@ -112,24 +112,24 @@ class TestLeaseRecovery:
         assert view.holder is None
 
     def test_sweep_is_idempotent(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.running, attempt=1)
+        state = make_obligation_summary(status=ReportedStatus.running, attempt=1)
         seed_lease(store, state, holder="dead-worker", deadline=_at(-10))
 
         sweep(state_repo, queue)
         second = sweep(state_repo, queue, pending_grace=600)
 
-        # The run is now pending and well within its grace window: no-op.
+        # The obligation is now pending and well within its grace window: no-op.
         assert second.requeued == 0
         assert second.failed == 0
 
 
 class TestStuckPending:
     def test_old_pending_requeued(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending, kwargs={"y": 2})
+        state = make_obligation_summary(status=ReportedStatus.pending, kwargs={"y": 2})
         # Released long ago: the release time (envelope deadline) is stale.
         seed_lease(store, state, deadline=_at(-700))
 
@@ -141,9 +141,9 @@ class TestStuckPending:
         assert job.kwargs == {"y": 2}
 
     def test_recent_pending_left_alone(
-        self, state_repo, queue, make_run_state, seed_lease, store
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.pending)
+        state = make_obligation_summary(status=ReportedStatus.pending)
         seed_lease(store, state, deadline=_at(-10))
 
         stats = sweep(state_repo, queue, pending_grace=600)
@@ -152,10 +152,10 @@ class TestStuckPending:
 
 
 class TestArchiving:
-    def test_old_closed_run_archived(
-        self, state_repo, queue, make_run_state, seed_lease, store, tmp_path
+    def test_old_closed_obligation_archived(
+        self, state_repo, queue, make_obligation_summary, seed_lease, store, tmp_path
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
@@ -165,12 +165,12 @@ class TestArchiving:
 
         assert stats.archived == 1
         assert state_repo.read(state.flow_name, state.obligation_id) is None
-        assert list((tmp_path / "runs").rglob("state.json"))
+        assert list((tmp_path / "obligations").rglob("state.json"))
 
-    def test_recent_closed_run_kept(
-        self, state_repo, queue, make_run_state, seed_lease, store
+    def test_recent_closed_obligation_kept(
+        self, state_repo, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.completed, ended_at=Timestamp.now()
         )
         seed_lease(store, state)
@@ -181,9 +181,9 @@ class TestArchiving:
         assert state_repo.read(state.flow_name, state.obligation_id) is not None
 
     def test_archive_clears_signals(
-        self, state_repo, signals, queue, make_run_state, seed_lease, store
+        self, state_repo, signals, queue, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(
+        state = make_obligation_summary(
             status=ReportedStatus.canceled,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )

@@ -6,8 +6,8 @@ Covers:
   writes, and StateView reads on the cairndb store (the filesystem backend
   implements the same conditional-write contract as the cloud backends, so
   these exercise genuine CAS and epoch fencing without mocks)
-- SignalRepository: idempotent run-scoped signals
-- LogRepository: span reading over the runs/<flow>/<date>/<obligation_id>/ layout
+- SignalRepository: idempotent obligation-scoped signals
+- LogRepository: span reading over the obligations/<flow>/<date>/<obligation_id>/ layout
 """
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,7 +22,7 @@ from flowlet.repository.log import LogRepository
 from flowlet.repository.signals import CANCEL, SignalRepository
 from flowlet.repository.state import AlreadyClosed, StateRepository
 from flowlet.serdes import to_json
-from flowlet.storage import run_prefix
+from flowlet.storage import obligation_prefix
 
 
 @pytest.fixture
@@ -109,10 +109,10 @@ class TestStateRepository:
         assert second.record.open_attempt.executor == "w2"
 
     def test_fenced_holder_gets_lease_lost(
-        self, state_repo, make_run_state, seed_lease, store
+        self, state_repo, make_obligation_summary, seed_lease, store
     ):
         """A holder whose lease expired and was stolen cannot write."""
-        state = make_run_state(status=ReportedStatus.running)
+        state = make_obligation_summary(status=ReportedStatus.running)
         # (seed_lease expands the ObligationSummary spec into an account)
         # Seed an expired held lease, then steal it.
         seed_lease(
@@ -144,9 +144,9 @@ class TestStateRepository:
             stale.renew()
 
     def test_state_fn_exception_aborts_acquisition(
-        self, state_repo, make_run_state, seed_lease, store
+        self, state_repo, make_obligation_summary, seed_lease, store
     ):
-        state = make_run_state(status=ReportedStatus.completed)
+        state = make_obligation_summary(status=ReportedStatus.completed)
         seed_lease(store, state)  # released, closed
 
         def refuse(existing):
@@ -177,14 +177,14 @@ class TestStateRepository:
         assert view.record.obligation.cancel_requested is True
         assert view.holder == "w1"
 
-    def test_delete_removes_state(self, state_repo, make_run_state, seed_lease, store):
-        state = make_run_state(flow_name="temp_flow")
+    def test_delete_removes_state(self, state_repo, make_obligation_summary, seed_lease, store):
+        state = make_obligation_summary(flow_name="temp_flow")
         seed_lease(store, state)
         state_repo.delete(state.flow_name, state.obligation_id)
         assert state_repo.read(state.flow_name, state.obligation_id) is None
 
-    def test_list_views_returns_all(self, state_repo, make_run_state, seed_lease, store):
-        states = [make_run_state(flow_name="batch_flow") for _ in range(3)]
+    def test_list_views_returns_all(self, state_repo, make_obligation_summary, seed_lease, store):
+        states = [make_obligation_summary(flow_name="batch_flow") for _ in range(3)]
         for s in states:
             seed_lease(store, s)
 
@@ -192,10 +192,10 @@ class TestStateRepository:
         assert {v.state.obligation_id for v in listed} == {s.obligation_id for s in states}
 
     def test_list_states_filtered_by_flow(
-        self, state_repo, make_run_state, seed_lease, store
+        self, state_repo, make_obligation_summary, seed_lease, store
     ):
-        seed_lease(store, make_run_state(flow_name="flow_a"))
-        seed_lease(store, make_run_state(flow_name="flow_b"))
+        seed_lease(store, make_obligation_summary(flow_name="flow_a"))
+        seed_lease(store, make_obligation_summary(flow_name="flow_b"))
 
         only_a = state_repo.list_states(flow_name="flow_a")
         assert len(only_a) == 1
@@ -216,17 +216,17 @@ class TestStateRepository:
         keys = store.list_objects_sync("state/")
         assert keys == [f"state/my_flow/{obligation.id}.json"]
 
-    def test_archive_moves_payload_into_run_folder(
-        self, state_repo, store, make_run_state, seed_lease
+    def test_archive_moves_payload_into_obligation_folder(
+        self, state_repo, store, make_obligation_summary, seed_lease
     ):
-        state = make_run_state(flow_name="my_flow", status=ReportedStatus.completed)
+        state = make_obligation_summary(flow_name="my_flow", status=ReportedStatus.completed)
         seed_lease(store, state)
 
         state_repo.archive(state.flow_name, state.obligation_id)
 
         assert state_repo.read(state.flow_name, state.obligation_id) is None
         archived = store.get_object_sync(
-            f"{run_prefix(state.flow_name, state.obligation_id)}/state.json"
+            f"{obligation_prefix(state.flow_name, state.obligation_id)}/state.json"
         )
         assert archived is not None
         # The archived object is the bare account wire format (no envelope).
@@ -276,8 +276,8 @@ class TestSignalRepository:
 
 
 def _write_span_file(store, flow_name: str, obligation_id, spans: list[SpanRecord], attempt: int = 1) -> None:
-    """Write a spans-<attempt>.jsonl object in the runs/<flow>/<date>/<obligation_id>/ layout."""
-    key = f"{run_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
+    """Write a spans-<attempt>.jsonl object in the obligations/<flow>/<date>/<obligation_id>/ layout."""
+    key = f"{obligation_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
     store.put_object_sync(
         key, "\n".join(to_json(span) for span in spans).encode("utf-8")
     )
@@ -317,28 +317,28 @@ class TestLogRepository:
         spans = log_repo.get_spans("my_flow", obligation_id)
         assert sorted(s.attempt for s in spans) == [1, 2]
 
-    def test_list_run_ids_for_flow(self, log_repo, store, make_span_record):
+    def test_list_obligation_ids_for_flow(self, log_repo, store, make_span_record):
         obligation_id = uuid7()
         _write_span_file(store, "my_flow", obligation_id, [make_span_record(obligation_id=obligation_id)])
 
-        results = log_repo.list_run_ids(flow_name="my_flow")
+        results = log_repo.list_obligation_ids(flow_name="my_flow")
         assert results == [("my_flow", obligation_id)]
 
-    def test_list_run_ids_empty_when_no_runs_prefix(self, log_repo):
-        assert log_repo.list_run_ids() == []
+    def test_list_obligation_ids_empty_when_no_obligations_prefix(self, log_repo):
+        assert log_repo.list_obligation_ids() == []
 
-    def test_list_run_ids_sorted_chronologically(self, log_repo, store, make_span_record):
+    def test_list_obligation_ids_sorted_chronologically(self, log_repo, store, make_span_record):
         first, second = uuid7(), uuid7()
         _write_span_file(store, "my_flow", second, [make_span_record(obligation_id=second)])
         _write_span_file(store, "my_flow", first, [make_span_record(obligation_id=first)])
 
-        results = log_repo.list_run_ids(flow_name="my_flow")
+        results = log_repo.list_obligation_ids(flow_name="my_flow")
         assert [r for _, r in results] == sorted([first, second], key=str)
 
     def test_malformed_lines_are_skipped(self, log_repo, store, make_span_record):
         obligation_id = uuid7()
         span = make_span_record(obligation_id=obligation_id)
-        key = f"{run_prefix('my_flow', obligation_id)}/spans-1.jsonl"
+        key = f"{obligation_prefix('my_flow', obligation_id)}/spans-1.jsonl"
         store.put_object_sync(
             key, (to_json(span) + "\n{not json}\n").encode("utf-8")
         )

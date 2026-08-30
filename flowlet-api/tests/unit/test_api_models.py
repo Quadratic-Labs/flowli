@@ -1,7 +1,7 @@
 """
 Unit tests for the API DTO layer (pydantic models over the wire format).
 
-Covers the seam between serdes and the DTOs: ``RunQuery.get_run`` returns a
+Covers the seam between serdes and the DTOs: ``ObligationQuery.get_trace`` returns a
 *destructured* tree (timestamps as ISO 8601 strings), which the controller
 validates with ``TraceDTO.model_validate``.  A validation failure here is
 silently downgraded to a 404 by the controller (ValidationError extends
@@ -56,11 +56,11 @@ class TestTimestampDTO:
 
 
 @pytest.mark.unit
-class TestRunDTOFromWireFormat:
-    """TraceDTO validates the destructured tree that RunQuery.get_run returns."""
+class TestTraceDTOFromWireFormat:
+    """TraceDTO validates the destructured tree that ObligationQuery.get_trace returns."""
 
-    def test_destructured_run_validates(self, make_span_record, make_ts):
-        # Regression: after the serdes-on-cattrs refactor, get_run returns
+    def test_destructured_trace_validates(self, make_span_record, make_ts):
+        # Regression: after the serdes-on-cattrs refactor, get_trace returns
         # ISO-string timestamps; TraceDTO rejected them, and the controller's
         # except ValueError turned that into a bogus 404.
         summary = TraceSummary(

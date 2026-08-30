@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
     from flowlet.api.cache import CacheRepository
     from flowlet.api.controller import FlowController
-    from flowlet.api.query import RunQuery
+    from flowlet.api.query import ObligationQuery
     from flowlet.events import EventLog
-    from flowlet.history import RunHistory
+    from flowlet.history import ObligationHistory
     from flowlet.transitions import TransitionFeed
     from flowlet.queue import JobQueueProtocol
     from flowlet.repository.dispatch import DispatchKeyRepository
@@ -41,15 +41,15 @@ class FlowletDeps(TypedDict, total=False):
     Attributes:
         configs: Validated application configuration.
         log_repo: Span-file reader; present only when storage is configured.
-        cache_repo: Pull-refreshed SQLite run cache; present only when
+        cache_repo: Pull-refreshed SQLite obligation cache; present only when
             storage is configured.
         querier: Read-side query object; None when no storage is configured.
         dispatch_repo: Dispatch-key → obligation_id mapping enabling idempotent
             submissions; present only when storage is configured.
-        events: Run lifecycle event-log writer; present only when storage
+        events: Obligation lifecycle event-log writer; present only when storage
             is configured.
-        history: Run-history event-log writer and durable-projection reader
-            (merged into RunQuery.list_recent_states); None unless
+        history: Obligation-history event-log writer and durable-projection reader
+            (merged into ObligationQuery.list_recent_states); None unless
             configs.history is enabled with storage configured.
         transitions: Account-transition feed (ordered named log with a
             cursor, fed through the event log); None unless
@@ -62,10 +62,10 @@ class FlowletDeps(TypedDict, total=False):
     state_repo: StateRepository
     signals: "SignalRepository | None"
     cache_repo: CacheRepository
-    querier: RunQuery | None
+    querier: ObligationQuery | None
     dispatch_repo: "DispatchKeyRepository | None"
     events: "EventLog | None"
-    history: "RunHistory | None"
+    history: "ObligationHistory | None"
     transitions: "TransitionFeed | None"
     queue: JobQueueProtocol | None
     controller: FlowController
@@ -103,7 +103,7 @@ class Flowlet:
     signals: "SignalRepository | None"
     timers: "TimerRepository | None"
     resources: "ResourceLeaseRepository | None"
-    history: "RunHistory | None"
+    history: "ObligationHistory | None"
     dispatch_repo: "DispatchKeyRepository | None"
     events: "EventLog | None"
     transitions: "TransitionFeed | None"
@@ -170,9 +170,9 @@ class Flowlet:
         deps.update(extra_deps)
 
         # Route 'flowlet.log' records into span events so user logging inside
-        # flows lands in the run record.
-        from flowlet.tracing import configure_run_logging, configure_tracing
-        configure_run_logging()
+        # flows lands in the obligation record.
+        from flowlet.tracing import configure_obligation_logging, configure_tracing
+        configure_obligation_logging()
 
         deps["querier"] = None
         deps["dispatch_repo"] = None
@@ -182,20 +182,20 @@ class Flowlet:
         deps["events"] = None
         deps["transitions"] = None
 
-        # Built before the storage block below so RunQuery(**deps) can pick
+        # Built before the storage block below so ObligationQuery(**deps) can pick
         # it up via its own named parameter.
         deps["history"] = None
         if configs.history and configs.store is not None:
-            from flowlet.history import RunHistory
+            from flowlet.history import ObligationHistory
 
-            deps["history"] = RunHistory(
+            deps["history"] = ObligationHistory(
                 store=configs.store, db_path=configs.history_db_path
             )
             logger.info("flowlet_history_configured")
 
         if configs.storage is not None:
             from flowlet.api.cache import CacheRepository
-            from flowlet.api.query import RunQuery
+            from flowlet.api.query import ObligationQuery
             from flowlet.repository.log import LogRepository
 
             store = configs.store
@@ -207,7 +207,7 @@ class Flowlet:
             )
 
             # LogRepository and CacheRepository are added to deps so that
-            # RunQuery(**deps) can pick them up via its own named parameters.
+            # ObligationQuery(**deps) can pick them up via its own named parameters.
             from flowlet.events import EventLog
             from flowlet.repository.dispatch import DispatchKeyRepository
             from flowlet.repository.signals import SignalRepository
@@ -227,7 +227,7 @@ class Flowlet:
                 logger.info("flowlet_transitions_configured")
             deps["events"] = EventLog(store=store, feed=deps["transitions"])
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
-            deps["querier"] = RunQuery(**deps)
+            deps["querier"] = ObligationQuery(**deps)
 
         deps["queue"] = None
         if configs.queue is not None:
@@ -286,7 +286,7 @@ class Flowlet:
         """No-op retained for API compatibility.
 
         The pull-based read side has no background services to start: the
-        run cache refreshes lazily inside query calls.
+        obligation cache refreshes lazily inside query calls.
         """
         logger.info("flowlet_started")
 
