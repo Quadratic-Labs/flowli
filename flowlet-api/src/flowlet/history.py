@@ -36,7 +36,7 @@ from cairndb.client.replay import ReplayEngine
 from cairndb.engine.logs import Log
 from cairndb.storage.base import BlobStorage
 
-from flowlet.models import RunState
+from flowlet.models import ObligationSummary
 from flowlet.serdes import from_json, to_json
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ async def _handle_run_archived(db, entry) -> None:
     )
 
 
-def _archived_event(state: RunState) -> Event:
+def _archived_event(state: ObligationSummary) -> Event:
     """Build the run.archived event carrying the full serialized state."""
     return Event(
         event_type=EventType(RUN_ARCHIVED),
@@ -141,7 +141,7 @@ class RunHistory:
     ttl: float = DEFAULT_TTL_SECONDS
     _last_refresh: float = field(default=0.0, alias="_last_refresh")
 
-    def record_many(self, states: list[RunState]) -> None:
+    def record_many(self, states: list[ObligationSummary]) -> None:
         """Durably append one run.archived event per state.
 
         Args:
@@ -157,7 +157,7 @@ class RunHistory:
         asyncio.run(self._record(states))
         logger.info("history_recorded", extra={"count": len(states)})
 
-    async def _record(self, states: list[RunState]) -> None:
+    async def _record(self, states: list[ObligationSummary]) -> None:
         log = Log(self.store, HISTORY_LOG_NAME)
         try:
             await log.append_many([_archived_event(s) for s in states])
@@ -187,8 +187,8 @@ class RunHistory:
 
     async def list_states(
         self, flow_names: list[str] | None = None, *, last_n: int = 5
-    ) -> list[RunState]:
-        """Fetch the most recent *last_n* archived RunStates for each flow.
+    ) -> list[ObligationSummary]:
+        """Fetch the most recent *last_n* archived ObligationSummaries for each flow.
 
         Refreshes the projection first (TTL-throttled).  Intended as an
         additive source RunQuery merges with the ephemeral cache — this is
@@ -201,7 +201,7 @@ class RunHistory:
             last_n: Maximum number of rows to return per flow.
 
         Returns:
-            RunState objects reconstructed from the projection, newest
+            ObligationSummary objects reconstructed from the projection, newest
             first within each flow.
         """
         import aiosqlite
@@ -211,7 +211,7 @@ class RunHistory:
         if not names:
             return []
 
-        states: list[RunState] = []
+        states: list[ObligationSummary] = []
         async with aiosqlite.connect(self.db_path) as db:
             for name in names:
                 cursor = await db.execute(
@@ -220,11 +220,11 @@ class RunHistory:
                     (name, last_n),
                 )
                 states.extend(
-                    from_json(RunState)(row[0]) for row in await cursor.fetchall()
+                    from_json(ObligationSummary)(row[0]) for row in await cursor.fetchall()
                 )
         return states
 
-    async def get_states(self, run_ids: Iterable[UUID]) -> dict[UUID, RunState]:
+    async def get_states(self, run_ids: Iterable[UUID]) -> dict[UUID, ObligationSummary]:
         """Look up specific archived runs by ID from the local projection.
 
         Bulk point-lookup for CacheRepository's archived-run seeding: a
@@ -235,7 +235,7 @@ class RunHistory:
             run_ids: Run IDs to look up.
 
         Returns:
-            Mapping of the run_ids that were found to their RunState. A
+            Mapping of the run_ids that were found to their ObligationSummary. A
             run_id absent from the projection — archived before history was
             enabled, or not yet replayed — is simply absent from the
             result; callers should fall back to reading its state.json
@@ -248,14 +248,14 @@ class RunHistory:
             return {}
         await self.refresh()
         placeholders = ",".join("?" for _ in ids)
-        results: dict[UUID, RunState] = {}
+        results: dict[UUID, ObligationSummary] = {}
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 f"SELECT run_id, state_json FROM runs WHERE run_id IN ({placeholders})",
                 [str(rid) for rid in ids],
             )
             for run_id_str, state_json in await cursor.fetchall():
-                results[UUID(run_id_str)] = from_json(RunState)(state_json)
+                results[UUID(run_id_str)] = from_json(ObligationSummary)(state_json)
         return results
 
 

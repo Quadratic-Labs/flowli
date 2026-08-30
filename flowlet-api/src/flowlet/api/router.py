@@ -13,7 +13,6 @@ from fastapi import APIRouter
 
 from flowlet.api.controller import FlowController
 from flowlet.api.models import (
-    AdjudicationResponse,
     AdmissionResponse,
     CancelRunResponse,
     ExecutorClaimResponse,
@@ -22,9 +21,10 @@ from flowlet.api.models import (
     ExecutorRecvResponse,
     ExecutorRenewResponse,
     FlowSubmissionResponse,
-    RunDTO,
+    ObligationSummaryDTO,
+    ReviewResponse,
     RunMessageResponse,
-    RunStateDTO,
+    TraceDTO,
     TransitionPageResponse,
 )
 
@@ -106,24 +106,24 @@ _CANCEL_RUN = RouteSpec(
     requires_state=True,
 )
 
-_ADJUDICATE_RUN = RouteSpec(
-    path="/runs/{run_id}/adjudicate",
+_REVIEW_RUN = RouteSpec(
+    path="/runs/{run_id}/review",
     method="POST",
-    summary="Resolve a gated obligation with a verdict",
+    summary="Resolve a gated obligation with a review",
     description=(
-        "Record an authorized verdict on a run awaiting adjudication: "
-        "'accepted' discharges the obligation, 'rejected' reopens it for "
+        "Record an authorized review on a run awaiting review: "
+        "'approved' discharges the obligation, 'rejected' reopens it for "
         "another attempt (or abandons it when the budget is spent).  The "
         "flow's gate policy decides actor eligibility; actor and decision "
         "are recorded in the account."
     ),
     tags=["Execution"],
-    response_model=AdjudicationResponse,
+    response_model=ReviewResponse,
     responses={
-        200: {"description": "Verdict recorded"},
+        200: {"description": "Review recorded"},
         403: {"description": "Actor not eligible under the gate policy"},
         404: {"description": "Run not found among active runs"},
-        409: {"description": "Run is not awaiting adjudication"},
+        409: {"description": "Run is not awaiting review"},
         503: {"description": "Storage not configured"},
     },
     requires_state=True,
@@ -134,7 +134,7 @@ _ADMIT_RUN = RouteSpec(
     method="POST",
     summary="Release a held obligation's admission",
     description=(
-        "The entry-gate mirror of adjudication: a gated-admission "
+        "The entry-gate mirror of review: a gated-admission "
         "obligation is born held — durably on the books, not claimable. "
         "This fenced transition opens it (admitted_by/admitted_at recorded "
         "in the account) and wakes a worker. When to admit is the caller's "
@@ -264,7 +264,7 @@ _RUNS_QUERY = RouteSpec(
     summary="List recent run states",
     description="Return the most recent run states per flow with optional filtering by flow name and result limit.",
     tags=["Query"],
-    response_model=list[RunStateDTO],
+    response_model=list[ObligationSummaryDTO],
     responses={503: {"description": "Storage not configured"}},
     requires_querier=True,
 )
@@ -274,7 +274,7 @@ _LOGS_QUERY = RouteSpec(
     method="POST",
     summary="Fetch a single run with log detail",
     tags=["Query"],
-    response_model=RunDTO,
+    response_model=TraceDTO,
     responses={503: {"description": "Storage not configured"}},
     requires_querier=True,
 )
@@ -285,7 +285,7 @@ _RUN_BY_ID = RouteSpec(
     summary="Fetch a run by its ID",
     description="Look up a run using only its run_id without needing flow_name.",
     tags=["Query"],
-    response_model=RunDTO,
+    response_model=TraceDTO,
     responses={
         503: {"description": "Storage not configured"},
         404: {"description": "Run not found"},
@@ -367,7 +367,7 @@ def build_router(controller: FlowController, **_) -> APIRouter:
         _wire(router, _SUBMIT_FLOW, controller.submit_flow)
     if not _CANCEL_RUN.requires_state or controller.state_repo is not None:
         _wire(router, _CANCEL_RUN, controller.cancel_run)
-        _wire(router, _ADJUDICATE_RUN, controller.adjudicate_run)
+        _wire(router, _REVIEW_RUN, controller.review_run)
         _wire(router, _ADMIT_RUN, controller.admit_run)
         _wire(router, _CLAIM_RUN, controller.claim_run)
         _wire(router, _RENEW_RUN, controller.renew_run)

@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type RunEvent, type RunSummaryDTO, type SpanRecordDTO } from '@/lib/api';
+import { api, ApiError, getStatusColor, humanizeDuration, isCancellable, type RunEvent, type TraceSummaryDTO, type SpanRecordDTO } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RunFlamegraph } from '@/components/RunFlamegraph';
 import { CancelRunButton } from '@/components/CancelRunButton';
-import { AdjudicateRunPanel } from '@/components/AdjudicateRunPanel';
+import { ReviewRunPanel } from '@/components/ReviewRunPanel';
 
 interface LogLine { ts: string | null; level: string; message: string }
 
@@ -36,15 +36,15 @@ function spansToLogLines(spans: SpanRecordDTO[]): LogLine[] {
 
 interface AttemptView {
   attempt: number;
-  tree: RunSummaryDTO | null;
+  tree: TraceSummaryDTO | null;
   logs: LogLine[];
 }
 
 /** Rebuild one attempt's summary tree from its span records — the client-side
  *  mirror of the server's analysis.summarise (which only returns the latest
  *  attempt), so every attempt can drive the flamegraph and children table. */
-function buildAttemptTree(spans: SpanRecordDTO[]): RunSummaryDTO | null {
-  const nodes = new Map<string, RunSummaryDTO>();
+function buildAttemptTree(spans: SpanRecordDTO[]): TraceSummaryDTO | null {
+  const nodes = new Map<string, TraceSummaryDTO>();
   for (const s of spans) {
     if (!s.span_id) continue;
     const start = s.start_ts ?? '';
@@ -61,7 +61,7 @@ function buildAttemptTree(spans: SpanRecordDTO[]): RunSummaryDTO | null {
       children: [],
     });
   }
-  let root: RunSummaryDTO | null = null;
+  let root: TraceSummaryDTO | null = null;
   for (const s of spans) {
     if (!s.span_id) continue;
     const node = nodes.get(s.span_id)!;
@@ -92,9 +92,9 @@ function groupAttempts(spans: SpanRecordDTO[]): AttemptView[] {
 
 const TERMINAL_EVENTS = ['completed', 'failed', 'canceled'];
 
-/** Statuses the kernel treats as closed (RunStatus.is_closed(), mirrored).
- *  Distinct from TERMINAL_EVENTS: an "adjudicated" event can close a run
- *  (accepted) or reopen it (rejected, budget left) — the resulting status,
+/** Statuses the kernel treats as closed (ReportedStatus.is_closed(), mirrored).
+ *  Distinct from TERMINAL_EVENTS: a "reviewed" event can close a run
+ *  (approved) or reopen it (rejected, budget left) — the resulting status,
  *  not the event name, says which. */
 const CLOSED_STATUSES = ['completed', 'failed', 'canceled', 'warning', 'stopped'];
 
@@ -106,8 +106,8 @@ function eventToStatus(event: string | undefined): string {
   if (event === 'claimed') return 'running';
   if (event === 'retry_scheduled' || event === 'requeued') return 'pending';
   if (event === 'cancel_requested') return 'canceling';
-  if (event === 'awaiting_adjudication') return 'gated';
-  return event; // completed / failed / canceled / adjudicated map to themselves
+  if (event === 'awaiting_review') return 'gated';
+  return event; // completed / failed / canceled / reviewed map to themselves
 }
 
 /** The account's authoritative status, from the last lifecycle event that
@@ -299,7 +299,7 @@ export default function RunDetail() {
             </p>
           </div>
 
-          {eventToStatus(lastEvent) === 'gated' && <AdjudicateRunPanel runId={runId} />}
+          {eventToStatus(lastEvent) === 'gated' && <ReviewRunPanel runId={runId} />}
         </div>
       )}
 
@@ -353,7 +353,7 @@ export default function RunDetail() {
             </div>
           </div>
 
-          {isGated && <AdjudicateRunPanel runId={runId} />}
+          {isGated && <ReviewRunPanel runId={runId} />}
 
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
             <RunFlamegraph runData={view} />

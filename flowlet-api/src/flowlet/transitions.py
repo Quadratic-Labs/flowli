@@ -1,12 +1,12 @@
 """Account-transition feed — an ordered, cursor-addressable wake-up channel.
 
 Delta 3 of the account model (abstractions v0.3): reconcilers that derive
-obligations from completion events — dependency controllers, adjudicator
+obligations from completion events — dependency controllers, reviewer
 dispatch — need lifecycle transitions cheaply and *orderedly* observable.
 Polling ``list_views`` is O(active set) per tick with neither ordering nor
 a cursor; the feed is the CairnDB named log ``transitions`` (keys under
 ``logs/transitions/``), fed by the same emission sites as the per-run
-event log — every :meth:`flowlet.events.RunEventLog.append` also lands one
+event log — every :meth:`flowlet.events.EventLog.append` also lands one
 ``account.transition`` event here when the feed is configured.
 
 The feed is a wake-up channel, never authority:
@@ -76,7 +76,7 @@ class TransitionFeed:
         truth, and reconcilers' fallback poll covers the gap.
 
         Args:
-            record: The per-run event record (see RunEventLog.append).
+            record: The per-run event record (see EventLog.append).
         """
         try:
             asyncio.run(self._append(record))

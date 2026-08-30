@@ -8,7 +8,7 @@ from cairndb.storage.filesystem import FilesystemStorage
 from flowlet.api.cache import CacheRepository
 from flowlet.api.query import RunQuery
 from flowlet.history import RunHistory
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.repository.log import LogRepository
 from flowlet.types import Timestamp
@@ -41,7 +41,7 @@ def query(cache, store, history):
 
 def _archived(make_run_state, **overrides):
     defaults: dict = {
-        "status": RunStatus.completed,
+        "status": ReportedStatus.completed,
         "ended_at": Timestamp(datetime.now(UTC) - timedelta(hours=2)),
     }
     defaults.update(overrides)

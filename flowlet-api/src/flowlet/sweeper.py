@@ -6,11 +6,11 @@ sweep lists the active state directory and:
 
 1. **Expired in-flight attempts** — lease deadline passed with the holder
    gone.  The sweeper steals the lease and does the crash accounting: the
-   dead attempt's outcome is recorded as ``crashed`` (auto-verdict
+   dead attempt's outcome is recorded as ``crashed`` (auto-review
    rejected).  With budget left the obligation is released open and a fresh
    wake-up message is enqueued (kwargs come from the account, not the
    original message); with the budget spent it is abandoned — except a
-   gated obligation, which parks awaiting adjudication instead.
+   gated obligation, which parks awaiting review instead.
 2. **Stuck parked obligations** — released and open long past their backoff
    window (their retry message was lost, or the failing worker died before
    enqueueing).  Re-enqueued; a duplicate message is harmless because the
@@ -35,14 +35,14 @@ from typing import TYPE_CHECKING
 
 from attrs import define
 
-from flowlet.events import RunEventLog
+from flowlet.events import EventLog
 from flowlet.models import (
     AttemptOutcome,
+    Decision,
     FlowJob,
     ObligationRecord,
     ObligationStatus,
-    Verdict,
-    VerdictDecision,
+    Review,
 )
 from flowlet.queue import JobQueueProtocol
 from flowlet.repository import (
@@ -94,7 +94,7 @@ def sweep(
     pending_grace: int = DEFAULT_PENDING_GRACE,
     archive_grace: int = DEFAULT_ARCHIVE_GRACE,
     history: "RunHistory | None" = None,
-    events: RunEventLog | None = None,
+    events: EventLog | None = None,
 ) -> SweepStats:
     """Run one sweep pass over the active state directory.
 
@@ -143,7 +143,7 @@ def sweep(
                 _maybe_requeue_parked(
                     queue, view, now, pending_grace, stats, events
                 )
-            # awaiting_adjudication and held: wait passively for a verdict /
+            # awaiting_review and held: wait passively for a review /
             # an admission — never re-enqueued; a wake-up could not execute
             # anything.
         except Exception:
@@ -180,12 +180,12 @@ def _recover_crashed(
     queue: JobQueueProtocol,
     view: StateView,
     stats: SweepStats,
-    events: RunEventLog | None = None,
+    events: EventLog | None = None,
 ) -> None:
     """Recover an obligation whose in-flight attempt lost its lease.
 
     Steals the lease with an atomic transition that records the dead
-    attempt as ``crashed`` (auto-verdict rejected), then either parks the
+    attempt as ``crashed`` (auto-review rejected), then either parks the
     obligation open (budget left) or abandons it — and releases
     immediately.  The epoch fence is the ownership transfer: if the
     acquisition loses (owner finished or another sweeper won), nothing else
@@ -200,25 +200,25 @@ def _recover_crashed(
             raise AlreadyClosed(existing)
         if existing.open_attempt is not None:
             # A crash never spends the budget (crashed attempts are free);
-            # on an already-exhausted gated obligation it keeps its verdict
-            # pending — the human gate adjudicates it below.
+            # on an already-exhausted gated obligation it keeps its review
+            # pending — the human gate reviews it below.
             parks = (
                 not existing.retries_left()
-                and existing.obligation.adjudication == "gated"
+                and existing.obligation.review_policy == "gated"
             )
             existing.record_outcome(
                 AttemptOutcome.crashed,
-                verdict=None if parks else Verdict(
-                    decision=VerdictDecision.rejected,
+                review=None if parks else Review(
+                    decision=Decision.rejected,
                     by="auto",
-                    rendered_at=Timestamp.now(),
+                    decided_at=Timestamp.now(),
                     reason="lease_expired",
                 ),
             )
         if not existing.retries_left():
-            if existing.obligation.adjudication == "gated":
-                # Exhaustion is a judgment point: park for adjudication.
-                existing.suspend_for_adjudication()
+            if existing.obligation.review_policy == "gated":
+                # Exhaustion is a judgment point: park for review.
+                existing.suspend_for_review()
             else:
                 existing.abandon("max_retries_exceeded")
         return existing
@@ -251,11 +251,11 @@ def _recover_crashed(
         )
         return
 
-    if recovered.obligation.status == ObligationStatus.awaiting_adjudication:
+    if recovered.obligation.status == ObligationStatus.awaiting_review:
         # Gated obligation exhausted by the crash: parked for human
         # judgment, never re-enqueued (a wake-up could not execute).
         _emit(
-            events, recovered, "awaiting_adjudication",
+            events, recovered, "awaiting_review",
             cause="lease_expired_max_retries",
         )
         logger.warning(
@@ -285,7 +285,7 @@ def _maybe_requeue_parked(
     now: Timestamp,
     pending_grace: int,
     stats: SweepStats,
-    events: RunEventLog | None = None,
+    events: EventLog | None = None,
 ) -> None:
     """Re-enqueue a parked obligation whose retry message appears lost.
 
@@ -421,7 +421,7 @@ def _fire_due_timers(
 
 
 def _emit(
-    events: RunEventLog | None, record: ObligationRecord, event: str, cause: str
+    events: EventLog | None, record: ObligationRecord, event: str, cause: str
 ) -> None:
     """Append a sweeper lifecycle event when an event log is configured."""
     if events is None:

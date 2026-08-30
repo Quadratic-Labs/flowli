@@ -15,7 +15,6 @@ from attrs import define
 from pydantic import BaseModel, Field, create_model
 
 from flowlet.tracing import instrument
-from flowlet.models import RunType
 
 logger = logging.getLogger(__name__)
 
@@ -187,10 +186,10 @@ class FlowOptions:
             worker's default applies.
         max_retries: Maximum number of execution attempts.
         gated: When True, a returned attempt does not receive the
-            auto-verdict — the obligation suspends as awaiting_adjudication
-            until an authorized verdict arrives through the adjudication
+            auto-review — the obligation suspends as awaiting_review
+            until an authorized review arrives through the review
             endpoint.
-        gate: Optional eligibility policy for adjudication — a callable
+        gate: Optional eligibility policy for review — a callable
             ``(actor: str, record: ObligationRecord) -> bool``.  Domain
             logic: evaluated by the controller, never stored in the account
             (only the actor and decision are recorded).  None allows any
@@ -350,9 +349,9 @@ class Registry:
             timeout: Lease duration in seconds per execution attempt; None
                 uses the worker default.
             max_retries: Maximum number of execution attempts.
-            gated: Suspend for external adjudication instead of applying the
-                auto-verdict when an attempt returns.
-            gate: Optional adjudication eligibility policy
+            gated: Suspend for external review instead of applying the
+                auto-review when an attempt returns.
+            gate: Optional review eligibility policy
                 ``(actor, record) -> bool``.
 
         Returns:
@@ -384,9 +383,8 @@ class Registry:
             )
             schema = None
 
-        wrapper = instrument(fn, flow_name, RunType.flow)
+        wrapper = instrument(fn, flow_name, "flow")
         setattr(wrapper, "__flow_name__", flow_name)
-        setattr(wrapper, "__flow_type__", RunType.flow)
         if schema is not None:
             setattr(wrapper, "__flow_schema__", schema)
         self.flows[flow_name] = wrapper
@@ -431,9 +429,8 @@ class Registry:
             )
             schema = None
 
-        wrapper = instrument(fn, task_name, RunType.task)
+        wrapper = instrument(fn, task_name, "task")
         setattr(wrapper, "__flow_name__", task_name)
-        setattr(wrapper, "__flow_type__", RunType.task)
         if schema is not None:
             setattr(wrapper, "__flow_schema__", schema)
         self.tasks[task_name] = wrapper

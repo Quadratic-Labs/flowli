@@ -3,7 +3,7 @@ Unit tests for the API DTO layer (pydantic models over the wire format).
 
 Covers the seam between serdes and the DTOs: ``RunQuery.get_run`` returns a
 *destructured* tree (timestamps as ISO 8601 strings), which the controller
-validates with ``RunDTO.model_validate``.  A validation failure here is
+validates with ``TraceDTO.model_validate``.  A validation failure here is
 silently downgraded to a 404 by the controller (ValidationError extends
 ValueError), so this seam needs its own regression coverage.
 """
@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from flowlet.api.models import RunDTO, TimestampDTO
-from flowlet.models import RunStatus, RunSummary, RunType
+from flowlet.api.models import TraceDTO, TimestampDTO
+from flowlet.models import ReportedStatus, TraceSummary
 from flowlet.serdes import destructure
 from flowlet.types import Timestamp
 from pydantic import BaseModel
@@ -57,24 +57,24 @@ class TestTimestampDTO:
 
 @pytest.mark.unit
 class TestRunDTOFromWireFormat:
-    """RunDTO validates the destructured tree that RunQuery.get_run returns."""
+    """TraceDTO validates the destructured tree that RunQuery.get_run returns."""
 
     def test_destructured_run_validates(self, make_span_record, make_ts):
         # Regression: after the serdes-on-cattrs refactor, get_run returns
-        # ISO-string timestamps; RunDTO rejected them, and the controller's
+        # ISO-string timestamps; TraceDTO rejected them, and the controller's
         # except ValueError turned that into a bogus 404.
-        summary = RunSummary(
+        summary = TraceSummary(
             span_id="c2e23227ee137844",
             span_name="simple_etl",
-            span_type=RunType.flow,
-            status=RunStatus.completed,
+            span_type="flow",
+            status=ReportedStatus.completed,
             start_ts=make_ts(),
             end_ts=make_ts(),
         )
         result = destructure(summary)
         result["logs"] = destructure([make_span_record()])
 
-        dto = RunDTO.model_validate(result)
+        dto = TraceDTO.model_validate(result)
 
         assert dto.status == "completed"
         assert dto.logs[0].start_ts == Timestamp.from_iso(result["logs"][0]["start_ts"])

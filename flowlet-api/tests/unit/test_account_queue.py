@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.models import AttemptOutcome, ObligationStatus, RunStatus
+from flowlet.models import AttemptOutcome, ObligationStatus, ReportedStatus
 from flowlet.queue.account import AccountJobSource
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.worker import execute_job
@@ -82,17 +82,17 @@ class TestEnqueue:
         view = state_repo.read(job.flow_name, job.run_id)
         assert view.record.obligation.kwargs == {"x": 1}  # first claim won
 
-    def test_adjudication_policy_stamped_at_creation(
+    def test_review_policy_stamped_at_creation(
         self, state_repo, make_flow_job
     ):
         source = AccountJobSource(
-            state_repo=state_repo, adjudication_for=lambda flow: "gated"
+            state_repo=state_repo, review_policy_for=lambda flow: "gated"
         )
         job = make_flow_job()
         source.enqueue(job)
 
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.record.obligation.adjudication == "gated"
+        assert view.record.obligation.review_policy == "gated"
 
     def test_delay_is_ignored(self, source, state_repo, make_flow_job):
         job = make_flow_job()
@@ -136,7 +136,7 @@ class TestDequeue:
     def test_held_lease_is_skipped(self, source, store, make_record, seed_lease):
         seed_lease(
             store,
-            make_record(status=RunStatus.running),
+            make_record(status=ReportedStatus.running),
             holder="other-worker",
             deadline=datetime.now(UTC) + timedelta(seconds=300),
         )
@@ -145,10 +145,10 @@ class TestDequeue:
     def test_closed_and_gated_are_skipped(
         self, source, store, make_record, seed_lease
     ):
-        seed_lease(store, make_record(status=RunStatus.completed))
-        gated = make_record(status=RunStatus.running)
+        seed_lease(store, make_record(status=ReportedStatus.completed))
+        gated = make_record(status=ReportedStatus.running)
         gated.record_outcome(AttemptOutcome.returned)
-        gated.suspend_for_adjudication()
+        gated.suspend_for_review()
         seed_lease(store, gated)
 
         assert source.dequeue() is None
@@ -158,7 +158,7 @@ class TestDequeue:
     ):
         seed_lease(
             store,
-            make_record(status=RunStatus.running),
+            make_record(status=ReportedStatus.running),
             holder="dead-worker",
             deadline=datetime.now(UTC) - timedelta(seconds=1),
         )
@@ -167,7 +167,7 @@ class TestDequeue:
     def test_parked_retry_waits_for_backoff(
         self, source, store, make_record, seed_lease
     ):
-        record = make_record(status=RunStatus.pending, attempt=1)
+        record = make_record(status=ReportedStatus.pending, attempt=1)
 
         seed_lease(store, record, deadline=datetime.now(UTC))
         assert source.dequeue() is None  # inside the 2s backoff window

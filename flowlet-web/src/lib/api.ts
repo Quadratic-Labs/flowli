@@ -1,7 +1,7 @@
-export interface RunSummaryDTO {
+export interface TraceSummaryDTO {
   span_id: string; span_name: string; status: string;
   start_ts: string; end_ts: string; duration: string | null;
-  children: RunSummaryDTO[];
+  children: TraceSummaryDTO[];
 }
 export interface SpanEventDTO {
   ts: string | null; message: string | null;
@@ -14,12 +14,12 @@ export interface SpanRecordDTO {
   start_ts: string | null; end_ts: string | null;
   events: SpanEventDTO[]; attributes: Record<string, unknown>;
 }
-export interface RunDTO extends RunSummaryDTO { logs: SpanRecordDTO[]; }
+export interface TraceDTO extends TraceSummaryDTO { logs: SpanRecordDTO[]; }
 export interface FlowSchema {
   name: string; docstring?: string | null; has_schema: boolean;
   parameters?: Array<{ name: string; type: string; required: boolean; default?: unknown }>;
 }
-export interface RunStateDTO {
+export interface ObligationSummaryDTO {
   run_id: string; flow_name: string; status: string; worker_id: string;
   started_at: string; ended_at: string | null;
   attempt: number; max_retries: number;
@@ -31,7 +31,7 @@ export interface FlowSubmissionResponse {
 export interface CancelRunResponse {
   run_id: string; status: string; cancel_requested: boolean;
 }
-export interface AdjudicationResponse {
+export interface ReviewResponse {
   run_id: string; status: string; decision: string;
 }
 export interface RunEvent {
@@ -43,7 +43,7 @@ export interface DashboardMetrics {
   healthStatus: 'green' | 'orange' | 'red';
   totalFlows: number; successfulFlows: number; failedFlows: number; runningFlows: number;
   successRate: number; failureRate: number;
-  failedRuns: RunStateDTO[]; longRunningFlows: RunStateDTO[]; gatedRuns: RunStateDTO[];
+  failedRuns: ObligationSummaryDTO[]; longRunningFlows: ObligationSummaryDTO[]; gatedRuns: ObligationSummaryDTO[];
   totalComputeTime: string; averageExecutionTime: string; lastUpdated: Date;
 }
 
@@ -104,14 +104,14 @@ export const api = {
       body: JSON.stringify({ kwargs, ...(dispatchKey ? { dispatch_key: dispatchKey } : {}) }),
     }),
   queryRuns: (last_n = 50, names?: string[]) =>
-    apiFetch<RunStateDTO[]>('/runs/query', { method: 'POST', body: JSON.stringify({ last_n, ...(names ? { names } : {}) }) }),
+    apiFetch<ObligationSummaryDTO[]>('/runs/query', { method: 'POST', body: JSON.stringify({ last_n, ...(names ? { names } : {}) }) }),
   getRunById: (runId: string, with_logs = true) =>
-    apiFetch<RunDTO>(`/runs/${runId}?with_logs=${with_logs}`),
+    apiFetch<TraceDTO>(`/runs/${runId}?with_logs=${with_logs}`),
   getRunEvents: (runId: string) => apiFetch<RunEvent[]>(`/runs/${runId}/events`),
   cancelRun: (runId: string) =>
     apiFetch<CancelRunResponse>(`/runs/${runId}/cancel`, { method: 'POST' }),
-  adjudicateRun: (runId: string, decision: 'accepted' | 'rejected', actor: string, reason?: string) =>
-    apiFetch<AdjudicationResponse>(`/runs/${runId}/adjudicate`, {
+  reviewRun: (runId: string, decision: 'approved' | 'rejected', actor: string, reason?: string) =>
+    apiFetch<ReviewResponse>(`/runs/${runId}/review`, {
       method: 'POST',
       body: JSON.stringify({ decision, actor, ...(reason ? { reason } : {}) }),
     }),
@@ -150,7 +150,7 @@ export function getStatusColor(status: string): string {
 
 /** Statuses for which a cancel request is meaningful. A gated run has no
  *  active lease to steal from, but the kernel still accepts the cancel —
- *  it abandons the obligation directly instead of waiting on adjudication. */
+ *  it abandons the obligation directly instead of waiting on review. */
 export function isCancellable(status: string): boolean {
   return ['running', 'pending', 'retry', 'gated'].includes(status.toLowerCase());
 }

@@ -17,7 +17,7 @@ from flowlet.models import (
     Obligation,
     ObligationRecord,
     ObligationStatus,
-    RunStatus,
+    ReportedStatus,
 )
 from flowlet.queue.account import AccountJobSource
 from flowlet.repository import SignalRepository, StateRepository
@@ -81,7 +81,7 @@ class TestHeldObligation:
 
     def test_held_projects_as_held(self):
         state = _held_record().summary()
-        assert state.status == RunStatus.held
+        assert state.status == ReportedStatus.held
         assert not state.status.is_closed()
 
 
@@ -170,31 +170,31 @@ class TestAdmissionEndpoints:
             "test_flow", FlowArguments(kwargs={"x": 1}, admission="gated")
         )
 
-        assert resp.status == RunStatus.held
+        assert resp.status == ReportedStatus.held
         assert queue.enqueued == []  # nothing could execute it
         record = state_repo.read("test_flow", resp.run_id).record
         assert record.obligation.status == ObligationStatus.held
         assert record.obligation.admission == "gated"
         assert record.obligation.kwargs == {"x": 1}
 
-    def test_gated_submission_stamps_the_adjudication_policy(
+    def test_gated_submission_stamps_the_review_policy(
         self, state_repo, signals
     ):
         controller = self._controller(
-            state_repo, signals, adjudication_for=lambda _f: "gated"
+            state_repo, signals, review_policy_for=lambda _f: "gated"
         )
         resp = controller.submit_flow(
             "test_flow", FlowArguments(admission="gated")
         )
         record = state_repo.read("test_flow", resp.run_id).record
-        assert record.obligation.adjudication == "gated"
+        assert record.obligation.review_policy == "gated"
 
     def test_gated_submission_needs_no_queue(self, state_repo, signals):
         controller = self._controller(state_repo, signals, queue=None)
         resp = controller.submit_flow(
             "test_flow", FlowArguments(admission="gated")
         )
-        assert resp.status == RunStatus.held
+        assert resp.status == ReportedStatus.held
 
     def test_admit_opens_and_wakes_a_worker(self, state_repo, signals):
         queue = FakeQueue([])

@@ -16,12 +16,7 @@ from attrs import Factory, define, field, resolve_types
 from flowlet.types import JsonData, Timestamp
 
 
-class RunType(StrEnum):
-    flow = "flow"
-    task = "task"
-
-
-class RunStatus(StrEnum):
+class ReportedStatus(StrEnum):
     """Projection statuses for the API/history surface.
 
     Derived from the account (see :meth:`ObligationRecord.summary`), never
@@ -70,7 +65,8 @@ class SpanRecord:
         name: Span (flow/task) name.
         flow_name: Root flow name (identical for all spans of a run).
         attempt: Execution attempt this span belongs to (1-based).
-        span_type: flow or task.
+        span_type: Open label for the span's kind (taskflow emits
+            ``flow`` / ``task``); None when the span carried none.
         status: Terminal status of the span (completed or failed).
         status_message: Error description when failed.
         start_ts: Span start time.
@@ -84,8 +80,8 @@ class SpanRecord:
     name: str
     flow_name: str
     attempt: int = 1
-    span_type: RunType
-    status: RunStatus
+    span_type: str | None = field(default=None)
+    status: ReportedStatus
     status_message: str | None = field(default=None)
     start_ts: Timestamp
     end_ts: Timestamp | None = field(default=None)
@@ -94,7 +90,7 @@ class SpanRecord:
 
 
 @define(slots=True, kw_only=True)
-class RunSummary:
+class TraceSummary:
     """
     A run's status.
 
@@ -105,7 +101,7 @@ class RunSummary:
     Attributes:
         span_id: span's identifier (16-char hex OTel span id).
         span_name: span's name.
-        span_type: span's type.
+        span_type: span's open kind label, when recorded.
         status: span's most recent status.
         start_ts: span's starting time.
         end_ts: span's ending time.
@@ -113,11 +109,11 @@ class RunSummary:
     """
     span_id: str
     span_name: str
-    span_type: RunType
-    status: RunStatus
+    span_type: str | None = field(default=None)
+    status: ReportedStatus
     start_ts: Timestamp | None = field(default=None)
     end_ts: Timestamp | None = field(default=None)
-    children: list[RunSummary] = Factory(list)
+    children: list[TraceSummary] = Factory(list)
 
     @property
     def duration(self) -> timedelta | None:
@@ -133,7 +129,7 @@ class RunSummary:
 
 
 @define(slots=True, kw_only=True)
-class Run(RunSummary):
+class Trace(TraceSummary):
     """
     A complete run with its logs and computed summary.
 
@@ -146,16 +142,16 @@ class Run(RunSummary):
     logs: JsonData
 
 
-# `children: list[RunSummary]` is self-referential: under lazy annotations the
+# `children: list[TraceSummary]` is self-referential: under lazy annotations the
 # name is unbound while @define runs, so the field type is captured as
 # list[ForwardRef(...)] — unhashable on 3.14, which breaks cattrs' hook cache.
 # Resolving eagerly replaces it with the real class on both fields tuples.
-resolve_types(RunSummary)
-resolve_types(Run)
+resolve_types(TraceSummary)
+resolve_types(Trace)
 
 
 @define(slots=True, kw_only=True)
-class RunState:
+class ObligationSummary:
     """A flat projection of one obligation's account, for the read surface.
 
     Derived from :class:`ObligationRecord` via :meth:`ObligationRecord.summary`
@@ -166,7 +162,7 @@ class RunState:
     Attributes:
         run_id: The obligation's id.
         flow_name: Name of the flow.
-        status: Derived projection status (see RunStatus).
+        status: Derived projection status (see ReportedStatus).
         worker_id: Executor of the most recent attempt ("" if none).
         started_at: When the obligation was created.
         ended_at: When the obligation closed (discharged/abandoned).
@@ -178,7 +174,7 @@ class RunState:
     """
     run_id: UUID
     flow_name: str
-    status: RunStatus
+    status: ReportedStatus
     worker_id: str
     started_at: Timestamp
     ended_at: Timestamp | None = field(default=None)
@@ -191,7 +187,7 @@ class RunState:
 class ObligationStatus(StrEnum):
     """Lifecycle of an obligation — the unit of intent.
 
-    ``held`` is the entry gate, symmetric to ``awaiting_adjudication`` on
+    ``held`` is the entry gate, symmetric to ``awaiting_review`` on
     the exit (abstractions v0.3, delta 4): the obligation is durably on the
     books but not claimable until a fenced admission releases it.  The
     kernel records the state "not yet eligible"; *when* to release is
@@ -199,7 +195,7 @@ class ObligationStatus(StrEnum):
     """
     held = "held"
     open = "open"
-    awaiting_adjudication = "awaiting_adjudication"
+    awaiting_review = "awaiting_review"
     discharged = "discharged"
     abandoned = "abandoned"
 
@@ -215,31 +211,31 @@ class AttemptOutcome(StrEnum):
     interrupted = "interrupted"  # deliberately stopped (cancel)
 
 
-class VerdictDecision(StrEnum):
-    """The adjudication of an attempt's outcome against the contract."""
-    accepted = "accepted"
+class Decision(StrEnum):
+    """The review of an attempt's outcome against the contract."""
+    approved = "approved"
     rejected = "rejected"
 
 
 @define(slots=True, kw_only=True)
-class Verdict:
-    """A recorded adjudication of one attempt.
+class Review:
+    """A recorded review of one attempt.
 
     Attributes:
-        decision: Accepted or rejected.
-        by: Who adjudicated — ``auto`` for the default policy (returned ⇒
-            accepted), a gate name, or a principal for human adjudication.
-        rendered_at: When the verdict was recorded.
+        decision: Approved or rejected.
+        by: Who reviewed — ``auto`` for the default policy (returned ⇒
+            approved), a gate name, or a principal for human review.
+        decided_at: When the review was recorded.
         reason: Optional short machine-readable ground for the decision.
         evidence_ref: JSON-safe reference to the grounds of the decision
             (review findings, gate evidence) — a content-addressed ref or
             small JSON, never the body itself; symmetric to
-            :attr:`Effect.result_ref`.  A rejecting verdict's evidence is
+            :attr:`Effect.result_ref`.  A rejecting review's evidence is
             what seeds the next attempt's envelope.
     """
-    decision: VerdictDecision
+    decision: Decision
     by: str = "auto"
-    rendered_at: Timestamp
+    decided_at: Timestamp
     reason: str | None = field(default=None)
     evidence_ref: Any = field(default=None)
 
@@ -255,7 +251,7 @@ class Attempt:
         ended_at: When its outcome was recorded.
         outcome: Explicit end of execution; None while in flight.
         error: Exception type name when the outcome is ``raised``.
-        verdict: The adjudication of this attempt's outcome, when rendered.
+        review: The review of this attempt's outcome, once recorded.
         resumed_from: Prior attempt number whose substrate (session,
             worktree, resume artifact) this attempt continued; None for a
             fresh start.  Cost/provenance legibility — the account shows
@@ -267,27 +263,27 @@ class Attempt:
     ended_at: Timestamp | None = field(default=None)
     outcome: AttemptOutcome | None = field(default=None)
     error: str | None = field(default=None)
-    verdict: Verdict | None = field(default=None)
+    review: Review | None = field(default=None)
     resumed_from: int | None = field(default=None)
 
     def consumes_budget(self) -> bool:
         """Whether this attempt bills the obligation's attempt budget.
 
-        ``raised`` consumes; ``returned`` consumes once its verdict is
+        ``raised`` consumes; ``returned`` consumes once its review is
         ``rejected``; ``crashed``/``interrupted`` attempts (and in-flight
         ones) are free — infrastructure death and deliberate suspension are
         not failures of the work, so crash, interrupt/resume, and rework
         must not bill identically (abstractions v0.3, delta 1).  This holds
-        regardless of any verdict recorded on a crashed attempt (crash
+        regardless of any review recorded on a crashed attempt (crash
         accounting stamps ``rejected``/``lease_expired`` as a fact of
-        adjudication, not as a budget event).
+        review, not as a budget event).
         """
         if self.outcome == AttemptOutcome.raised:
             return True
         if self.outcome == AttemptOutcome.returned:
             return (
-                self.verdict is not None
-                and self.verdict.decision == VerdictDecision.rejected
+                self.review is not None
+                and self.review.decision == Decision.rejected
             )
         return False
 
@@ -304,28 +300,28 @@ class Obligation:
         parent_id: Parent obligation for sub-obligations; None for roots.
         root_id: Root of the obligation tree; None for roots.
         max_retries: Attempt budget, counted over *consuming* attempts —
-            ``raised`` outcomes and ``rejected`` verdicts on returned
+            ``raised`` outcomes and ``rejected`` reviews on returned
             attempts; ``crashed``/``interrupted`` attempts are free.
-        adjudication: How done-ness is decided — ``auto`` applies the
-            default policy (returned ⇒ accepted) at the end of each attempt;
-            ``gated`` suspends the obligation as awaiting_adjudication until
-            an authorized verdict arrives through the adjudication API.
+        review_policy: How done-ness is decided — ``auto`` applies the
+            default policy (returned ⇒ approved) at the end of each attempt;
+            ``gated`` suspends the obligation as awaiting_review until
+            an authorized review arrives through the review API.
         admission: How eligibility to run is decided — ``auto`` obligations
             are claimable from creation; ``gated`` obligations are born
             ``held`` and become claimable only when a fenced admission
-            releases them (the entry gate, mirror of ``adjudication``).
+            releases them (the entry gate, mirror of ``review``).
         admitted_at: When a held obligation's admission was released.
         admitted_by: Who released it — a principal, or a controller acting
             on a completion event.
         caused_by: Provenance of this obligation — what event or decision
             spawned it (e.g. ``dispatch:<key>``, ``plan:<delta>``,
-            ``adjudicate:<run_id>`` for an adjudicator obligation); account
+            ``review:<run_id>`` for an reviewer obligation); account
             data, never scheduling data.
-        adjudicator_id: While ``awaiting_adjudication``, the obligation
-            minted to render this one's verdict — the parked account
-            answers "who owes me the verdict", not just "I'm waiting"
-            (abstractions v0.3, delta 5).  Cleared when a verdict lands;
-            re-minting after an abandoned adjudicator overwrites it.
+        reviewer_id: While ``awaiting_review``, the obligation
+            minted to record this one's review — the parked account
+            answers "who owes me the review", not just "I'm waiting"
+            (abstractions v0.3, delta 5).  Cleared when a review lands;
+            re-minting after an abandoned reviewer overwrites it.
         created_at: When the obligation was recorded.
         closed_at: When it was discharged or abandoned.
         status: Current lifecycle state.
@@ -346,11 +342,11 @@ class Obligation:
     parent_id: UUID | None = field(default=None)
     root_id: UUID | None = field(default=None)
     max_retries: int = 3
-    adjudication: str = "auto"
+    review_policy: str = "auto"
     admission: str = "auto"
     admitted_at: Timestamp | None = field(default=None)
     admitted_by: str | None = field(default=None)
-    adjudicator_id: UUID | None = field(default=None)
+    reviewer_id: UUID | None = field(default=None)
     caused_by: str | None = field(default=None)
     created_at: Timestamp
     closed_at: Timestamp | None = field(default=None)
@@ -443,7 +439,7 @@ class ObligationRecord:
     def consumed_attempts(self) -> int:
         """The number of attempts that consumed the budget.
 
-        Counts ``raised`` outcomes and ``rejected`` verdicts on returned
+        Counts ``raised`` outcomes and ``rejected`` reviews on returned
         attempts (see :meth:`Attempt.consumes_budget`); ``crashed`` and
         ``interrupted`` attempts are free.
         """
@@ -504,71 +500,71 @@ class ObligationRecord:
         outcome: AttemptOutcome,
         *,
         error: str | None = None,
-        verdict: Verdict | None = None,
+        review: Review | None = None,
     ) -> None:
-        """Record the open attempt's outcome (and optionally its verdict)."""
+        """Record the open attempt's outcome (and optionally its review)."""
         attempt = self.open_attempt
         if attempt is None:
             return  # nothing in flight — outcome already accounted
         attempt.outcome = outcome
         attempt.ended_at = Timestamp.now()
         attempt.error = error
-        attempt.verdict = verdict
+        attempt.review = review
 
     @property
-    def pending_verdict_attempt(self) -> Attempt | None:
-        """The attempt awaiting adjudication (outcome recorded, no verdict)."""
+    def pending_review_attempt(self) -> Attempt | None:
+        """The attempt awaiting review (outcome recorded, no review)."""
         last = self.last_attempt
-        if last is not None and last.outcome is not None and last.verdict is None:
+        if last is not None and last.outcome is not None and last.review is None:
             return last
         return None
 
-    def suspend_for_adjudication(self) -> None:
-        """Park the obligation until an authorized verdict arrives.
+    def suspend_for_review(self) -> None:
+        """Park the obligation until an authorized review arrives.
 
-        The attempt's outcome is already recorded; its verdict stays pending
+        The attempt's outcome is already recorded; its review stays pending
         — waiting is an obligation state, never an attempt outcome.
         """
-        self.obligation.status = ObligationStatus.awaiting_adjudication
+        self.obligation.status = ObligationStatus.awaiting_review
 
-    def assign_adjudicator(self, adjudicator_id: UUID) -> None:
-        """Record which obligation owes this one its verdict.
+    def assign_reviewer(self, reviewer_id: UUID) -> None:
+        """Record which obligation owes this one its review.
 
-        The adjudication-as-work linkage: ``awaiting_adjudication`` is the
-        lock; the adjudicator obligation is the job.  The parked account
-        should answer "who owes me the verdict", not just "I'm waiting".
-        Overwriting is allowed — re-minting after an abandoned adjudicator
+        The review-as-work linkage: ``awaiting_review`` is the
+        lock; the reviewer obligation is the job.  The parked account
+        should answer "who owes me the review", not just "I'm waiting".
+        Overwriting is allowed — re-minting after an abandoned reviewer
         replaces the debt-holder; the event log keeps the history.
 
         Args:
-            adjudicator_id: The obligation minted to render the verdict.
+            reviewer_id: The obligation minted to record the review.
 
         Raises:
-            ValueError: The obligation is not awaiting adjudication.
+            ValueError: The obligation is not awaiting review.
         """
-        if self.obligation.status != ObligationStatus.awaiting_adjudication:
+        if self.obligation.status != ObligationStatus.awaiting_review:
             raise ValueError(
-                "obligation is not awaiting adjudication "
+                "obligation is not awaiting review "
                 f"(status: {self.obligation.status})"
             )
-        self.obligation.adjudicator_id = adjudicator_id
+        self.obligation.reviewer_id = reviewer_id
 
-    def adjudicate(self, verdict: Verdict, *, extend_budget: int = 0) -> None:
-        """Record an external verdict on the pending attempt and route it.
+    def decide(self, review: Review, *, extend_budget: int = 0) -> None:
+        """Record an external review on the pending attempt and route it.
 
-        Accepted discharges the obligation.  Rejected first grants
+        Approved discharges the obligation.  Rejected first grants
         *extend_budget* extra attempts (the resume path for an obligation
         gated on exhaustion: fix the environment, extend, re-run), then
         reopens the obligation when the budget allows another attempt, and
-        abandons it (cause ``rejected``) otherwise.  Either way the verdict
-        settles the debt: ``adjudicator_id`` is cleared.
+        abandons it (cause ``rejected``) otherwise.  Either way the review
+        settles the debt: ``reviewer_id`` is cleared.
         """
-        attempt = self.pending_verdict_attempt
+        attempt = self.pending_review_attempt
         if attempt is None:
-            raise ValueError("no attempt is awaiting adjudication")
-        attempt.verdict = verdict
-        self.obligation.adjudicator_id = None
-        if verdict.decision == VerdictDecision.accepted:
+            raise ValueError("no attempt is awaiting review")
+        attempt.review = review
+        self.obligation.reviewer_id = None
+        if review.decision == Decision.approved:
             self.discharge()
             return
         self.obligation.max_retries += extend_budget
@@ -579,7 +575,7 @@ class ObligationRecord:
 
     def admit(self, by: str) -> None:
         """Release a held obligation's admission — the entry-gate mirror of
-        :meth:`adjudicate`.
+        :meth:`decide`.
 
         The kernel records the state change and who caused it; *why* now is
         the right moment (a dependency discharged, a human approved) is the
@@ -636,27 +632,27 @@ class ObligationRecord:
 
     # -- projection -----------------------------------------------------------
 
-    def summary(self) -> RunState:
-        """Project the account onto the flat RunState read surface."""
+    def summary(self) -> ObligationSummary:
+        """Project the account onto the flat ObligationSummary read surface."""
         obligation = self.obligation
         if obligation.status == ObligationStatus.discharged:
-            status = RunStatus.completed
+            status = ReportedStatus.completed
         elif obligation.status == ObligationStatus.abandoned:
             status = (
-                RunStatus.canceled
+                ReportedStatus.canceled
                 if obligation.cause == "canceled"
-                else RunStatus.failed
+                else ReportedStatus.failed
             )
-        elif obligation.status == ObligationStatus.awaiting_adjudication:
-            status = RunStatus.gated
+        elif obligation.status == ObligationStatus.awaiting_review:
+            status = ReportedStatus.gated
         elif obligation.status == ObligationStatus.held:
-            status = RunStatus.held
+            status = ReportedStatus.held
         elif self.open_attempt is not None:
-            status = RunStatus.running
+            status = ReportedStatus.running
         else:
-            status = RunStatus.pending
+            status = ReportedStatus.pending
         last = self.last_attempt
-        return RunState(
+        return ObligationSummary(
             run_id=obligation.id,
             flow_name=obligation.flow_name,
             status=status,
@@ -676,7 +672,7 @@ class FlowJob:
     A flow execution wake-up message for queue processing.
 
     The queue is purely a work-distribution signal: retry accounting and
-    ownership live in ``RunState``, never in the message.  A worker acks the
+    ownership live in ``ObligationSummary``, never in the message.  A worker acks the
     message as soon as the run's state is resolved; duplicate deliveries are
     harmless because the state machine drops them (busy/closed).
 

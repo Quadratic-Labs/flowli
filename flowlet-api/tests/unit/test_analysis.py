@@ -13,7 +13,7 @@ from uuid import uuid7
 import pytest
 
 from flowlet.analysis import summarise
-from flowlet.models import RunStatus, RunType
+from flowlet.models import ReportedStatus
 
 
 def _ts(make_ts, second: int):
@@ -22,13 +22,13 @@ def _ts(make_ts, second: int):
 
 @pytest.mark.unit
 class TestSummarise:
-    """analysis.summarise derives the RunSummary tree from SpanRecords."""
+    """analysis.summarise derives the TraceSummary tree from SpanRecords."""
 
     def test_single_span_status_and_timestamps(self, make_span_record, make_ts):
         run_id = uuid7()
         span = make_span_record(
             run_id=run_id,
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             start_ts=_ts(make_ts, 0),
             end_ts=_ts(make_ts, 5),
         )
@@ -36,22 +36,22 @@ class TestSummarise:
         summary = summarise([span])
 
         assert summary.span_id == span.span_id
-        assert summary.status == RunStatus.completed
+        assert summary.status == ReportedStatus.completed
         assert summary.start_ts == _ts(make_ts, 0)
         assert summary.end_ts == _ts(make_ts, 5)
         assert summary.children == []
 
     def test_single_span_failed_status(self, make_span_record):
-        span = make_span_record(status=RunStatus.failed)
+        span = make_span_record(status=ReportedStatus.failed)
         summary = summarise([span])
-        assert summary.status == RunStatus.failed
+        assert summary.status == ReportedStatus.failed
 
     def test_parent_child_hierarchy(self, make_span_record, make_ts):
         run_id = uuid7()
         root = make_span_record(
             run_id=run_id,
             span_id="aaaaaaaaaaaaaaaa",
-            span_type=RunType.flow,
+            span_type="flow",
             start_ts=_ts(make_ts, 0),
             end_ts=_ts(make_ts, 10),
         )
@@ -60,7 +60,7 @@ class TestSummarise:
             span_id="bbbbbbbbbbbbbbbb",
             parent_span_id="aaaaaaaaaaaaaaaa",
             name="my_task",
-            span_type=RunType.task,
+            span_type="task",
             start_ts=_ts(make_ts, 2),
             end_ts=_ts(make_ts, 8),
         )
@@ -75,16 +75,16 @@ class TestSummarise:
     def test_latest_attempt_wins(self, make_span_record):
         run_id = uuid7()
         first = make_span_record(
-            run_id=run_id, span_id="a" * 16, attempt=1, status=RunStatus.failed
+            run_id=run_id, span_id="a" * 16, attempt=1, status=ReportedStatus.failed
         )
         second = make_span_record(
-            run_id=run_id, span_id="b" * 16, attempt=2, status=RunStatus.completed
+            run_id=run_id, span_id="b" * 16, attempt=2, status=ReportedStatus.completed
         )
 
         summary = summarise([first, second])
 
         assert summary.span_id == second.span_id
-        assert summary.status == RunStatus.completed
+        assert summary.status == ReportedStatus.completed
 
     def test_empty_spans_raise(self):
         with pytest.raises(ValueError, match="No spans"):

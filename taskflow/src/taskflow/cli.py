@@ -55,14 +55,14 @@ def work(app_ref: str, worker_id: str | None, once: bool, poll_interval: float):
         sys.exit(
             execute_job(
                 tf.queue, executor, tf.state_repo, tf.signals, worker_id,
-                events=tf.events, adjudication_for=tf.adjudication_for,
+                events=tf.events, review_policy_for=tf.review_policy_for,
             )
         )
     try:
         while True:
             rc = execute_job(
                 tf.queue, executor, tf.state_repo, tf.signals, worker_id,
-                events=tf.events, adjudication_for=tf.adjudication_for,
+                events=tf.events, review_policy_for=tf.review_policy_for,
             )
             if rc == 2:
                 time.sleep(poll_interval)

@@ -65,7 +65,7 @@ class Taskflow:
         """Wire the kernel with taskflow's hooks and return the facade.
 
         The registry-backed hooks: submissions are schema-validated and
-        filled with the flow's declared timeout/budget; adjudication
+        filled with the flow's declared timeout/budget; review
         eligibility comes from the flow's gate policy.
         """
         registry = Registry()
@@ -105,14 +105,14 @@ class Taskflow:
         def gate_policy(flow_name):
             return registry.get_flow_options(flow_name).gate
 
-        def adjudication_for(flow_name):
+        def review_policy_for(flow_name):
             return "gated" if registry.get_flow_options(flow_name).gated else "auto"
 
         kernel = Flowlet.configure(
             configs,
             prepare_submission=prepare_submission,
             gate_policy=gate_policy,
-            adjudication_for=adjudication_for,
+            review_policy_for=review_policy_for,
         )
         return cls(kernel, registry)
 
@@ -133,9 +133,9 @@ class Taskflow:
             name: Override name; defaults to the function name.
             timeout: Lease duration in seconds per execution attempt.
             max_retries: Attempt budget.
-            gated: Suspend as awaiting_adjudication when an attempt returns,
-                instead of the auto-verdict.
-            gate: Adjudication eligibility policy ``(actor, record) → bool``.
+            gated: Suspend as awaiting_review when an attempt returns,
+                instead of the auto-review.
+            gate: Review eligibility policy ``(actor, record) → bool``.
         """
         def _decorator(fn: Callable) -> Callable:
             return self.registry.register_flow(
@@ -150,8 +150,8 @@ class Taskflow:
             return self.registry.register_task(fn, name or fn.__name__)
         return _decorator
 
-    def adjudication_for(self, flow_name: str) -> str:
-        """The adjudication policy stamped on this flow's new obligations."""
+    def review_policy_for(self, flow_name: str) -> str:
+        """The review policy stamped on this flow's new obligations."""
         return "gated" if self.registry.get_flow_options(flow_name).gated else "auto"
 
     # -- surfaces --------------------------------------------------------------

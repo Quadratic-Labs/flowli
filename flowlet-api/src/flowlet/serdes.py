@@ -52,7 +52,7 @@ def destructure(data: Any) -> Any:
 
 
 def structure(model: type) -> Callable[[Any], Any]:
-    """Curried inverse of :func:`destructure`: ``structure(RunState)(tree)``."""
+    """Curried inverse of :func:`destructure`: ``structure(ObligationSummary)(tree)``."""
     return lambda tree: converter.structure(tree, model)
 
 
@@ -62,7 +62,7 @@ def to_json(data: Any) -> str:
 
 
 def from_json(model: type) -> Callable[[str], Any]:
-    """Curried deserializer: ``from_json(RunState)(text)``."""
+    """Curried deserializer: ``from_json(ObligationSummary)(text)``."""
     return lambda text: converter.structure(json.loads(text), model)
 
 
@@ -77,5 +77,5 @@ def to_payload(data: Any) -> Any:
 
 
 def from_payload(model: type) -> Callable[[Any], Any]:
-    """Curried inverse of :func:`to_payload`: ``from_payload(RunState)(tree)``."""
+    """Curried inverse of :func:`to_payload`: ``from_payload(ObligationSummary)(tree)``."""
     return lambda payload: converter.structure(payload, model)

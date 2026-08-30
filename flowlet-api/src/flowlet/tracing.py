@@ -22,7 +22,7 @@ Identity model:
       batch.
 
 In-flight visibility is NOT provided by spans (they export on completion);
-the RunState file is the source of truth for liveness.  Workers call
+the ObligationSummary file is the source of truth for liveness.  Workers call
 ``force_flush()`` before their terminal CAS write so span loss is bounded
 to hard crashes — which the state machine records anyway.
 """
@@ -45,7 +45,6 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import Status, StatusCode
 
-from flowlet.models import RunType
 from flowlet.storage import append_lines, run_prefix
 
 logger = logging.getLogger(__name__)
@@ -207,7 +206,7 @@ def run_root(run_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[
         _run_meta.reset(meta_token)
 
 
-def instrument(fn: typing.Callable, name: str, span_type: RunType) -> typing.Callable:
+def instrument(fn: typing.Callable, name: str, span_type: str) -> typing.Callable:
     """Wrap a callable so every invocation records an OTel span.
 
     Replaces the legacy custom context stack: nesting, ids, and thread/async
@@ -218,7 +217,8 @@ def instrument(fn: typing.Callable, name: str, span_type: RunType) -> typing.Cal
     Args:
         fn: The flow or task function to wrap.
         name: Registered flow/task name (becomes the span name).
-        span_type: Whether this is a flow or a task span.
+        span_type: Open kind label for the span (taskflow uses
+            ``flow`` / ``task``); controllers may use their own.
 
     Returns:
         The wrapped callable.
@@ -294,7 +294,7 @@ def _span_to_record(span: ReadableSpan) -> dict:
     attributes = dict(span.attributes or {})
     flow_name = attributes.pop(FLOW_NAME_KEY, None) or span.name
     attempt = int(attributes.pop(ATTEMPT_KEY, 1))
-    span_type = attributes.pop(SPAN_TYPE_KEY, str(RunType.task))
+    span_type = attributes.pop(SPAN_TYPE_KEY, None)
 
     if span.status.status_code is StatusCode.ERROR:
         status = "failed"

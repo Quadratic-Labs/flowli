@@ -11,8 +11,8 @@ from uuid import uuid7
 import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.events import RunEventLog
-from flowlet.models import RunStatus
+from flowlet.events import EventLog
+from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.storage import run_prefix
 from flowlet.sweeper import sweep
@@ -28,7 +28,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def event_log(store):
-    return RunEventLog(store=store)
+    return EventLog(store=store)
 
 
 def _read_events(store, flow_name, run_id):
@@ -39,7 +39,7 @@ def _read_events(store, flow_name, run_id):
 
 
 # ============================================================================
-# RunEventLog.append
+# EventLog.append
 # ============================================================================
 
 
@@ -99,12 +99,12 @@ class TestAppend:
         # Make the runs/ segment a plain file, so the store cannot create
         # keys under it — the append must swallow the resulting error.
         (tmp_path / "runs").write_text("not a directory")
-        log = RunEventLog(store=store)
+        log = EventLog(store=store)
         log.append(flow_name="flow", run_id=uuid7(), event="submitted", actor="api")
 
 
 # ============================================================================
-# RunEventLog.read
+# EventLog.read
 # ============================================================================
 
 
@@ -162,7 +162,7 @@ class TestRunEventsEndpoint:
     async def test_events_of_active_run(
         self, controller, state_repo, event_log, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, run_id=state.run_id,
@@ -216,7 +216,7 @@ class TestRunEventsEndpoint:
     async def test_etag_roundtrip_yields_304(
         self, controller, state_repo, event_log, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
             flow_name=state.flow_name, run_id=state.run_id,
@@ -303,7 +303,7 @@ class TestSweeperEmission:
         self, store, event_log, make_run_state, seed_lease
     ):
         state_repo = StateRepository(store=store)
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="dead-worker",
             deadline=datetime.now(UTC) - timedelta(seconds=5),

@@ -17,7 +17,7 @@ import pytest
 from cairndb.core.exceptions import LeaseLost
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.models import RunStatus, SpanRecord
+from flowlet.models import ReportedStatus, SpanRecord
 from flowlet.repository.log import LogRepository
 from flowlet.repository.signals import CANCEL, SignalRepository
 from flowlet.repository.state import AlreadyClosed, StateRepository
@@ -85,7 +85,7 @@ class TestStateRepository:
     ):
         from flowlet.models import AttemptOutcome
 
-        record = make_record(status=RunStatus.running, attempt=1)
+        record = make_record(status=ReportedStatus.running, attempt=1)
         obligation = record.obligation
         lease = state_repo.acquire(
             obligation.flow_name, obligation.id,
@@ -112,8 +112,8 @@ class TestStateRepository:
         self, state_repo, make_run_state, seed_lease, store
     ):
         """A holder whose lease expired and was stolen cannot write."""
-        state = make_run_state(status=RunStatus.running)
-        # (seed_lease expands the RunState spec into an account)
+        state = make_run_state(status=ReportedStatus.running)
+        # (seed_lease expands the ObligationSummary spec into an account)
         # Seed an expired held lease, then steal it.
         seed_lease(
             store, state, holder="w1",
@@ -146,7 +146,7 @@ class TestStateRepository:
     def test_state_fn_exception_aborts_acquisition(
         self, state_repo, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.completed)
+        state = make_run_state(status=ReportedStatus.completed)
         seed_lease(store, state)  # released, closed
 
         def refuse(existing):
@@ -165,7 +165,7 @@ class TestStateRepository:
         assert view.holder is None
 
     def test_write_through_lease_updates_payload(self, state_repo, make_record):
-        record = make_record(status=RunStatus.running)
+        record = make_record(status=ReportedStatus.running)
         obligation = record.obligation
         lease = state_repo.acquire(
             obligation.flow_name, obligation.id,
@@ -219,7 +219,7 @@ class TestStateRepository:
     def test_archive_moves_payload_into_run_folder(
         self, state_repo, store, make_run_state, seed_lease
     ):
-        state = make_run_state(flow_name="my_flow", status=RunStatus.completed)
+        state = make_run_state(flow_name="my_flow", status=ReportedStatus.completed)
         seed_lease(store, state)
 
         state_repo.archive(state.flow_name, state.run_id)
@@ -236,7 +236,7 @@ class TestStateRepository:
         restored = from_json(ObligationRecord)(archived.data.decode())
         assert restored.obligation.id == state.run_id
         assert restored.obligation.status == ObligationStatus.discharged
-        assert restored.summary().status == RunStatus.completed
+        assert restored.summary().status == ReportedStatus.completed
 
 
 # ============================================================================

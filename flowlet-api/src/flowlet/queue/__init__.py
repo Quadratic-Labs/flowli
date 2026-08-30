@@ -3,7 +3,7 @@ Job queue implementations for asynchronous flow execution.
 
 The queue is a pure wake-up mechanism: it distributes FlowJob messages to
 workers, nothing more.  Ownership, retry accounting, and failure handling
-all live in the state store (RunState + CAS writes); workers ack a message
+all live in the state store (ObligationSummary + CAS writes); workers ack a message
 as soon as the run's state is resolved, and duplicate deliveries are dropped
 by the worker state machine.
 

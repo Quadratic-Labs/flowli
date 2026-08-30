@@ -8,7 +8,7 @@ from uuid import uuid7
 
 import factory
 
-from flowlet.models import RunLog, RunState, RunStatus, RunSummary, RunType
+from flowlet.models import ObligationSummary, ReportedStatus, RunLog, TraceSummary
 from flowlet.types import Timestamp
 
 
@@ -29,7 +29,7 @@ class RunLogFactory(factory.Factory):
 
     flow_name       = factory.Sequence(lambda n: f"flow_{n}")
     run_id          = factory.LazyFunction(uuid7)
-    span_type       = RunType.flow
+    span_type       = "flow"
     span_name       = factory.SelfAttribute("flow_name")
     span_id         = factory.LazyFunction(uuid7)
     parent_span_id  = None
@@ -39,15 +39,15 @@ class RunLogFactory(factory.Factory):
     extra           = factory.LazyFunction(dict)
 
 
-class RunStateFactory(factory.Factory):
-    """Factory for domain RunState instances."""
+class ObligationSummaryFactory(factory.Factory):
+    """Factory for domain ObligationSummary instances."""
 
     class Meta:
-        model = RunState
+        model = ObligationSummary
 
     run_id        = factory.LazyFunction(uuid7)
     flow_name     = factory.Sequence(lambda n: f"flow_{n}")
-    status        = RunStatus.running
+    status        = ReportedStatus.running
     worker_id     = "worker-1"
     started_at    = factory.SubFactory(TimestampFactory)
     ended_at      = None
@@ -55,16 +55,16 @@ class RunStateFactory(factory.Factory):
     max_retries   = 3
 
 
-class RunSummaryFactory(factory.Factory):
-    """Factory for domain RunSummary instances."""
+class TraceSummaryFactory(factory.Factory):
+    """Factory for domain TraceSummary instances."""
 
     class Meta:
-        model = RunSummary
+        model = TraceSummary
 
     span_id    = factory.LazyFunction(uuid7)
     span_name  = factory.Sequence(lambda n: f"flow_{n}")
-    span_type  = RunType.flow
-    status     = RunStatus.completed
+    span_type  = "flow"
+    status     = ReportedStatus.completed
     start_ts   = factory.SubFactory(TimestampFactory)
     end_ts     = factory.SubFactory(TimestampFactory)
     children   = factory.LazyFunction(list)

@@ -1,7 +1,7 @@
-"""Unit tests for the account model: Obligation, Attempt, Verdict.
+"""Unit tests for the account model: Obligation, Attempt, Review.
 
 Covers the ObligationRecord transitions (begin_attempt, record_outcome,
-discharge, abandon), the RunState projection (summary), sub-obligation
+discharge, abandon), the ObligationSummary projection (summary), sub-obligation
 links, crash accounting through the worker's claim transition, and the
 account wire format round trip.
 """
@@ -16,9 +16,9 @@ from flowlet.models import (
     Obligation,
     ObligationRecord,
     ObligationStatus,
-    RunStatus,
-    Verdict,
-    VerdictDecision,
+    ReportedStatus,
+    Review,
+    Decision,
 )
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.serdes import from_json, from_payload, to_json, to_payload
@@ -57,15 +57,15 @@ class TestObligationRecord:
         record.begin_attempt("w1")
         record.record_outcome(
             AttemptOutcome.returned,
-            verdict=Verdict(
-                decision=VerdictDecision.accepted, rendered_at=Timestamp.now()
+            review=Review(
+                decision=Decision.approved, decided_at=Timestamp.now()
             ),
         )
         assert record.open_attempt is None
         last = record.last_attempt
         assert last.outcome == AttemptOutcome.returned
         assert last.ended_at is not None
-        assert last.verdict.decision == VerdictDecision.accepted
+        assert last.review.decision == Decision.approved
 
     def test_record_outcome_without_open_attempt_is_noop(self):
         record = _record()
@@ -84,14 +84,14 @@ class TestObligationRecord:
 
     def test_budget_counts_consuming_attempts_only(self):
         """v0.3 delta 1: crashed/interrupted attempts are free; raised
-        outcomes and rejected verdicts on returned attempts consume."""
+        outcomes and rejected reviews on returned attempts consume."""
         record = _record(max_retries=2)
         record.begin_attempt("w1")
         record.record_outcome(
             AttemptOutcome.crashed,
-            verdict=Verdict(
-                decision=VerdictDecision.rejected,
-                rendered_at=Timestamp.now(),
+            review=Review(
+                decision=Decision.rejected,
+                decided_at=Timestamp.now(),
                 reason="lease_expired",
             ),
         )
@@ -108,8 +108,8 @@ class TestObligationRecord:
         record.begin_attempt("w4")
         record.record_outcome(
             AttemptOutcome.returned,
-            verdict=Verdict(
-                decision=VerdictDecision.rejected, rendered_at=Timestamp.now()
+            review=Review(
+                decision=Decision.rejected, decided_at=Timestamp.now()
             ),
         )
         assert record.consumed_attempts() == 2
@@ -118,11 +118,11 @@ class TestObligationRecord:
     def test_returned_attempt_pending_or_accepted_is_free(self):
         record = _record(max_retries=1)
         record.begin_attempt("w1")
-        record.record_outcome(AttemptOutcome.returned)  # verdict pending
+        record.record_outcome(AttemptOutcome.returned)  # review pending
         assert record.consumed_attempts() == 0
         assert record.retries_left() is True
-        record.last_attempt.verdict = Verdict(
-            decision=VerdictDecision.accepted, rendered_at=Timestamp.now()
+        record.last_attempt.review = Review(
+            decision=Decision.approved, decided_at=Timestamp.now()
         )
         assert record.consumed_attempts() == 0
 
@@ -176,7 +176,7 @@ class TestSummaryProjection:
         record = _record()
         record.begin_attempt("w7")
         state = record.summary()
-        assert state.status == RunStatus.running
+        assert state.status == ReportedStatus.running
         assert state.worker_id == "w7"
         assert state.attempt == 1
 
@@ -184,23 +184,23 @@ class TestSummaryProjection:
         record = _record()
         record.begin_attempt("w1")
         record.record_outcome(AttemptOutcome.raised)
-        assert record.summary().status == RunStatus.pending
+        assert record.summary().status == ReportedStatus.pending
 
     def test_discharged_projects_completed(self):
         record = _record()
         record.begin_attempt("w1")
         record.record_outcome(AttemptOutcome.returned)
         record.discharge()
-        assert record.summary().status == RunStatus.completed
+        assert record.summary().status == ReportedStatus.completed
 
     def test_abandoned_cause_splits_failed_and_canceled(self):
         failed = _record()
         failed.abandon("max_retries_exceeded")
-        assert failed.summary().status == RunStatus.failed
+        assert failed.summary().status == ReportedStatus.failed
 
         canceled = _record()
         canceled.abandon("canceled")
-        assert canceled.summary().status == RunStatus.canceled
+        assert canceled.summary().status == ReportedStatus.canceled
 
     def test_summary_carries_identity_and_contract(self):
         record = _record(kwargs={"x": 1}, max_retries=5)
@@ -223,9 +223,9 @@ class TestAccountSerdes:
         record.record_outcome(
             AttemptOutcome.raised,
             error="ValueError",
-            verdict=Verdict(
-                decision=VerdictDecision.rejected,
-                rendered_at=Timestamp.now(),
+            review=Review(
+                decision=Decision.rejected,
+                decided_at=Timestamp.now(),
                 reason="ValueError",
                 evidence_ref={"report": "sha256:abc123"},
             ),
@@ -238,9 +238,9 @@ class TestAccountSerdes:
         assert restored.obligation.root_id == record.obligation.root_id
         assert len(restored.attempts) == 2
         assert restored.attempts[0].outcome == AttemptOutcome.raised
-        assert restored.attempts[0].verdict.decision == VerdictDecision.rejected
-        assert restored.attempts[0].verdict.reason == "ValueError"
-        assert restored.attempts[0].verdict.evidence_ref == {
+        assert restored.attempts[0].review.decision == Decision.rejected
+        assert restored.attempts[0].review.reason == "ValueError"
+        assert restored.attempts[0].review.evidence_ref == {
             "report": "sha256:abc123"
         }
         assert restored.open_attempt is not None
@@ -253,17 +253,17 @@ class TestAccountSerdes:
         record.begin_attempt("w1")
         record.record_outcome(
             AttemptOutcome.returned,
-            verdict=Verdict(
-                decision=VerdictDecision.accepted, rendered_at=Timestamp.now()
+            review=Review(
+                decision=Decision.approved, decided_at=Timestamp.now()
             ),
         )
         tree = to_payload(record)
         del tree["attempts"][0]["resumed_from"]
-        del tree["attempts"][0]["verdict"]["evidence_ref"]
+        del tree["attempts"][0]["review"]["evidence_ref"]
 
         restored = from_payload(ObligationRecord)(tree)
         assert restored.last_attempt.resumed_from is None
-        assert restored.last_attempt.verdict.evidence_ref is None
+        assert restored.last_attempt.review.evidence_ref is None
 
     def test_payload_round_trip_matches_json_wire(self):
         record = _record()
@@ -314,7 +314,7 @@ class TestAccountThroughWorker:
         crashed = make_record(
             run_id=job.run_id,
             flow_name=job.flow_name,
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             worker_id="dead-worker",
             attempt=1,
             max_retries=3,
@@ -335,12 +335,12 @@ class TestAccountThroughWorker:
         # The dead attempt was closed by whoever discovered the crash …
         assert first.executor == "dead-worker"
         assert first.outcome == AttemptOutcome.crashed
-        assert first.verdict.decision == VerdictDecision.rejected
-        assert first.verdict.reason == "lease_expired"
-        # … and the takeover attempt carries its own outcome and verdict.
+        assert first.review.decision == Decision.rejected
+        assert first.review.reason == "lease_expired"
+        # … and the takeover attempt carries its own outcome and review.
         assert second.executor == "w2"
         assert second.outcome == AttemptOutcome.returned
-        assert second.verdict.decision == VerdictDecision.accepted
+        assert second.review.decision == Decision.approved
         assert record.obligation.status == ObligationStatus.discharged
 
     def test_every_attempt_ends_with_an_explicit_outcome(
@@ -362,16 +362,16 @@ class TestAccountThroughWorker:
 
         record = state_repo.read(job.flow_name, job.run_id).record
         outcomes = [a.outcome for a in record.attempts]
-        decisions = [a.verdict.decision for a in record.attempts]
+        decisions = [a.review.decision for a in record.attempts]
         assert outcomes == [
             AttemptOutcome.raised,
             AttemptOutcome.raised,
             AttemptOutcome.returned,
         ]
         assert decisions == [
-            VerdictDecision.rejected,
-            VerdictDecision.rejected,
-            VerdictDecision.accepted,
+            Decision.rejected,
+            Decision.rejected,
+            Decision.approved,
         ]
         assert record.attempts[0].error == "ValueError"
         assert record.obligation.status == ObligationStatus.discharged

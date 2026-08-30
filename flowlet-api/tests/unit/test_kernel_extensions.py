@@ -14,7 +14,7 @@ from fastapi import HTTPException
 import flowlet as flowlet_pkg
 from flowlet.api.controller import FlowController
 from flowlet.api.models import (
-    AdjudicationRequest,
+    ReviewRequest,
     ExecutorClaimRequest,
     ExecutorEffectRequest,
     ExecutorOutcomeRequest,
@@ -23,8 +23,8 @@ from flowlet.api.models import (
 from flowlet.models import (
     AttemptOutcome,
     ObligationStatus,
-    RunStatus,
-    VerdictDecision,
+    ReportedStatus,
+    Decision,
 )
 from flowlet.repository import (
     ResourceLeaseRepository,
@@ -100,7 +100,7 @@ class TestPauseAdmission:
 
         signals.revoke_scoped("flow:test_flow", PAUSE)
         assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 0
-        assert state_repo.read(job.flow_name, job.run_id).state.status == RunStatus.completed
+        assert state_repo.read(job.flow_name, job.run_id).state.status == ReportedStatus.completed
 
     def test_ancestor_pause_covers_children(
         self, state_repo, signals, make_flow_job
@@ -116,7 +116,7 @@ class TestPauseAdmission:
     def test_sweeper_keeps_paused_runs_parked(
         self, state_repo, signals, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending)
+        state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state, deadline=datetime.now(UTC) - timedelta(seconds=700))
         signals.send_scoped(f"run:{state.run_id}", PAUSE, actor="operator")
 
@@ -209,7 +209,7 @@ class TestTimers:
     def test_due_timer_fires_signal_and_wakeup_then_clears(
         self, state_repo, signals, timers, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending)
+        state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.run_id, "gate_timeout",
@@ -235,7 +235,7 @@ class TestTimers:
     def test_undue_timer_is_left_alone(
         self, state_repo, signals, timers, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending)
+        state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.run_id, "later",
@@ -253,7 +253,7 @@ class TestTimers:
     def test_timer_for_closed_run_clears_without_firing(
         self, state_repo, signals, timers, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.completed, ended_at=Timestamp.now())
+        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
         timers.set(
             state.flow_name, state.run_id, "stale",
@@ -277,7 +277,7 @@ class TestTimers:
 @pytest.mark.unit
 class TestExternalExecutor:
     def _seed_ready(self, make_run_state, seed_lease, store, **overrides):
-        state = make_run_state(status=RunStatus.pending, **overrides)
+        state = make_run_state(status=ReportedStatus.pending, **overrides)
         seed_lease(store, state)
         return state
 
@@ -294,7 +294,7 @@ class TestExternalExecutor:
             ),
         )
         assert claim.attempt == 2  # a fresh attempt on top of the failed one
-        assert claim.adjudication == "auto"
+        assert claim.review_policy == "auto"
         epoch = claim.epoch
 
         renewed = controller.renew_run(
@@ -331,7 +331,7 @@ class TestExternalExecutor:
         last = record.last_attempt
         assert last.executor == "omnigent-session-1"
         assert last.outcome == AttemptOutcome.returned
-        assert last.verdict.decision == VerdictDecision.accepted
+        assert last.review.decision == Decision.approved
         assert record.effects[0].result_ref == "commit:a1b2c3"
 
     def test_claim_resumed_from_links_the_attempts(
@@ -415,7 +415,7 @@ class TestExternalExecutor:
     def test_claim_of_held_run_is_409(
         self, state_repo, signals, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="other",
             deadline=datetime.now(UTC) + timedelta(seconds=300),
@@ -472,13 +472,13 @@ class TestExternalExecutor:
         wake, _ = queue.enqueued[0]
         assert wake.run_id == state.run_id
 
-    def test_gated_flow_suspends_then_adjudicates(
+    def test_gated_flow_suspends_then_reviews(
         self, state_repo, signals, make_record, seed_lease, store
     ):
-        # The adjudication policy is part of the contract, fixed at the
+        # The review policy is part of the contract, fixed at the
         # obligation's creation — seed a gated one directly.
-        record = make_record(status=RunStatus.pending)
-        record.obligation.adjudication = "gated"
+        record = make_record(status=ReportedStatus.pending)
+        record.obligation.review_policy = "gated"
         seed_lease(store, record)
         state = record.obligation
         controller = _controller(state_repo, signals)
@@ -486,7 +486,7 @@ class TestExternalExecutor:
             state.id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
-        assert claim.adjudication == "gated"
+        assert claim.review_policy == "gated"
 
         outcome = controller.record_run_outcome(
             state.id,
@@ -497,9 +497,9 @@ class TestExternalExecutor:
         )
         assert outcome.status == "gated"
 
-        resp = controller.adjudicate_run(
+        resp = controller.review_run(
             state.id,
-            AdjudicationRequest(decision="accepted", actor="reviewer-1"),
+            ReviewRequest(decision="approved", actor="reviewer-1"),
         )
         assert resp.status == "completed"
 
@@ -507,7 +507,7 @@ class TestExternalExecutor:
         self, state_repo, signals, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.running, worker_id="dead-session",
+            status=ReportedStatus.running, worker_id="dead-session",
             attempt=1, max_retries=3,
         )
         seed_lease(

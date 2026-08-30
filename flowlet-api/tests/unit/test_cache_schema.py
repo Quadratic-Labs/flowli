@@ -10,8 +10,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from flowlet.api.cache import Run, upsert_run_state
-from flowlet.models import RunStatus
+from flowlet.api.cache import ObligationRow, upsert_run_state
+from flowlet.models import ReportedStatus
 
 
 @pytest.mark.unit
@@ -43,22 +43,22 @@ class TestUpsertRunState:
         await upsert_run_state(async_session, state)
         await async_session.flush()
 
-        row = await async_session.get(Run, state.run_id)
+        row = await async_session.get(ObligationRow, state.run_id)
         assert row is not None
         assert row.flow_name == "flow_a"
-        assert row.status == RunStatus.running.value
+        assert row.status == ReportedStatus.running.value
 
     async def test_update_is_idempotent(self, async_session: AsyncSession, make_run_state):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         await upsert_run_state(async_session, state)
         await async_session.flush()
 
         from attrs import evolve
-        updated = evolve(state, status=RunStatus.completed)
+        updated = evolve(state, status=ReportedStatus.completed)
         await upsert_run_state(async_session, updated)
         await async_session.flush()
 
-        row = await async_session.get(Run, state.run_id)
-        assert row.status == RunStatus.completed.value
+        row = await async_session.get(ObligationRow, state.run_id)
+        assert row.status == ReportedStatus.completed.value
 
 

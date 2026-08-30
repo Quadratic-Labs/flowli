@@ -52,7 +52,7 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
                 flow_name=flow_name,
                 kwargs=kwargs,
                 max_retries=1,  # synchronous calls are never retried
-                adjudication=tf.adjudication_for(flow_name),
+                review_policy=tf.review_policy_for(flow_name),
                 caused_by="sync_execute",
                 created_at=Timestamp.now(),
             )

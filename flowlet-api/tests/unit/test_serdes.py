@@ -12,12 +12,11 @@ import pytest
 
 from flowlet.models import (
     FlowJob,
-    RunState,
-    RunStatus,
-    RunSummary,
-    RunType,
+    ObligationSummary,
+    ReportedStatus,
     SpanEvent,
     SpanRecord,
+    TraceSummary,
 )
 from flowlet.serdes import (
     destructure,
@@ -60,21 +59,21 @@ class TestDestructure:
         json.dumps(d)  # must not raise: the tree is the wire format as data
 
     def test_run_summary_with_children_is_json_safe(self):
-        # Regression: RunSummary.children is self-referential; under lazy
+        # Regression: TraceSummary.children is self-referential; under lazy
         # annotations the attrs field type was an unhashable ForwardRef,
         # which broke cattrs' hook cache ("cannot use 'types.GenericAlias'
         # as a dict key").
-        child = RunSummary(
+        child = TraceSummary(
             span_id="00f067aa0ba902b7",
             span_name="fetch_data",
-            span_type=RunType.task,
-            status=RunStatus.completed,
+            span_type="task",
+            status=ReportedStatus.completed,
         )
-        root = RunSummary(
+        root = TraceSummary(
             span_id="c2e23227ee137844",
             span_name="simple_etl",
-            span_type=RunType.flow,
-            status=RunStatus.completed,
+            span_type="flow",
+            status=ReportedStatus.completed,
             children=[child],
         )
         d = destructure(root)
@@ -112,7 +111,7 @@ class TestStructure:
     def test_run_state_round_trip(self, make_run_state):
         original = make_run_state()
         d = destructure(original)
-        restored = structure(RunState)(d)
+        restored = structure(ObligationSummary)(d)
 
         assert restored.run_id == original.run_id
         assert restored.flow_name == original.flow_name
@@ -122,12 +121,12 @@ class TestStructure:
 
     def test_run_state_with_optional_fields_round_trip(self, make_run_state, make_ts):
         end_ts = make_ts()
-        original = make_run_state(status=RunStatus.completed, ended_at=end_ts)
+        original = make_run_state(status=ReportedStatus.completed, ended_at=end_ts)
         d = destructure(original)
-        restored = structure(RunState)(d)
+        restored = structure(ObligationSummary)(d)
 
         assert restored.ended_at == original.ended_at
-        assert restored.status == RunStatus.completed
+        assert restored.status == ReportedStatus.completed
 
     def test_list_of_span_records_round_trip(self, make_span_record):
         records = [make_span_record(), make_span_record()]
@@ -177,7 +176,7 @@ class TestToJson:
         assert ts == record.start_ts
 
     def test_span_record_enum_serialised_as_str(self, make_span_record):
-        record = make_span_record(span_type=RunType.task)
+        record = make_span_record(span_type="task")
         parsed = json.loads(to_json(record))
 
         assert parsed["span_type"] == "task"
@@ -217,29 +216,29 @@ class TestFromJson:
 
     def test_run_state_round_trip(self, make_run_state):
         original = make_run_state()
-        restored = from_json(RunState)(to_json(original))
+        restored = from_json(ObligationSummary)(to_json(original))
 
-        assert isinstance(restored, RunState)
+        assert isinstance(restored, ObligationSummary)
         assert restored.run_id == original.run_id
         assert isinstance(restored.run_id, UUID)
         assert restored.status == original.status
-        assert isinstance(restored.status, RunStatus)
+        assert isinstance(restored.status, ReportedStatus)
         assert restored.started_at == original.started_at
         assert isinstance(restored.started_at, Timestamp)
         assert restored.ended_at is None
 
     def test_run_state_optional_fields_restored(self, make_run_state, make_ts):
         end_ts = make_ts()
-        original = make_run_state(status=RunStatus.completed, ended_at=end_ts)
-        restored = from_json(RunState)(to_json(original))
+        original = make_run_state(status=ReportedStatus.completed, ended_at=end_ts)
+        restored = from_json(ObligationSummary)(to_json(original))
 
         assert isinstance(restored.ended_at, Timestamp)
         assert restored.ended_at == original.ended_at
-        assert restored.status == RunStatus.completed
+        assert restored.status == ReportedStatus.completed
 
     def test_run_state_attempt_and_max_retries_preserved(self, make_run_state):
         original = make_run_state(attempt=2, max_retries=5)
-        restored = from_json(RunState)(to_json(original))
+        restored = from_json(ObligationSummary)(to_json(original))
 
         assert restored.attempt == 2
         assert restored.max_retries == 5

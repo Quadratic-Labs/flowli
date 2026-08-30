@@ -2,7 +2,7 @@
 FastAPI controllers for the Flowlet account surface.
 
 FlowController handles the kernel's HTTP endpoints: submission, cancel,
-adjudication, the fenced executor claim lifecycle, and the run/log query
+review, the fenced executor claim lifecycle, and the run/log query
 projections.  Authoring surfaces (synchronous execution of registered
 callables, schema introspection) belong to layer-2 controllers — taskflow
 mounts them beside this router.
@@ -19,11 +19,7 @@ logger = logging.getLogger(__name__)
 from fastapi import HTTPException, Request, Response
 from pydantic import ValidationError
 
-from flowlet.models import FlowJob
-from flowlet.queue import JobQueueProtocol
 from flowlet.api.models import (
-    AdjudicationRequest,
-    AdjudicationResponse,
     AdmissionRequest,
     AdmissionResponse,
     CancelRunResponse,
@@ -39,18 +35,22 @@ from flowlet.api.models import (
     ExecutorRenewResponse,
     FlowArguments,
     FlowSubmissionResponse,
+    LogQueryRequest,
+    ObligationSummaryDTO,
+    ReviewRequest,
+    ReviewResponse,
     RunMessageRequest,
     RunMessageResponse,
-    LogQueryRequest,
-    RunDTO,
     RunQueryRequest,
-    RunStateDTO,
+    TraceDTO,
     TransitionPageResponse,
 )
 from flowlet.api.query import RunQuery
+from flowlet.models import FlowJob
+from flowlet.queue import JobQueueProtocol
 
 if TYPE_CHECKING:
-    from flowlet.events import RunEventLog
+    from flowlet.events import EventLog
     from flowlet.repository.dispatch import DispatchKeyRepository
     from flowlet.repository.signals import SignalRepository
     from flowlet.repository.state import StateRepository
@@ -85,14 +85,14 @@ class FlowController:
     Attributes:
         querier: RunQuery instance for reading run states and log details.
         queue: Optional job queue for asynchronous execution.
-        state_repo: Optional state repository (cancel/adjudicate/claim).
+        state_repo: Optional state repository (cancel/review/claim).
         signals: Optional signal repository (cancel signal, pause scopes).
         prepare_submission: Optional hook ``(flow_name, payload) → payload``
             applied on submission — layer-2 controllers inject schema
             validation and per-flow defaults (timeout, budget) here; the
             kernel accepts anything by default.
         gate_policy: Optional hook ``flow_name → ((actor, record) → bool) |
-            None`` consulted by adjudication — eligibility policy stays in
+            None`` consulted by review — eligibility policy stays in
             controllers, the kernel records only actor and decision.
 
     Example:
@@ -107,7 +107,7 @@ class FlowController:
     state_repo: "StateRepository | None"
     signals: "SignalRepository | None"
     dispatch_repo: "DispatchKeyRepository | None"
-    events: "RunEventLog | None"
+    events: "EventLog | None"
     transitions: "TransitionFeed | None"
     prepare_submission: "Callable[[str, FlowArguments], FlowArguments] | None"
     gate_policy: "Callable[[str], Callable | None] | None"
@@ -120,11 +120,11 @@ class FlowController:
         state_repo: "StateRepository | None" = None,
         signals: "SignalRepository | None" = None,
         dispatch_repo: "DispatchKeyRepository | None" = None,
-        events: "RunEventLog | None" = None,
+        events: "EventLog | None" = None,
         transitions: "TransitionFeed | None" = None,
         prepare_submission: "Callable[[str, FlowArguments], FlowArguments] | None" = None,
         gate_policy: "Callable[[str], Callable | None] | None" = None,
-        adjudication_for: "Callable[[str], str] | None" = None,
+        review_policy_for: "Callable[[str], str] | None" = None,
         **_,
     ):
         """Initialise the flow controller.
@@ -134,7 +134,7 @@ class FlowController:
                 When None the query endpoints return 503.
             queue: Optional job queue for asynchronous flow submission.
             state_repo: Optional state repository; required by the cancel,
-                adjudication, and executor endpoints.
+                review, and executor endpoints.
             signals: Optional signal repository; required by the cancel
                 endpoint to reach an actively-owned run.
             dispatch_repo: Optional dispatch-key repository enabling
@@ -145,8 +145,8 @@ class FlowController:
                 GET /transitions endpoint serves ordered lifecycle events
                 with a cursor for reconcilers.
             prepare_submission: Optional submission hook (layer 2).
-            gate_policy: Optional adjudication-eligibility provider (layer 2).
-            adjudication_for: Optional per-flow adjudication policy, used
+            gate_policy: Optional review-eligibility provider (layer 2).
+            review_policy_for: Optional per-flow review policy, used
                 when a gated-admission submission creates the obligation
                 eagerly (queue mode otherwise stamps it at first claim).
             **_: Additional unused dependencies (for flexible dependency injection).
@@ -160,7 +160,7 @@ class FlowController:
         self.transitions = transitions
         self.prepare_submission = prepare_submission
         self.gate_policy = gate_policy
-        self.adjudication_for = adjudication_for
+        self.review_policy_for = review_policy_for
 
     def submit_flow(self, flow_name: str, payload: FlowArguments) -> FlowSubmissionResponse:
         """Submit a flow for asynchronous execution via the job queue.
@@ -184,12 +184,12 @@ class FlowController:
 
         Raises:
             HTTPException: 503 if no queue is configured, or a dispatch_key
-                / admission: gated / adjudicates was given without storage
+                / admission: gated / reviews was given without storage
                 configured.
             HTTPException: 404 if the flow is not registered, or the
-                adjudicated run is unknown.
-            HTTPException: 409 if the adjudicated run is not awaiting
-                adjudication.
+                reviewed run is unknown.
+            HTTPException: 409 if the reviewed run is not awaiting
+                review.
             HTTPException: 422 if the arguments fail schema validation.
             HTTPException: 500 if enqueueing fails.
         """
@@ -244,16 +244,16 @@ class FlowController:
             root_id=root_id,
         )
 
-        adjudicates = payload.adjudicates
+        reviews = payload.reviews
         target_view = None
-        if adjudicates is not None:
-            # This submission mints the adjudicator of a parked run: the
-            # lock (awaiting_adjudication) is on the target; this obligation
-            # is the job that will render the verdict.
+        if reviews is not None:
+            # This submission mints the reviewer of a parked run: the
+            # lock (awaiting_review) is on the target; this obligation
+            # is the job that will record the review.
             if self.state_repo is None:
                 raise HTTPException(
                     status_code=503,
-                    detail="adjudicates requires a storage backend",
+                    detail="reviews requires a storage backend",
                 )
             from flowlet.models import ObligationStatus
 
@@ -261,25 +261,25 @@ class FlowController:
                 (
                     v
                     for v in self.state_repo.list_views()
-                    if v.record.obligation.id == adjudicates
+                    if v.record.obligation.id == reviews
                 ),
                 None,
             )
             if target_view is None:
                 raise HTTPException(
                     status_code=404,
-                    detail="Adjudicated run not found among active runs",
+                    detail="Reviewd run not found among active runs",
                 )
             target_status = target_view.record.obligation.status
-            if target_status != ObligationStatus.awaiting_adjudication:
+            if target_status != ObligationStatus.awaiting_review:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "Adjudicated run is not awaiting adjudication "
+                        "Reviewd run is not awaiting review "
                         f"(status: {target_status})"
                     ),
                 )
-            job.caused_by = f"adjudicate:{adjudicates}"
+            job.caused_by = f"review:{reviews}"
 
         deduplicated = False
         if payload.dispatch_key is not None:
@@ -304,9 +304,9 @@ class FlowController:
             from flowlet.models import Obligation, ObligationRecord, ObligationStatus
             from flowlet.types import Timestamp
 
-            adjudication = (
-                self.adjudication_for(flow_name)
-                if self.adjudication_for is not None
+            review_policy = (
+                self.review_policy_for(flow_name)
+                if self.review_policy_for is not None
                 else "auto"
             )
             record = ObligationRecord(
@@ -318,7 +318,7 @@ class FlowController:
                     parent_id=parent_id,
                     root_id=root_id,
                     max_retries=job.max_retries,
-                    adjudication=adjudication,
+                    review_policy=review_policy,
                     admission="gated",
                     caused_by=job.caused_by,
                     created_at=Timestamp.now(),
@@ -336,34 +336,34 @@ class FlowController:
                     detail=f"Failed to enqueue job: {e}",
                 )
 
-        if adjudicates is not None and target_view is not None:
+        if reviews is not None and target_view is not None:
             # Record the debt on the parked target: its account now answers
-            # "who owes me the verdict".  Best-effort after the submission —
-            # if the target moved on in between, the adjudicator discovers
-            # it at adjudication time (409) and its flow handles it.
+            # "who owes me the review".  Best-effort after the submission —
+            # if the target moved on in between, the reviewer discovers
+            # it at review time (409) and its flow handles it.
             from flowlet.models import ObligationRecord
             target_flow = target_view.record.obligation.flow_name
 
             def link(existing: "ObligationRecord | None") -> "ObligationRecord":
                 if existing is None:
                     raise LookupError(
-                        f"account for run {adjudicates} disappeared"
+                        f"account for run {reviews} disappeared"
                     )
-                existing.assign_adjudicator(job.run_id)
+                existing.assign_reviewer(job.run_id)
                 return existing
 
             lease = None
             try:
                 lease = self.state_repo.acquire(
-                    target_flow, adjudicates, ttl=60, holder="api",
+                    target_flow, reviews, ttl=60, holder="api",
                     state_fn=link,
                 )
             except (LookupError, ValueError):
                 logger.warning(
-                    "adjudicator_link_failed",
+                    "reviewer_link_failed",
                     extra={
-                        "run_id": str(adjudicates),
-                        "adjudicator_id": str(job.run_id),
+                        "run_id": str(reviews),
+                        "reviewer_id": str(job.run_id),
                     },
                     exc_info=True,
                 )
@@ -372,10 +372,10 @@ class FlowController:
                 if self.events is not None:
                     self.events.append(
                         flow_name=target_flow,
-                        run_id=adjudicates,
-                        event="adjudicator_assigned",
+                        run_id=reviews,
+                        event="reviewer_assigned",
                         actor="api",
-                        details={"adjudicator_id": str(job.run_id)},
+                        details={"reviewer_id": str(job.run_id)},
                     )
 
         if self.events is not None:
@@ -385,8 +385,8 @@ class FlowController:
                 details["deduplicated"] = deduplicated
             if gated_admission:
                 details["admission"] = "gated"
-            if adjudicates is not None:
-                details["adjudicates"] = str(adjudicates)
+            if reviews is not None:
+                details["reviews"] = str(reviews)
             self.events.append(
                 flow_name=flow_name,
                 run_id=job.run_id,
@@ -407,12 +407,12 @@ class FlowController:
             },
         )
         if gated_admission:
-            from flowlet.models import RunStatus
+            from flowlet.models import ReportedStatus
 
             return FlowSubmissionResponse(
                 job_id=job.job_id,
                 run_id=job.run_id,
-                status=RunStatus.held,
+                status=ReportedStatus.held,
                 submitted_at=job.submitted_at,
                 deduplicated=deduplicated,
             )
@@ -463,9 +463,9 @@ class FlowController:
 
         from flowlet.models import (
             AttemptOutcome,
+            Decision,
             ObligationRecord,
-            Verdict,
-            VerdictDecision,
+            Review,
         )
         from flowlet.repository import AlreadyClosed
         from flowlet.repository.signals import CANCEL
@@ -515,9 +515,9 @@ class FlowController:
             if existing.open_attempt is not None:
                 existing.record_outcome(
                     AttemptOutcome.crashed,
-                    verdict=Verdict(
-                        decision=VerdictDecision.rejected,
-                        rendered_at=Timestamp.now(),
+                    review=Review(
+                        decision=Decision.rejected,
+                        decided_at=Timestamp.now(),
                         reason="lease_expired",
                     ),
                 )
@@ -544,15 +544,15 @@ class FlowController:
         lease.release()
         return _respond(record, "canceled")
 
-    def adjudicate_run(
-        self, run_id: UUID, payload: AdjudicationRequest
-    ) -> AdjudicationResponse:
-        """Resolve a gated obligation with an authorized verdict.
+    def review_run(
+        self, run_id: UUID, payload: ReviewRequest
+    ) -> ReviewResponse:
+        """Resolve a gated obligation with an authorized review.
 
-        The obligation must be ``awaiting_adjudication``.  The flow's gate
-        policy (if declared) decides whether the actor may adjudicate; only
+        The obligation must be ``awaiting_review``.  The flow's gate
+        policy (if declared) decides whether the actor may decide; only
         the actor and decision are recorded in the account, never the
-        policy.  ``accepted`` discharges the obligation; ``rejected``
+        policy.  ``approved`` discharges the obligation; ``rejected``
         first grants ``extend_budget`` extra attempts (the resume path for
         an obligation gated on exhaustion), then reopens it (with a wake-up
         message when a queue is configured, else the sweeper re-enqueues
@@ -564,11 +564,11 @@ class FlowController:
             payload: Decision, actor, optional reason and evidence ref.
 
         Returns:
-            AdjudicationResponse with the resulting projection status.
+            ReviewResponse with the resulting projection status.
 
         Raises:
             HTTPException: 503 when storage is not configured; 404 when the
-                run is unknown; 409 when it is not awaiting adjudication;
+                run is unknown; 409 when it is not awaiting review;
                 403 when the gate policy refuses the actor.
         """
         if self.state_repo is None:
@@ -591,19 +591,19 @@ class FlowController:
         flow_name = record.obligation.flow_name
 
         from flowlet.models import (
+            Decision,
             ObligationRecord,
             ObligationStatus,
-            Verdict,
-            VerdictDecision,
+            Review,
         )
         from flowlet.repository import AlreadyClosed
         from flowlet.types import Timestamp
 
-        if record.obligation.status != ObligationStatus.awaiting_adjudication:
+        if record.obligation.status != ObligationStatus.awaiting_review:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Run is not awaiting adjudication "
+                    "Run is not awaiting review "
                     f"(status: {record.obligation.status})"
                 ),
             )
@@ -612,13 +612,13 @@ class FlowController:
         if gate is not None and not gate(payload.actor, record):
             raise HTTPException(
                 status_code=403,
-                detail=f"Actor {payload.actor!r} is not eligible to adjudicate",
+                detail=f"Actor {payload.actor!r} is not eligible to decide",
             )
 
-        verdict = Verdict(
-            decision=VerdictDecision(payload.decision),
+        review = Review(
+            decision=Decision(payload.decision),
             by=payload.actor,
-            rendered_at=Timestamp.now(),
+            decided_at=Timestamp.now(),
             reason=payload.reason,
             evidence_ref=payload.evidence_ref,
         )
@@ -628,7 +628,7 @@ class FlowController:
                 raise LookupError(f"account for run {run_id} disappeared")
             if existing.obligation.status.is_closed():
                 raise AlreadyClosed(existing)
-            existing.adjudicate(verdict, extend_budget=payload.extend_budget)
+            existing.decide(review, extend_budget=payload.extend_budget)
             return existing
 
         try:
@@ -636,7 +636,7 @@ class FlowController:
                 flow_name, run_id, ttl=60, holder="api", state_fn=transition
             )
         except AlreadyClosed as closed:
-            return AdjudicationResponse(
+            return ReviewResponse(
                 run_id=run_id,
                 status=str(closed.record.summary().status),
                 decision=payload.decision,
@@ -648,7 +648,7 @@ class FlowController:
         if lease is None:
             raise HTTPException(
                 status_code=409,
-                detail="Run is actively owned; retry the adjudication",
+                detail="Run is actively owned; retry the review",
             )
 
         resolved = lease.record
@@ -658,14 +658,14 @@ class FlowController:
             self.events.append(
                 flow_name=flow_name,
                 run_id=run_id,
-                event="adjudicated",
+                event="reviewed",
                 actor=payload.actor,
                 attempt=len(resolved.attempts),
                 to_status=str(resolved.summary().status),
                 details={"decision": payload.decision, "reason": payload.reason},
             )
 
-        # A rejected verdict with budget left reopens the obligation — wake
+        # A rejected review with budget left reopens the obligation — wake
         # a worker when we can; the sweeper's parked-requeue is the fallback.
         if (
             resolved.obligation.status == ObligationStatus.open
@@ -682,25 +682,25 @@ class FlowController:
                         max_retries=resolved.obligation.max_retries,
                         parent_id=resolved.obligation.parent_id,
                         root_id=resolved.obligation.root_id,
-                        caused_by=f"adjudication:rejected_by:{payload.actor}",
+                        caused_by=f"review:rejected_by:{payload.actor}",
                     )
                 )
             except Exception:
                 logger.warning(
-                    "adjudication_requeue_failed",
+                    "review_requeue_failed",
                     extra={"run_id": str(run_id)},
                     exc_info=True,
                 )
 
         logger.info(
-            "run_adjudicated",
+            "run_reviewed",
             extra={
                 "run_id": str(run_id),
                 "decision": payload.decision,
                 "actor": payload.actor,
             },
         )
-        return AdjudicationResponse(
+        return ReviewResponse(
             run_id=run_id,
             status=str(resolved.summary().status),
             decision=payload.decision,
@@ -710,7 +710,7 @@ class FlowController:
         self, run_id: UUID, payload: AdmissionRequest
     ) -> AdmissionResponse:
         """Release a held obligation's admission — the entry-gate mirror of
-        :meth:`adjudicate_run`.
+        :meth:`review_run`.
 
         The obligation must be ``held``.  The release is a fenced
         transition (``held → open``, ``admitted_by``/``admitted_at``
@@ -864,7 +864,7 @@ class FlowController:
             HTTPException: 503 without storage; 404 unknown run; 409 when
                 the obligation is closed, gated, busy, cancel-pending,
                 its attempt budget is spent (a gated obligation then parks
-                awaiting adjudication instead of closing), or
+                awaiting review instead of closing), or
                 ``resumed_from`` does not reference a recorded attempt.
         """
         if self.state_repo is None or self.signals is None:
@@ -918,7 +918,7 @@ class FlowController:
                     worker_id=payload.executor,
                     cancel_pending=cancel_pending,
                     # Creation is forbidden here (404 above), and existing
-                    # obligations keep the adjudication fixed at creation.
+                    # obligations keep the review fixed at creation.
                     gated=False,
                     decision=decision,
                     resumed_from=payload.resumed_from,
@@ -944,15 +944,15 @@ class FlowController:
 
         if decision["case"] == _ClaimCase.gated:
             # Budget spent on a gated obligation: park it for human
-            # judgment (resumable via adjudication) and refuse the claim.
+            # judgment (resumable via review) and refuse the claim.
             record = lease.record
             _release_terminal(
-                lease, self.events, record, "awaiting_adjudication",
+                lease, self.events, record, "awaiting_review",
                 payload.executor, cause="max_retries_exceeded",
             )
             raise HTTPException(
                 status_code=409,
-                detail="Run gated at claim (awaiting_adjudication)",
+                detail="Run gated at claim (awaiting_review)",
             )
 
         if decision["case"] != _ClaimCase.execute:
@@ -984,7 +984,7 @@ class FlowController:
             deadline_at=lease.deadline_at,
             attempt=len(record.attempts),
             kwargs=record.obligation.kwargs,
-            adjudication=record.obligation.adjudication,
+            review_policy=record.obligation.review_policy,
             signals=self.signals.list(flow_name, run_id),
             messages=self._pending_messages(flow_name, run_id, record),
             flow_version=record.obligation.flow_version,
@@ -1279,7 +1279,7 @@ class FlowController:
         """Conclude the attempt: record the outcome and route the obligation.
 
         Applies the same shared epilogue as the in-process worker —
-        auto-verdict or gated suspension on ``returned``, retry budget on
+        auto-review or gated suspension on ``returned``, retry budget on
         ``raised`` (with a wake-up when a queue is configured), abandonment
         on ``interrupted``.
 
@@ -1329,7 +1329,7 @@ class FlowController:
         """Read the account-transition feed with a resume cursor.
 
         Ordered lifecycle events for reconcilers (dependency controllers,
-        adjudicator dispatch): pass the returned ``cursor`` back as
+        reviewer dispatch): pass the returned ``cursor`` back as
         ``after`` to continue from where the last page ended.  The feed is
         a wake-up channel, never authority — a crash can drop an event and
         a re-driven transition can duplicate one, so consumers confirm
@@ -1395,7 +1395,7 @@ class FlowController:
         records = self.events.read(flow_name, run_id)
         return _etag_json_response(request, json.dumps(records, default=str))
 
-    async def query_runs(self, request: RunQueryRequest) -> list[RunStateDTO]:
+    async def query_runs(self, request: RunQueryRequest) -> list[ObligationSummaryDTO]:
         """Return the most recent run states per flow.
 
         Args:
@@ -1403,7 +1403,7 @@ class FlowController:
                 per-flow result limit.
 
         Returns:
-            List of RunStateDTO objects ordered newest-first within each flow.
+            List of ObligationSummaryDTO objects ordered newest-first within each flow.
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
@@ -1416,7 +1416,7 @@ class FlowController:
                 flow_names=request.names,
                 last_n=request.last_n,
             )
-            return [RunStateDTO.model_validate(row) for row in rows]
+            return [ObligationSummaryDTO.model_validate(row) for row in rows]
         except ValidationError as e:
             logger.exception("run_state_dto_validation_failed")
             raise HTTPException(status_code=500, detail=f"Response validation failed: {e}")
@@ -1439,7 +1439,7 @@ class FlowController:
             with_logs: Include log entries in the response (default: True).
 
         Returns:
-            JSON RunDTO with the summary tree and (optionally) all log
+            JSON TraceDTO with the summary tree and (optionally) all log
             entries, or 304 when unchanged.
 
         Raises:
@@ -1453,7 +1453,7 @@ class FlowController:
             raise HTTPException(status_code=503, detail="Storage not configured")
         try:
             result = await self.querier.get_run_by_run_id(run_id, with_logs)
-            dto = RunDTO.model_validate(result)
+            dto = TraceDTO.model_validate(result)
         # ValidationError extends ValueError: without its own clause a broken
         # response contract would masquerade as a 404 (run not found).
         except ValidationError as e:
@@ -1465,18 +1465,18 @@ class FlowController:
             raise HTTPException(status_code=400, detail=str(e))
         return _etag_json_response(request, dto.model_dump_json())
 
-    def query_logs(self, request: LogQueryRequest) -> RunDTO:
+    def query_logs(self, request: LogQueryRequest) -> TraceDTO:
         """Fetch a single run with its full log detail.
 
         Loads log entries recursively from storage (subflows and subtasks
-        included) and derives a hierarchical RunSummary.
+        included) and derives a hierarchical TraceSummary.
 
         Args:
             request: Identifies the run by flow_name and run_id; optionally
                 suppresses log entries via with_logs=False.
 
         Returns:
-            RunDTO containing the summary tree and (optionally) all log entries.
+            TraceDTO containing the summary tree and (optionally) all log entries.
 
         Raises:
             HTTPException: 503 when no storage backend is configured.
@@ -1493,7 +1493,7 @@ class FlowController:
                 request.run_id,
                 request.with_logs,
             )
-            return RunDTO.model_validate(result)
+            return TraceDTO.model_validate(result)
         # ValidationError extends ValueError: without its own clause a broken
         # response contract would masquerade as a 404 (run not found).
         except ValidationError as e:

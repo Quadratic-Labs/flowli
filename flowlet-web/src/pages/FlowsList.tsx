@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import { api, getStatusColor, timeAgo, humanizeDuration } from '@/lib/api';
-import type { RunStateDTO } from '@/lib/api';
+import type { ObligationSummaryDTO } from '@/lib/api';
 
 function statusAtIndex(statuses: string[], index: number): string | null {
   const offset = 5 - statuses.length;
@@ -19,7 +19,7 @@ export default function FlowsList() {
 
   const flows = (() => {
     if (!flowsQ.data || !runsQ.data) return [];
-    const byFlow = new Map<string, RunStateDTO[]>();
+    const byFlow = new Map<string, ObligationSummaryDTO[]>();
     runsQ.data.forEach(r => {
       if (!byFlow.has(r.flow_name)) byFlow.set(r.flow_name, []);
       const arr = byFlow.get(r.flow_name)!;

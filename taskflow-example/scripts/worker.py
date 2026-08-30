@@ -33,7 +33,7 @@ def run_worker(worker_id: str = "dev-worker-1", poll_interval: float = 1.0) -> N
                     tf.signals,
                     worker_id,
                     events=tf.events,
-                    adjudication_for=tf.adjudication_for,
+                    review_policy_for=tf.review_policy_for,
                 )
                 if result == 2:
                     time.sleep(poll_interval)

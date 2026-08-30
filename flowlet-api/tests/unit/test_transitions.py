@@ -1,6 +1,6 @@
 """Unit tests for the account-transition feed (abstractions v0.3, delta 3).
 
-Covers the ordered named-log feed behind RunEventLog: append-through from
+Covers the ordered named-log feed behind EventLog: append-through from
 lifecycle events, ordered reads with a resume cursor, commit-boundary
 paging, the strictly non-throwing writer contract, the worker lifecycle
 landing on the feed, and the controller read endpoint.
@@ -12,7 +12,7 @@ from cairndb.storage.filesystem import FilesystemStorage
 from fastapi import HTTPException
 
 from flowlet.api.controller import FlowController
-from flowlet.events import RunEventLog
+from flowlet.events import EventLog
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.transitions import TransitionFeed
 
@@ -31,7 +31,7 @@ def feed(store):
 
 @pytest.fixture
 def events(store, feed):
-    return RunEventLog(store=store, feed=feed)
+    return EventLog(store=store, feed=feed)
 
 
 def _append(events, run_id, event, **kwargs):

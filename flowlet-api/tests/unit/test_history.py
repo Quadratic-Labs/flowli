@@ -15,7 +15,7 @@ from cairndb.engine.logs import NamespacedStorage
 from cairndb.storage.filesystem import FilesystemStorage
 
 from flowlet.history import HISTORY_LOG_NAME, RUN_ARCHIVED, RunHistory, refresh_history_db
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.sweeper import sweep
 from flowlet.types import Timestamp
@@ -50,7 +50,7 @@ def _rows(db_path):
 
 def _closed(make_run_state, **overrides):
     defaults: dict = {
-        "status": RunStatus.completed,
+        "status": ReportedStatus.completed,
         "ended_at": Timestamp(datetime.now(UTC) - timedelta(hours=2)),
     }
     defaults.update(overrides)
@@ -58,7 +58,7 @@ def _closed(make_run_state, **overrides):
 
 
 def _seed(store, state):
-    """Write a released lease document for a RunState-spec'd account."""
+    """Write a released lease document for a ObligationSummary-spec'd account."""
     from conftest import _seed_lease
 
     _seed_lease(store, state)
@@ -143,7 +143,7 @@ class TestRunHistoryQuerying:
 
         rows = asyncio.run(readable_history.list_states(["etl"]))
         assert {r.run_id for r in rows} == {s.run_id for s in states}
-        assert all(r.status == RunStatus.completed for r in rows)
+        assert all(r.status == ReportedStatus.completed for r in rows)
 
     def test_list_states_respects_last_n(self, readable_history, make_run_state):
         readable_history.record_many(
@@ -239,7 +239,7 @@ class TestSweeperHistoryIntegration:
     ):
         """Runs inside the grace window are neither recorded nor archived."""
         state_repo = StateRepository(store=store)
-        state = make_run_state(status=RunStatus.completed, ended_at=Timestamp.now())
+        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
         _seed(store, state)
 
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)

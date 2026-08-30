@@ -7,7 +7,7 @@ receiver observes it with a plain read.  Signals never touch the run's
 lease document, so a holder's renewals can never clobber one and a signal
 write can never fence a holder.
 
-``cancel`` is the first signal; gates and other adjudication messages will
+``cancel`` is the first signal; gates and other review messages will
 use the same channel.
 """
 import json

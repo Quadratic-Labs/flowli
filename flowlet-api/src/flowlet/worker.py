@@ -17,8 +17,8 @@ The account discipline: execution never *is* the record — it *proposes*
 entries into it.  An attempt is appended at claim, its outcome recorded
 exactly once (``returned``/``raised``/``interrupted`` by its own executor,
 ``crashed`` by whoever discovers the corpse), and done-ness is a recorded
-verdict.  The auto-verdict (returned ⇒ accepted ⇒ discharged) is the
-default adjudication policy; gates and human adjudication slot into the
+review.  The auto-review (returned ⇒ approved ⇒ discharged) is the
+default review policy; gates and human review slot into the
 same fields.
 
 The queue is a pure wake-up signal.  Every dequeued message is acked as
@@ -38,7 +38,7 @@ to one of the ``JobState`` values:
     busy      Lease actively held (unexpired holder)           Ack — another worker owns it
     expired   In-flight attempt, lease expired, budget left    Acquire (crash + new attempt) → execute
     failed    In-flight attempt, lease expired, budget spent   Acquire → crash + abandon → release
-                                                               (gated: crash + park for adjudication)
+                                                               (gated: crash + park for review)
     ready     Released open obligation (parked after failure)  Acquire (new attempt) → execute
 
 The classification is advisory (early-outs without churning the lease
@@ -52,10 +52,10 @@ rejected attempt recorded and the obligation still open, then self-enqueues
 a fresh wake-up message with exponential backoff.
 
 Exhaustion is a judgment point: when the last attempt spends a *gated*
-obligation's budget, the obligation parks ``awaiting_adjudication`` with
-the final outcome recorded and its verdict pending — a human can extend the
-budget through the adjudication endpoint (fix the environment, resume) or
-close it with a rejected verdict.  Only auto-adjudicated obligations
+obligation's budget, the obligation parks ``awaiting_review`` with
+the final outcome recorded and its review pending — a human can extend the
+budget through the review endpoint (fix the environment, resume) or
+close it with a rejected review.  Only auto-reviewed obligations
 abandon themselves (``max_retries_exceeded``).
 """
 import logging
@@ -63,16 +63,16 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol
 
-from flowlet.events import RunEventLog
+from flowlet.events import EventLog
 from flowlet.lease import LeaseLost, RunCancelled, RunLease, bind_lease, unbind_lease
 from flowlet.models import (
     AttemptOutcome,
+    Decision,
     FlowJob,
     Obligation,
     ObligationRecord,
     ObligationStatus,
-    Verdict,
-    VerdictDecision,
+    Review,
 )
 from flowlet.queue import JobQueueProtocol
 from flowlet.repository import (
@@ -99,7 +99,7 @@ class Executor(Protocol):
     :class:`~flowlet.lease.RunLease` (so ``flowlet.heartbeat()`` and
     ``flowlet.effect()`` are ambient).  The kernel interprets its end:
 
-    - return            → outcome ``returned`` (auto-verdict or gate)
+    - return            → outcome ``returned`` (auto-review or gate)
     - raise RunCancelled → outcome ``interrupted``
     - raise LeaseLost    → the outcome is discarded (fenced)
     - raise anything     → outcome ``raised`` (retry budget decides)
@@ -143,7 +143,7 @@ def existing_state_case(
     record = view.record
     if record.obligation.status.is_closed():
         return JobState.closed
-    if record.obligation.status == ObligationStatus.awaiting_adjudication:
+    if record.obligation.status == ObligationStatus.awaiting_review:
         return JobState.gated
     if record.obligation.status == ObligationStatus.held:
         return JobState.held
@@ -179,7 +179,7 @@ def _ack_safely(queue: JobQueueProtocol, job: FlowJob) -> None:
 
 
 def _emit(
-    events: RunEventLog | None,
+    events: EventLog | None,
     record: ObligationRecord,
     event: str,
     actor: str,
@@ -198,10 +198,10 @@ def _emit(
     )
 
 
-def _auto_verdict(decision: VerdictDecision, reason: str | None = None) -> Verdict:
-    """The default adjudication policy, recorded like any other verdict."""
-    return Verdict(
-        decision=decision, by="auto", rendered_at=Timestamp.now(), reason=reason
+def _auto_review(decision: Decision, reason: str | None = None) -> Review:
+    """The default review policy, recorded like any other review."""
+    return Review(
+        decision=decision, by="auto", decided_at=Timestamp.now(), reason=reason
     )
 
 
@@ -260,7 +260,7 @@ def _claim_transition(
                 parent_id=job.parent_id,
                 root_id=job.root_id,
                 max_retries=job.max_retries,
-                adjudication="gated" if gated else "auto",
+                review_policy="gated" if gated else "auto",
                 caused_by=job.caused_by,
                 created_at=Timestamp.now(),
             )
@@ -270,8 +270,8 @@ def _claim_transition(
 
     if record.obligation.status.is_closed():
         raise AlreadyClosed(record)
-    if record.obligation.status == ObligationStatus.awaiting_adjudication:
-        # Nothing to execute — the obligation waits on a verdict, not a worker.
+    if record.obligation.status == ObligationStatus.awaiting_review:
+        # Nothing to execute — the obligation waits on a review, not a worker.
         raise Unclaimable(record)
     if record.obligation.status == ObligationStatus.held:
         # Entry gate: the obligation waits on an admission, not a worker.
@@ -280,18 +280,18 @@ def _claim_transition(
     # Crash accounting: a dead holder's in-flight attempt ends here, judged
     # by whoever discovers it — never silently overwritten.  A crash never
     # spends the budget (crashed attempts are free); when it lands on an
-    # already-exhausted gated obligation, its verdict stays pending: the
-    # crashed attempt is what the human gate below will adjudicate.
+    # already-exhausted gated obligation, its review stays pending: the
+    # crashed attempt is what the human gate below will decide.
     if existing is not None and record.open_attempt is not None:
         parks = (
             not cancel_pending
             and not record.retries_left()
-            and record.obligation.adjudication == "gated"
+            and record.obligation.review_policy == "gated"
         )
         record.record_outcome(
             AttemptOutcome.crashed,
-            verdict=None if parks else _auto_verdict(
-                VerdictDecision.rejected, reason="lease_expired"
+            review=None if parks else _auto_review(
+                Decision.rejected, reason="lease_expired"
             ),
         )
 
@@ -304,10 +304,10 @@ def _claim_transition(
 
     if not record.retries_left():
         # Exhaustion is a judgment point: a gated obligation parks for
-        # human adjudication (extend the budget to resume, reject to
+        # human review (extend the budget to resume, reject to
         # close); only auto obligations close themselves.
-        if record.obligation.adjudication == "gated":
-            record.suspend_for_adjudication()
+        if record.obligation.review_policy == "gated":
+            record.suspend_for_review()
             decision["case"] = _ClaimCase.gated
             return record
         record.abandon("max_retries_exceeded")
@@ -325,7 +325,7 @@ def conclude_attempt(
     outcome: AttemptOutcome,
     error: str | None = None,
     queue: JobQueueProtocol | None = None,
-    events: RunEventLog | None = None,
+    events: EventLog | None = None,
     actor: str,
     timeout_seconds: int | None = None,
 ) -> str:
@@ -334,8 +334,8 @@ def conclude_attempt(
     Used by the in-process worker after the flow call and by the
     external-executor surface when a detached harness reports its outcome.
     Applies the account discipline: record the outcome (with the
-    auto-verdict where the adjudication policy allows), then discharge,
-    suspend for adjudication, park for retry (self-enqueueing a wake-up
+    auto-review where the review policy allows), then discharge,
+    suspend for review, park for retry (self-enqueueing a wake-up
     when a queue is available — the sweeper is the fallback), or abandon.
 
     Args:
@@ -366,22 +366,22 @@ def conclude_attempt(
         return "lost"
 
     if outcome == AttemptOutcome.returned:
-        if record.obligation.adjudication == "gated":
-            # No auto-verdict: the outcome is a fact, judgment is pending.
+        if record.obligation.review_policy == "gated":
+            # No auto-review: the outcome is a fact, judgment is pending.
             record.record_outcome(AttemptOutcome.returned)
-            record.suspend_for_adjudication()
+            record.suspend_for_review()
             try:
                 lease.release(record)
             except LeaseLost:
                 return "lost"
             _emit(
-                events, record, "awaiting_adjudication", actor,
+                events, record, "awaiting_review", actor,
                 from_status="running", to_status="gated",
             )
             return "gated"
         record.record_outcome(
             AttemptOutcome.returned,
-            verdict=_auto_verdict(VerdictDecision.accepted),
+            review=_auto_review(Decision.approved),
         )
         record.discharge()
         if _release_terminal(lease, events, record, "completed", actor,
@@ -394,23 +394,23 @@ def conclude_attempt(
     # outcome alone, so exhaustion is only known once it is accounted.
     attempt = record.open_attempt
     record.record_outcome(AttemptOutcome.raised, error=error)
-    if not record.retries_left() and record.obligation.adjudication == "gated":
-        # Exhaustion is a judgment point, not an auto-verdict: the outcome
+    if not record.retries_left() and record.obligation.review_policy == "gated":
+        # Exhaustion is a judgment point, not an auto-review: the outcome
         # is a fact, judgment is pending.  A human can extend the budget
-        # and resume (adjudicate rejected + extend_budget) or close it.
-        record.suspend_for_adjudication()
+        # and resume (decide rejected + extend_budget) or close it.
+        record.suspend_for_review()
         try:
             lease.release(record)
         except LeaseLost:
             return "lost"
         _emit(
-            events, record, "awaiting_adjudication", actor,
+            events, record, "awaiting_review", actor,
             from_status="running", to_status="gated", cause=error,
         )
         return "gated"
 
     if attempt is not None:
-        attempt.verdict = _auto_verdict(VerdictDecision.rejected, reason=error)
+        attempt.review = _auto_review(Decision.rejected, reason=error)
     if record.retries_left():
         try:
             lease.release(record)
@@ -458,14 +458,14 @@ def execute_job(
     signals: SignalRepository,
     worker_id: str,
     default_timeout: int = DEFAULT_TIMEOUT,
-    events: RunEventLog | None = None,
-    adjudication_for: "Callable[[str], str] | None" = None,
+    events: EventLog | None = None,
+    review_policy_for: "Callable[[str], str] | None" = None,
 ) -> int:
     """Execute a single job from the queue under the account state machine.
 
     Dequeues one message, resolves the ``JobState``, acquires the
     obligation's lease with an atomic claim transition, acks the message,
-    runs the flow, then records the attempt's outcome and verdict and
+    runs the flow, then records the attempt's outcome and review and
     releases the lease.  See the module docstring for the full transition
     table.
 
@@ -483,7 +483,7 @@ def execute_job(
         default_timeout: Lease seconds used when the job carries no
             timeout_seconds.
         events: Optional run event log receiving lifecycle events.
-        adjudication_for: Per-flow adjudication policy (``"auto"``/
+        review_policy_for: Per-flow review policy (``"auto"``/
             ``"gated"``) stamped on obligations *created* by this claim;
             None means auto.  Existing obligations keep the policy fixed
             at their creation.
@@ -539,9 +539,9 @@ def execute_job(
         return 0
     if job_state in (JobState.busy, JobState.gated, JobState.held):
         assert view is not None
-        # Duplicate wake-up for an actively-owned, adjudication-parked, or
+        # Duplicate wake-up for an actively-owned, review-parked, or
         # admission-held run: drop it.  Crashed owners are the sweeper's
-        # job; gated runs resume through the adjudication endpoint and held
+        # job; gated runs resume through the review endpoint and held
         # runs through the admission endpoint, never a wake-up.
         _ack_safely(queue, job)
         logger.info(
@@ -556,8 +556,8 @@ def execute_job(
 
     cancel_pending = signals.get(job.flow_name, job.run_id, CANCEL) is not None
     gated = (
-        adjudication_for is not None
-        and adjudication_for(job.flow_name) == "gated"
+        review_policy_for is not None
+        and review_policy_for(job.flow_name) == "gated"
     )
     timeout = job.timeout_seconds or default_timeout
     decision: dict = {}
@@ -578,7 +578,7 @@ def execute_job(
         )
     except Unclaimable:
         _ack_safely(queue, job)
-        logger.info("job_awaiting_adjudication", extra={"run_id": str(job.run_id)})
+        logger.info("job_awaiting_review", extra={"run_id": str(job.run_id)})
         return 2
     except AlreadyClosed as closed:
         _ack_safely(queue, job)
@@ -620,13 +620,13 @@ def execute_job(
 
     if case == _ClaimCase.gated:
         # Budget spent on a gated obligation: parked for human judgment,
-        # resumable through the adjudication endpoint (extend_budget).
+        # resumable through the review endpoint (extend_budget).
         try:
             lease.release(record)
         except LeaseLost:
             return 2
         _emit(
-            events, record, "awaiting_adjudication", worker_id,
+            events, record, "awaiting_review", worker_id,
             to_status="gated", cause="max_retries_exceeded",
         )
         logger.warning(
@@ -690,7 +690,7 @@ def execute_job(
         )
         if route == "gated":
             logger.info(
-                "job_awaiting_adjudication", extra={"run_id": str(job.run_id)}
+                "job_awaiting_review", extra={"run_id": str(job.run_id)}
             )
             return 0
         if route == "completed":
@@ -736,7 +736,7 @@ def execute_job(
 
 def _release_terminal(
     lease,
-    events: RunEventLog | None,
+    events: EventLog | None,
     record: ObligationRecord,
     event: str,
     actor: str,

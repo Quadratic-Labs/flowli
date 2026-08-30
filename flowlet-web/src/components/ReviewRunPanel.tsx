@@ -3,18 +3,18 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { api } from '@/lib/api';
 
-/** Resolve a run that is awaiting adjudication: accept discharges it,
+/** Resolve a run that is awaiting review: accept discharges it,
  *  reject reopens it for another attempt (or abandons it, if the attempt
  *  budget is spent). The kernel's gate policy — not this form — decides
  *  whether the given actor is eligible; a refusal surfaces as a 403. */
-export function AdjudicateRunPanel({ runId }: { runId: string }) {
+export function ReviewRunPanel({ runId }: { runId: string }) {
   const [actor, setActor] = useState('');
   const [reason, setReason] = useState('');
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: (decision: 'accepted' | 'rejected') =>
-      api.adjudicateRun(runId, decision, actor.trim(), reason.trim() || undefined),
+    mutationFn: (decision: 'approved' | 'rejected') =>
+      api.reviewRun(runId, decision, actor.trim(), reason.trim() || undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['runs'] });
       queryClient.invalidateQueries({ queryKey: ['run', runId] });
@@ -26,7 +26,7 @@ export function AdjudicateRunPanel({ runId }: { runId: string }) {
 
   return (
     <div className="bg-purple-50 border border-purple-200 rounded p-4 mb-4">
-      <h3 className="font-medium text-purple-900 mb-1">Awaiting adjudication</h3>
+      <h3 className="font-medium text-purple-900 mb-1">Awaiting review</h3>
       <p className="text-sm text-purple-700 mb-3">
         The attempt finished but is suspended for review — accept to discharge it,
         or reject to reopen it for another attempt (or abandon it, if none are left).
@@ -44,7 +44,7 @@ export function AdjudicateRunPanel({ runId }: { runId: string }) {
             placeholder="optional"
             className="border border-gray-300 rounded px-2 py-1.5 text-sm w-56" />
         </div>
-        <button onClick={() => mutation.mutate('accepted')} disabled={disabled}
+        <button onClick={() => mutation.mutate('approved')} disabled={disabled}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 text-sm">
           <Check size={14} /> Accept
         </button>

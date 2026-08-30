@@ -23,7 +23,7 @@ from flowlet.api.models import (
     RunMessageRequest,
 )
 from flowlet.lease import RunLease, bind_lease, recv, unbind_lease
-from flowlet.models import FlowJob, RunStatus
+from flowlet.models import FlowJob, ReportedStatus
 from flowlet.repository import (
     MessageRepository,
     SignalRepository,
@@ -62,7 +62,7 @@ def _controller(state_repo, signals, queue=None):
 
 def _claimed_run_lease(state_repo, signals, messages, make_record, holder="w1"):
     """Acquire a running obligation's lease with the channel wired in."""
-    record = make_record(status=RunStatus.running)
+    record = make_record(status=ReportedStatus.running)
     obligation = record.obligation
     lease = state_repo.acquire(
         obligation.flow_name, obligation.id, ttl=600, holder=holder,
@@ -261,7 +261,7 @@ class TestRecv:
 @pytest.mark.unit
 class TestMessageEndpoints:
     def _seed_ready(self, make_run_state, seed_lease, store, **overrides):
-        state = make_run_state(status=RunStatus.pending, **overrides)
+        state = make_run_state(status=ReportedStatus.pending, **overrides)
         seed_lease(store, state)
         return state
 
@@ -392,7 +392,7 @@ class TestMessageEndpoints:
     def test_send_to_closed_run_is_409(
         self, state_repo, signals, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.completed)
+        state = make_run_state(status=ReportedStatus.completed)
         seed_lease(store, state)
         controller = _controller(state_repo, signals)
 
@@ -469,7 +469,7 @@ class TestArchiveClearsMessages:
         self, state_repo, signals, messages, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=3)),
         )
         seed_lease(

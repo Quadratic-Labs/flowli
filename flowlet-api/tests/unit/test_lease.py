@@ -2,7 +2,7 @@
 
 Covers RunLease.beat() mechanics (fenced renewal, throttling, cancel-signal
 observation), the module-level heartbeat() ergonomics, the worker's
-cancel/finalize paths, the controller cancel endpoint, and RunState serdes
+cancel/finalize paths, the controller cancel endpoint, and ObligationSummary serdes
 compatibility for the cancel_requested record field.
 """
 from datetime import UTC, datetime, timedelta
@@ -22,7 +22,7 @@ from flowlet.lease import (
     heartbeat,
     unbind_lease,
 )
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.repository.signals import CANCEL
 from flowlet.serdes import from_json, to_json
@@ -48,7 +48,7 @@ def signals(store):
 
 def _claimed_lease(state_repo, make_record, holder="w1", **overrides):
     """Acquire a running obligation's lease as a worker claim would."""
-    record = make_record(status=RunStatus.running, **overrides)
+    record = make_record(status=ReportedStatus.running, **overrides)
     obligation = record.obligation
     lease = state_repo.acquire(
         obligation.flow_name, obligation.id, ttl=600, holder=holder,
@@ -185,7 +185,7 @@ class TestWorkerCancellation:
 
         assert rc == 0
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.canceled
+        assert view.state.status == ReportedStatus.canceled
         assert view.state.cancel_requested is True
         assert view.state.ended_at is not None
         assert view.holder is None  # terminal states are released
@@ -197,7 +197,7 @@ class TestWorkerCancellation:
         job = make_flow_job()
         # A released pending run whose cancel arrived while off-lease.
         state = make_run_state(
-            run_id=job.run_id, flow_name=job.flow_name, status=RunStatus.pending
+            run_id=job.run_id, flow_name=job.flow_name, status=ReportedStatus.pending
         )
         seed_lease(store, state)
         signals.send(job.flow_name, job.run_id, CANCEL, actor="api")
@@ -210,7 +210,7 @@ class TestWorkerCancellation:
         assert rc == 0
         assert executed == []
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.canceled
+        assert view.state.status == ReportedStatus.canceled
         assert view.state.cancel_requested is True
 
     def test_heartbeat_inside_flow_is_harmless_when_not_cancelled(
@@ -229,7 +229,7 @@ class TestWorkerCancellation:
 
         assert rc == 0
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.completed
+        assert view.state.status == ReportedStatus.completed
 
 
 class TestRelease:
@@ -250,7 +250,7 @@ class TestRelease:
         record.discharge()
         lease.release(record)
         view = state_repo.read(obligation.flow_name, obligation.id)
-        assert view.state.status == RunStatus.completed
+        assert view.state.status == ReportedStatus.completed
         assert view.holder is None
 
     def test_release_after_fencing_raises_lease_lost(
@@ -287,22 +287,22 @@ class TestCancelRun:
     def test_pending_run_is_closed_directly(
         self, controller, state_repo, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending)
+        state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)  # released — nobody owns it
 
         resp = controller.cancel_run(state.run_id)
 
-        assert resp.status == RunStatus.canceled
+        assert resp.status == ReportedStatus.canceled
         assert resp.cancel_requested is True
         view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.status == RunStatus.canceled
+        assert view.state.status == ReportedStatus.canceled
         assert view.state.ended_at is not None
         assert view.holder is None
 
     def test_running_run_is_signalled_not_closed(
         self, controller, state_repo, signals, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(
             store, state, holder="w1",
             deadline=datetime.now(UTC) + timedelta(seconds=300),
@@ -310,22 +310,22 @@ class TestCancelRun:
 
         resp = controller.cancel_run(state.run_id)
 
-        assert resp.status == RunStatus.running
+        assert resp.status == ReportedStatus.running
         assert resp.cancel_requested is True
         # The lease document is untouched; the signal carries the request.
         view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.status == RunStatus.running
+        assert view.state.status == ReportedStatus.running
         assert signals.get(state.flow_name, state.run_id, CANCEL) is not None
 
     def test_closed_run_is_reported_unchanged(
         self, controller, state_repo, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.completed)
+        state = make_run_state(status=ReportedStatus.completed)
         seed_lease(store, state)
 
         resp = controller.cancel_run(state.run_id)
 
-        assert resp.status == RunStatus.completed
+        assert resp.status == ReportedStatus.completed
         assert resp.cancel_requested is False
 
     def test_unknown_run_is_404(self, controller):
@@ -347,20 +347,20 @@ class TestCancelRun:
 
 class TestCancelRequestedSerdes:
     def test_roundtrip_preserves_flag(self, make_run_state):
-        from flowlet.models import RunState
+        from flowlet.models import ObligationSummary
 
         state = make_run_state()
         state.cancel_requested = True
-        restored = from_json(RunState)(to_json(state))
+        restored = from_json(ObligationSummary)(to_json(state))
         assert restored.cancel_requested is True
 
     def test_legacy_state_without_flag_defaults_false(self, make_run_state):
         import json
 
-        from flowlet.models import RunState
+        from flowlet.models import ObligationSummary
 
         state = make_run_state()
         raw = json.loads(to_json(state))
         del raw["cancel_requested"]  # simulate a pre-upgrade state file
-        restored = from_json(RunState)(json.dumps(raw))
+        restored = from_json(ObligationSummary)(json.dumps(raw))
         assert restored.cancel_requested is False

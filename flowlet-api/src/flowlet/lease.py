@@ -215,7 +215,7 @@ def recv(topic: str) -> dict | None:
 
     Non-blocking: returns None when no unconsumed message is pending.  For
     a durable wait, end the attempt and park the obligation (admission or
-    adjudication gates), optionally with a timer for the timeout — waiting
+    review gates), optionally with a timer for the timeout — waiting
     is an obligation state, never a code position.
 
     Outside a worker-managed run this is a no-op returning None.

@@ -1,14 +1,14 @@
 """
 Test data factories using factory_boy.
 """
-from factories.cache_factories import RunOrmFactory
-from factories.model_factories import RunLogFactory, RunStateFactory, RunSummaryFactory
+from factories.cache_factories import ObligationRowFactory
+from factories.model_factories import ObligationSummaryFactory, RunLogFactory, TraceSummaryFactory
 
 __all__ = [
     # Snapshot ORM factory
-    "RunOrmFactory",
+    "ObligationRowFactory",
     # Domain model factories
     "RunLogFactory",
-    "RunStateFactory",
-    "RunSummaryFactory",
+    "ObligationSummaryFactory",
+    "TraceSummaryFactory",
 ]

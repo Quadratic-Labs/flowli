@@ -46,7 +46,7 @@ def _claimable(view: StateView, now: Timestamp) -> bool:
     record = view.record
     status = record.obligation.status
     if status.is_closed() or status in (
-        ObligationStatus.awaiting_adjudication,
+        ObligationStatus.awaiting_review,
         ObligationStatus.held,
     ):
         return False
@@ -68,14 +68,14 @@ class AccountJobSource:
         state_repo: State repository the obligations live in.
         signals: Optional signal repository; when given, obligations under
             a paused scope are not handed out.
-        adjudication_for: Per-flow adjudication policy stamped on
+        review_policy_for: Per-flow review policy stamped on
             obligations created by ``enqueue`` (queue mode stamps it at the
             worker's first claim instead); None means auto.
     """
 
     state_repo: StateRepository
     signals: SignalRepository | None = field(default=None)
-    adjudication_for: Callable[[str], str] | None = field(default=None)
+    review_policy_for: Callable[[str], str] | None = field(default=None)
 
     def enqueue(self, job: FlowJob, delay: int = 0) -> UUID:  # noqa: ARG002
         """Record the obligation in the account store, put-if-absent.
@@ -85,8 +85,8 @@ class AccountJobSource:
         time, so the delayed-message mechanism has nothing to carry.
         """
         policy = (
-            self.adjudication_for(job.flow_name)
-            if self.adjudication_for is not None
+            self.review_policy_for(job.flow_name)
+            if self.review_policy_for is not None
             else "auto"
         )
         record = ObligationRecord(
@@ -97,7 +97,7 @@ class AccountJobSource:
                 parent_id=job.parent_id,
                 root_id=job.root_id,
                 max_retries=job.max_retries,
-                adjudication=policy,
+                review_policy=policy,
                 caused_by=job.caused_by,
                 created_at=Timestamp.now(),
             )

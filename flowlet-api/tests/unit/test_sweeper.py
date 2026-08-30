@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import SignalRepository, StateRepository
 from flowlet.repository.signals import CANCEL
 from flowlet.sweeper import sweep
@@ -57,21 +57,21 @@ class TestLeaseRecovery:
     def test_live_lease_left_alone(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running)
+        state = make_run_state(status=ReportedStatus.running)
         seed_lease(store, state, holder="w1", deadline=_at(300))
 
         stats = sweep(state_repo, queue)
 
         assert stats.requeued == 0
         view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.status == RunStatus.running
+        assert view.state.status == ReportedStatus.running
         assert view.epoch == 1  # never touched
 
     def test_expired_lease_requeued_as_pending(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             attempt=1,
             max_retries=3,
             kwargs={"x": 1},
@@ -82,7 +82,7 @@ class TestLeaseRecovery:
 
         assert stats.requeued == 1
         view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.status == RunStatus.pending
+        assert view.state.status == ReportedStatus.pending
         assert view.state.attempt == 1  # attempt increments at claim, not at sweep
         assert view.holder is None  # recovered runs are parked, released
         assert view.epoch == 2  # the recovery was a fenced steal
@@ -96,7 +96,7 @@ class TestLeaseRecovery:
         # attempt=4: the budget is spent by three consuming attempts; the
         # dead in-flight attempt is a free crash (v0.3 delta 1).
         state = make_run_state(
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             attempt=4,
             max_retries=3,
         )
@@ -107,14 +107,14 @@ class TestLeaseRecovery:
         assert stats.failed == 1
         assert queue.enqueued == []
         view = state_repo.read(state.flow_name, state.run_id)
-        assert view.state.status == RunStatus.failed
+        assert view.state.status == ReportedStatus.failed
         assert view.state.ended_at is not None
         assert view.holder is None
 
     def test_sweep_is_idempotent(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.running, attempt=1)
+        state = make_run_state(status=ReportedStatus.running, attempt=1)
         seed_lease(store, state, holder="dead-worker", deadline=_at(-10))
 
         sweep(state_repo, queue)
@@ -129,7 +129,7 @@ class TestStuckPending:
     def test_old_pending_requeued(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending, kwargs={"y": 2})
+        state = make_run_state(status=ReportedStatus.pending, kwargs={"y": 2})
         # Released long ago: the release time (envelope deadline) is stale.
         seed_lease(store, state, deadline=_at(-700))
 
@@ -143,7 +143,7 @@ class TestStuckPending:
     def test_recent_pending_left_alone(
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
-        state = make_run_state(status=RunStatus.pending)
+        state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state, deadline=_at(-10))
 
         stats = sweep(state_repo, queue, pending_grace=600)
@@ -156,7 +156,7 @@ class TestArchiving:
         self, state_repo, queue, make_run_state, seed_lease, store, tmp_path
     ):
         state = make_run_state(
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
@@ -171,7 +171,7 @@ class TestArchiving:
         self, state_repo, queue, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.completed, ended_at=Timestamp.now()
+            status=ReportedStatus.completed, ended_at=Timestamp.now()
         )
         seed_lease(store, state)
 
@@ -184,7 +184,7 @@ class TestArchiving:
         self, state_repo, signals, queue, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.canceled,
+            status=ReportedStatus.canceled,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)

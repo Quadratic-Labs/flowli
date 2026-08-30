@@ -206,18 +206,18 @@ def error_handling_demo_flow(fail_chance: float = 0.5):
 
 
 def _only_leads(actor: str, _record) -> bool:
-    """Gate policy: only 'lead' may adjudicate a deploy."""
+    """Gate policy: only 'lead' may decide a deploy."""
     return actor == "lead"
 
 
 @tf.flow("deploy_to_prod", gated=True, gate=_only_leads)
 def deploy_to_prod_flow(target: str = "prod"):
     """
-    Demonstrates adjudication: the attempt runs to completion, but the
-    obligation then suspends as ``awaiting_adjudication`` instead of
+    Demonstrates review: the attempt runs to completion, but the
+    obligation then suspends as ``awaiting_review`` instead of
     auto-discharging. Resolve it with:
 
-        POST /runs/{run_id}/adjudicate {"decision": "accepted", "actor": "lead"}
+        POST /runs/{run_id}/review {"decision": "approved", "actor": "lead"}
 
     Only the 'lead' actor is eligible (see the gate policy above); any other
     actor gets a 403. 'rejected' reopens the obligation for another attempt.

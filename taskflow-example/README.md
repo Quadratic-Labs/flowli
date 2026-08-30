@@ -2,7 +2,7 @@
 
 A working demo app for **Taskflow**, the Prefect-like authoring layer
 (`@flow`/`@task` decorators, schema-validated submission, synchronous
-execution, adjudication) over the **Flowlet** account kernel — plus the
+execution, review) over the **Flowlet** account kernel — plus the
 `flowlet-web` React dashboard on top of it.
 
 There's also a `Taskfile.yml` at the repo root wrapping the commands below
@@ -92,8 +92,8 @@ curl -s http://localhost:8001/runs/<run_id>/events | python3 -m json.tool
 curl -s -X POST http://localhost:8001/runs/<run_id>/cancel
 
 # Resolve a gated obligation (see deploy_to_prod below)
-curl -s -X POST http://localhost:8001/runs/<run_id>/adjudicate \
-  -H "Content-Type: application/json" -d '{"decision": "accepted", "actor": "lead"}'
+curl -s -X POST http://localhost:8001/runs/<run_id>/review \
+  -H "Content-Type: application/json" -d '{"decision": "approved", "actor": "lead"}'
 ```
 
 Flows worth trying:
@@ -104,7 +104,7 @@ Flows worth trying:
 | `simple_etl`, `data_pipeline` | `fetch_data` sleeps 15s — submit via `/submit` and watch the run sit in `running` on the dashboard/`/runs/query`. |
 | `error_handling_demo` | `risky_operation` fails ~50% of the time; `max_retries=2` — watch the run retry then land on `completed` or `failed`. |
 | `parallel_tasks` | Several sequential task calls in one flow. |
-| `deploy_to_prod` | `gated=True` with a `gate` policy restricting adjudication to actor `"lead"`. Submit it, watch it land on `gated` in `/runs/query`, then `POST /runs/{run_id}/adjudicate` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
+| `deploy_to_prod` | `gated=True` with a `gate` policy restricting review to actor `"lead"`. Submit it, watch it land on `gated` in `/runs/query`, then `POST /runs/{run_id}/review` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
 
 ## 3. Run the dashboard
 
@@ -118,7 +118,7 @@ Vite serves on `http://localhost:5173` and proxies `/api/*` to
 `http://localhost:8001/*` (see `vite.config.ts`) — so the API from step 2 must
 already be running on port 8001, and `main.py` must keep mounting the router
 at prefix `""` (it does, by default) so the paths line up. Note the dashboard
-predates the adjudication surface, so it won't show a way to act on a `gated`
+predates the review surface, so it won't show a way to act on a `gated`
 run — use curl for that flow.
 
 ## Multi-process topology (production-shaped, with a caveat)

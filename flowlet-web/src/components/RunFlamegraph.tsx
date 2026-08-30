@@ -1,11 +1,11 @@
 import { useRef, useEffect } from 'react';
 import * as d3 from 'd3';
-import type { RunSummaryDTO } from '@/lib/api';
+import type { TraceSummaryDTO } from '@/lib/api';
 import { getStatusColor } from '@/lib/api';
 
 interface FNode { name: string; start: number; end: number; duration: number; status: string; depth: number; spanId: string; children: FNode[]; }
 
-function toFNode(dto: RunSummaryDTO, depth: number): FNode {
+function toFNode(dto: TraceSummaryDTO, depth: number): FNode {
   const start = new Date(dto.start_ts).getTime();
   const end = dto.end_ts ? new Date(dto.end_ts).getTime() : start;
   return { name: dto.span_name, start, end, duration: end - start, status: dto.status, depth, spanId: dto.span_id,
@@ -30,7 +30,7 @@ const ENTER_MS = 400;
  *  transitions — new bars grow in, moved bars glide, vanished bars fade out.
  *  Unchanged data (same reference) is never redrawn, so poll-driven parent
  *  re-renders cost nothing. */
-export function RunFlamegraph({ runData }: { runData: RunSummaryDTO }) {
+export function RunFlamegraph({ runData }: { runData: TraceSummaryDTO }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<d3.Selection<HTMLDivElement, unknown, HTMLElement, unknown> | null>(null);
 

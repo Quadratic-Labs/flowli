@@ -56,7 +56,7 @@ export default function Dashboard() {
               { label: `Successful (${metrics.successRate.toFixed(1)}%)`, value: metrics.successfulFlows, color: 'text-green-600' },
               { label: `Failed (${metrics.failureRate.toFixed(1)}%)`, value: metrics.failedFlows, color: 'text-red-600' },
               { label: 'Currently Running', value: metrics.runningFlows, color: 'text-orange-500' },
-              { label: 'Needs Adjudication', value: metrics.gatedRuns.length, color: 'text-purple-600' },
+              { label: 'Needs Review', value: metrics.gatedRuns.length, color: 'text-purple-600' },
             ].map(card => (
               <div key={card.label} className="bg-white rounded shadow p-6 text-center">
                 <div className={`text-5xl font-medium mb-2 ${card.color}`}>{card.value}</div>
@@ -65,10 +65,10 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Gated runs — need a human verdict, not a failure */}
+          {/* Gated runs — need a human review, not a failure */}
           {metrics.gatedRuns.length > 0 && (
             <div className="bg-white rounded shadow p-6 border-l-4" style={{ borderLeftColor: '#9c27b0' }}>
-              <h2 className="text-lg font-medium mb-4">Needs Adjudication</h2>
+              <h2 className="text-lg font-medium mb-4">Needs Review</h2>
               <table className="w-full text-sm">
                 <thead><tr className="text-left border-b">
                   <th className="py-2 pr-4">Flow Name</th><th className="py-2 pr-4">Status</th>

@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from flowlet.models import RunState
+from flowlet.models import ObligationSummary
 from flowlet.repository.state import StateRepository
 from flowlet.serdes import from_json
 
@@ -62,7 +62,7 @@ class Base(DeclarativeBase):
     """Base class for the cache's SQLAlchemy ORM models."""
 
 
-class Run(Base):
+class ObligationRow(Base):
     """Flat snapshot row for a single flow run — the cache's one table.
 
     One row per run; upserted on every state transition.  Hierarchy is NOT
@@ -101,21 +101,21 @@ async def ensure_snapshot_schema(engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
-    """Upsert a single RunState into the flat runs table.
+async def upsert_run_state(session: AsyncSession, state: ObligationSummary) -> None:
+    """Upsert a single ObligationSummary into the flat runs table.
 
     Uses SQLite's ``ON CONFLICT DO UPDATE`` so re-processing an existing
     run_id updates the row instead of raising.
 
     Args:
         session: Active async SQLAlchemy session for the cache engine.
-        state: RunState to persist.
+        state: ObligationSummary to persist.
     """
     started_at = state.started_at.value
     ended_at = state.ended_at.value if state.ended_at is not None else None
 
     await session.execute(
-        sqlite_insert(Run).values(
+        sqlite_insert(ObligationRow).values(
             run_id=state.run_id,
             flow_name=state.flow_name,
             status=state.status.value,
@@ -125,7 +125,7 @@ async def upsert_run_state(session: AsyncSession, state: RunState) -> None:
             attempt=state.attempt,
             max_retries=state.max_retries,
         ).on_conflict_do_update(
-            index_elements=[Run.run_id],
+            index_elements=[ObligationRow.run_id],
             set_=dict(
                 flow_name=state.flow_name,
                 status=state.status.value,
@@ -211,7 +211,7 @@ class CacheRepository:
             extra={"active": len(active), "new_archived": len(archived)},
         )
 
-    async def _read_new_archived_states(self) -> list[RunState]:
+    async def _read_new_archived_states(self) -> list[ObligationSummary]:
         """Scan run folders for archived state.json objects not yet ingested.
 
         Archived states are immutable, so each is read exactly once per
@@ -238,11 +238,11 @@ class CacheRepository:
         if not new_keys:
             return []
 
-        from_history: dict[UUID, RunState] = {}
+        from_history: dict[UUID, ObligationSummary] = {}
         if self.history is not None:
             from_history = await self.history.get_states(new_keys.keys())
 
-        states: list[RunState] = list(from_history.values())
+        states: list[ObligationSummary] = list(from_history.values())
         for run_id, key in new_keys.items():
             if run_id in from_history:
                 continue
@@ -258,11 +258,11 @@ class CacheRepository:
         return states
 
 
-def _parse_archived_state(raw: str) -> RunState:
-    """Parse an archived state.json into the RunState read shape.
+def _parse_archived_state(raw: str) -> ObligationSummary:
+    """Parse an archived state.json into the ObligationSummary read shape.
 
     Current archives hold the full ObligationRecord account; archives from
-    before the account model hold a bare RunState — both remain readable.
+    before the account model hold a bare ObligationSummary — both remain readable.
     """
     import json
 
@@ -270,4 +270,4 @@ def _parse_archived_state(raw: str) -> RunState:
 
     if "obligation" in json.loads(raw):
         return from_json(ObligationRecord)(raw).summary()
-    return from_json(RunState)(raw)
+    return from_json(ObligationSummary)(raw)

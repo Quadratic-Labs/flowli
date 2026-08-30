@@ -35,7 +35,7 @@ def _worker_loop(stop_event: threading.Event) -> None:
                 signals,
                 "embedded-worker",
                 events=flows.tf.events,
-                adjudication_for=flows.tf.adjudication_for,
+                review_policy_for=flows.tf.review_policy_for,
             )
             if result == 2:  # no job available
                 time.sleep(1.0)

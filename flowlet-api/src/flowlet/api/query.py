@@ -1,15 +1,15 @@
 """
-Query layer for run history: RunState from SQLite, full Run from logs.
+Query layer for run history: ObligationSummary from SQLite, full Run from logs.
 
 Three query patterns are served:
 
-1. ``list_recent_states`` — the last *N* RunState rows per registered flow,
+1. ``list_recent_states`` — the last *N* ObligationSummary rows per registered flow,
    covering every flow present in the cache (including archived ones that have
    never been run, which simply produce no rows).
-2. ``list_states``        — paginated, filterable list of RunState rows for
+2. ``list_states``        — paginated, filterable list of ObligationSummary rows for
    list / table views.
 3. ``get_run``            — full run detail built by loading log files
-   recursively (all subflows / subtasks) and deriving a ``RunSummary`` tree via
+   recursively (all subflows / subtasks) and deriving a ``TraceSummary`` tree via
    :func:`~flowlet.analysis.summarise`.
 """
 import logging
@@ -20,10 +20,10 @@ from sqlalchemy import Select, bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from flowlet import analysis
-from flowlet.models import RunState
+from flowlet.models import ObligationSummary
 from flowlet.repository.log import LogRepository
 from flowlet.serdes import destructure
-from flowlet.api.cache import CacheRepository, Run as RunRow
+from flowlet.api.cache import CacheRepository, ObligationRow
 
 if TYPE_CHECKING:
     from flowlet.history import RunHistory
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class RunQuery:
     """Read-only query object for run history.
 
-    Combines the run cache (RunState rows, pull-refreshed from state files)
+    Combines the run cache (ObligationSummary rows, pull-refreshed from state files)
     with span-file data to serve all read operations required by the API.
     When a RunHistory is configured, its durable SQLite projection is an
     additive long-horizon source, merged into ``list_recent_states``.
@@ -48,14 +48,14 @@ class RunQuery:
         history: Optional RunHistory; None when ``configs.history`` is off.
     """
     SQL_RECENT_STATES = (
-        select(RunRow)
-        .where(RunRow.flow_name == bindparam("flow_name"))
-        .order_by(RunRow.run_id.desc())  # UUIDv7: descending = newest first
+        select(ObligationRow)
+        .where(ObligationRow.flow_name == bindparam("flow_name"))
+        .order_by(ObligationRow.run_id.desc())  # UUIDv7: descending = newest first
         .limit(bindparam("last_n"))
     )
     SQL_STATES = (
-        select(RunRow)
-        .where(RunRow.flow_name == bindparam("flow_name"))
+        select(ObligationRow)
+        .where(ObligationRow.flow_name == bindparam("flow_name"))
     )
 
     def __init__(
@@ -88,15 +88,15 @@ class RunQuery:
         # Mirrors PeriodUUID.covers(): strictly inside (start_id, end_id).
         return (
             stmt
-            .where(RunRow.run_id > bindparam("start_id"))
-            .where(RunRow.run_id < bindparam("end_id"))
+            .where(ObligationRow.run_id > bindparam("start_id"))
+            .where(ObligationRow.run_id < bindparam("end_id"))
         )
 
     @classmethod
     def _sql_limit_offset(cls, stmt: Select) -> Select:
         return (
             stmt
-            .order_by(RunRow.run_id.desc())  # UUIDv7: descending = newest first
+            .order_by(ObligationRow.run_id.desc())  # UUIDv7: descending = newest first
             .limit(bindparam("limit"))
             .offset(bindparam("offset"))
         )
@@ -116,8 +116,8 @@ class RunQuery:
         flow_names: list[str] | None = None,
         *,
         last_n: int = 5,
-    ) -> list[RunRow | RunState]:
-        """Fetch the most recent *last_n* RunState rows for each flow.
+    ) -> list[ObligationRow | ObligationSummary]:
+        """Fetch the most recent *last_n* ObligationSummary rows for each flow.
 
         When *flow_names* is ``None`` the cache's and (if configured) the
         history projection's distinct flow names are used, so every flow
@@ -134,10 +134,10 @@ class RunQuery:
             last_n: Maximum number of rows to return per flow.
 
         Returns:
-            ``Run`` ORM rows and/or ``RunState`` objects, ordered
+            ``ObligationRow`` rows and/or ``ObligationSummary`` objects, ordered
             newest-first within each flow.  Both support attribute access
-            and are compatible with :class:`~flowlet.api.models.RunStateDTO`
-            via ``RunStateDTO.model_validate(row)``.
+            and are compatible with :class:`~flowlet.api.models.ObligationSummaryDTO`
+            via ``ObligationSummaryDTO.model_validate(row)``.
         """
         await self.cache.refresh()
         cache_names = await self._known_flow_names()
@@ -151,7 +151,7 @@ class RunQuery:
             return []
 
         stmt = self.SQL_RECENT_STATES
-        rows: list[RunRow | RunState] = []
+        rows: list[ObligationRow | ObligationSummary] = []
         cache_counts: dict[str, int] = {}
         async with self._session_factory()() as session:
             for name in names:
@@ -183,8 +183,8 @@ class RunQuery:
         *,
         offset_limit: tuple[int, int] | None = None,
         id_range: tuple[UUID, UUID] | None = None,
-    ) -> list[RunRow]:
-        """List RunState rows with flexible filters, ordered newest first.
+    ) -> list[ObligationRow]:
+        """List ObligationSummary rows with flexible filters, ordered newest first.
 
         Intended for paginated list or table views where runs from all flows are
         shown together without per-flow grouping.
@@ -197,8 +197,8 @@ class RunQuery:
                 cursor-style pagination use ``run_id`` ordering directly).
 
         Returns:
-            ``Run`` ORM rows, newest first.  Compatible with
-            :class:`~flowlet.api.models.RunStateDTO` via ``model_validate``.
+            ``ObligationRow`` rows, newest first.  Compatible with
+            :class:`~flowlet.api.models.ObligationSummaryDTO` via ``model_validate``.
         """
         names = flow_names if flow_names is not None else self.registry.list_flows()
         stmt = self.SQL_STATES
@@ -213,7 +213,7 @@ class RunQuery:
             params["limit"] = offset_limit[1]
 
         await self.cache.refresh()
-        rows: list[RunRow] = []
+        rows: list[ObligationRow] = []
         async with self._session_factory()() as session:
             for name in names:
                 result = await session.execute(stmt, {"flow_name": name, **params})
@@ -234,7 +234,7 @@ class RunQuery:
         await self.cache.refresh()
         async with self._session_factory()() as session:
             result = await session.execute(
-                select(RunRow.flow_name).where(RunRow.run_id == run_id)
+                select(ObligationRow.flow_name).where(ObligationRow.run_id == run_id)
             )
             return result.scalar_one_or_none()
 
@@ -249,8 +249,8 @@ class RunQuery:
             with_logs: should or not include logs in the return value
 
         Returns:
-            Dict with ``RunSummaryDTO``-compatible keys plus a ``"logs"`` list
-            if requested.  Suitable for ``RunDTO.model_validate(result)``.
+            Dict with ``TraceSummaryDTO``-compatible keys plus a ``"logs"`` list
+            if requested.  Suitable for ``TraceDTO.model_validate(result)``.
 
         Raises:
             ValueError: When no run with the given ``run_id`` exists.
@@ -258,7 +258,7 @@ class RunQuery:
         await self.cache.refresh()
         async with self._session_factory()() as session:
             result = await session.execute(
-                select(RunRow).where(RunRow.run_id == run_id)
+                select(ObligationRow).where(ObligationRow.run_id == run_id)
             )
             row = result.scalar_one_or_none()
             if row is None:
@@ -273,9 +273,9 @@ class RunQuery:
         the run folder — every span of the run lives there, so subflow and
         all nested subflows and subtasks are included.
 
-        Derives a :class:`~flowlet.models.RunSummary` tree from those logs via
+        Derives a :class:`~flowlet.models.TraceSummary` tree from those logs via
         :func:`~flowlet.analysis.summarise`, then serialises the result to a
-        dict compatible with :class:`~flowlet.api.models.RunDTO`.
+        dict compatible with :class:`~flowlet.api.models.TraceDTO`.
 
         Args:
             flow_name: Name of the root flow (selects the log subdirectory).
@@ -283,11 +283,11 @@ class RunQuery:
             with_logs: should or not include logs in the return value
 
         Returns:
-            Dict with ``RunSummaryDTO``-compatible keys (``span_id``,
+            Dict with ``TraceSummaryDTO``-compatible keys (``span_id``,
             ``span_name``, ``span_type``, ``status``, ``start_ts``,
             ``end_ts``, ``children``) plus a ``"logs"`` list of
             ``RunLogDTO``-compatible dicts.  Suitable for
-            ``RunDTO.model_validate(result)``.
+            ``TraceDTO.model_validate(result)``.
 
         Raises:
             ValueError: When the loaded logs contain no identifiable root span

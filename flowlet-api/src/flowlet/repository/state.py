@@ -2,7 +2,7 @@
 
 Per-run state lives at ``state/<flow_name>/<run_id>.json`` as a cairndb
 lease document ``{epoch, holder, deadline_at, state}`` whose state payload
-is the :class:`~flowlet.models.RunState` wire dict.  Ownership is the lease:
+is the :class:`~flowlet.models.ObligationSummary` wire dict.  Ownership is the lease:
 acquiring (fresh, after a release, or by stealing an expired lease) bumps
 the epoch fence, and every write through the lease is etag-guarded, so a
 fenced holder can never publish an outcome.  The engine arbitrates
@@ -18,7 +18,7 @@ from attrs import define, field
 from cairndb.engine.coordination import Lease, acquire_sync, claim_sync
 from cairndb.storage.base import BlobStorage
 
-from flowlet.models import ObligationRecord, RunState
+from flowlet.models import ObligationRecord, ObligationSummary
 from flowlet.serdes import from_payload, to_payload
 from flowlet.storage import run_prefix
 from flowlet.types import Timestamp
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class Unclaimable(Exception):
     """Raised by an acquire transition to refuse a lease on an obligation
-    that is not executable — e.g. awaiting adjudication.  Carries the
+    that is not executable — e.g. awaiting review.  Carries the
     ObligationRecord for reporting."""
 
     def __init__(self, record: ObligationRecord):
@@ -72,8 +72,8 @@ class StateView:
     epoch: int
 
     @property
-    def state(self) -> RunState:
-        """The flat RunState projection of the account (read surface)."""
+    def state(self) -> ObligationSummary:
+        """The flat ObligationSummary projection of the account (read surface)."""
         return self.record.summary()
 
     def held(self, now: Timestamp | None = None) -> bool:
@@ -409,6 +409,6 @@ class StateRepository:
                 results.append(view)
         return results
 
-    def list_states(self, flow_name: str | None = None) -> list[RunState]:
-        """List RunState projections of the active accounts — read surface."""
+    def list_states(self, flow_name: str | None = None) -> list[ObligationSummary]:
+        """List ObligationSummary projections of the active accounts — read surface."""
         return [view.state for view in self.list_views(flow_name)]

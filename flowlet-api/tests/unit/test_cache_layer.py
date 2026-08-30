@@ -5,9 +5,9 @@ import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 from sqlalchemy import select
 
-from flowlet.api.cache import CacheRepository, Run
+from flowlet.api.cache import CacheRepository, ObligationRow
 from flowlet.history import RunHistory
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import StateRepository
 from flowlet.types import Timestamp
 
@@ -34,7 +34,7 @@ def history(store, tmp_path):
 
 async def _rows(cache):
     async with cache.session_factory()() as session:
-        result = await session.execute(select(Run))
+        result = await session.execute(select(ObligationRow))
         return list(result.scalars().all())
 
 
@@ -51,7 +51,7 @@ class TestRefresh:
         rows = await _rows(cache)
         assert len(rows) == 1
         assert rows[0].run_id == state.run_id
-        assert rows[0].status == RunStatus.running.value
+        assert rows[0].status == ReportedStatus.running.value
 
     async def test_state_transitions_are_reflected(
         self, cache, state_repo, make_run_state, seed_lease, store
@@ -60,19 +60,19 @@ class TestRefresh:
         seed_lease(store, state)
         await cache.refresh()
 
-        state.status = RunStatus.completed
+        state.status = ReportedStatus.completed
         state.ended_at = Timestamp.now()
         seed_lease(store, state, epoch=2)
         await cache.refresh(force=True)
 
         rows = await _rows(cache)
-        assert rows[0].status == RunStatus.completed.value
+        assert rows[0].status == ReportedStatus.completed.value
 
     async def test_archived_state_survives_removal_from_active_dir(
         self, cache, state_repo, make_run_state, seed_lease, store
     ):
         state = make_run_state(
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
@@ -84,7 +84,7 @@ class TestRefresh:
         rows = await _rows(cache)
         assert len(rows) == 1
         assert rows[0].run_id == state.run_id
-        assert rows[0].status == RunStatus.completed.value
+        assert rows[0].status == ReportedStatus.completed.value
 
     async def test_ttl_throttles_scans(
         self, state_repo, tmp_path, make_run_state, seed_lease, store
@@ -112,7 +112,7 @@ class TestHistorySeeding:
         import asyncio
 
         state = make_run_state(
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
@@ -134,7 +134,7 @@ class TestHistorySeeding:
         rows = asyncio.run(_rows(cache))
         assert len(rows) == 1
         assert rows[0].run_id == state.run_id
-        assert rows[0].status == RunStatus.completed.value
+        assert rows[0].status == ReportedStatus.completed.value
 
     async def test_run_unknown_to_history_falls_back_to_state_json(
         self, state_repo, history, make_run_state, seed_lease, store
@@ -142,7 +142,7 @@ class TestHistorySeeding:
         """A run history has never heard of (e.g. archived before history was
         enabled) is still picked up — history is never a coverage gate."""
         state = make_run_state(
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
@@ -155,4 +155,4 @@ class TestHistorySeeding:
         rows = await _rows(cache)
         assert len(rows) == 1
         assert rows[0].run_id == state.run_id
-        assert rows[0].status == RunStatus.completed.value
+        assert rows[0].status == ReportedStatus.completed.value

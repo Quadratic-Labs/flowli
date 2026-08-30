@@ -16,7 +16,7 @@ from pydantic import (
 )
 from pydantic.functional_validators import BeforeValidator
 
-from flowlet.models import RunStatus, RunType
+from flowlet.models import ReportedStatus
 from flowlet.types import Timestamp
 
 
@@ -138,7 +138,7 @@ class FlowArguments(Base):
         None, ge=1, le=100,
         description=(
             "Budget of consuming attempts (raised outcomes / rejected "
-            "verdicts; crashed and interrupted attempts are free); "
+            "reviews; crashed and interrupted attempts are free); "
             "None uses the kernel default (3)"
         ),
     )
@@ -151,16 +151,16 @@ class FlowArguments(Base):
             "it. Requires storage. Default 'auto' (claimable immediately)."
         ),
     )
-    adjudicates: UUID | None = Field(
+    reviews: UUID | None = Field(
         None,
         description=(
-            "Submit this obligation as the adjudicator of the given run "
-            "(which must be awaiting_adjudication): its job is to render "
-            "the verdict, its terminal effect a call to that run's "
-            "adjudication endpoint. Stamps caused_by 'adjudicate:<run_id>' "
+            "Submit this obligation as the reviewer of the given run "
+            "(which must be awaiting_review): its job is to record "
+            "the review, its terminal effect a call to that run's "
+            "review endpoint. Stamps caused_by 'review:<run_id>' "
             "and records this obligation's id as the target's "
-            "adjudicator_id — the parked account answers 'who owes me the "
-            "verdict'. Requires storage."
+            "reviewer_id — the parked account answers 'who owes me the "
+            "review'. Requires storage."
         ),
     )
     flow_version: str | None = Field(
@@ -205,7 +205,7 @@ class ExecutorClaimResponse(Base):
         deadline_at: Current lease expiry.
         attempt: This attempt's number.
         kwargs: The obligation's contract inputs.
-        adjudication: ``auto`` or ``gated`` — a gated obligation suspends
+        review_policy: ``auto`` or ``gated`` — a gated obligation suspends
             on a returned outcome instead of self-discharging.
         signals: Signals already pending at claim time.
         messages: Unconsumed message counts per topic at claim time —
@@ -218,7 +218,7 @@ class ExecutorClaimResponse(Base):
     deadline_at: TimestampDTO
     attempt: int
     kwargs: dict[str, Any]
-    adjudication: str
+    review_policy: str
     signals: dict[str, Any]
     messages: dict[str, int] = Field(default_factory=dict)
     flow_version: str | None = None
@@ -271,7 +271,7 @@ class ExecutorOutcomeRequest(Base):
     """Report how the attempt's execution ended.
 
     Attributes:
-        outcome: ``returned`` (normal end — auto-verdict or gate applies),
+        outcome: ``returned`` (normal end — auto-review or gate applies),
             ``raised`` (failure — retry budget decides), or ``interrupted``
             (a honoured cancel/interrupt signal).
         error: Short machine-readable error class when ``raised``.
@@ -366,24 +366,24 @@ class ExecutorRecvResponse(Base):
     pending: int = 0
 
 
-class AdjudicationRequest(Base):
+class ReviewRequest(Base):
     """API model for resolving a gated obligation.
 
     Attributes:
-        decision: ``accepted`` discharges the obligation; ``rejected``
+        decision: ``approved`` discharges the obligation; ``rejected``
             reopens it when the attempt budget allows, else abandons it.
-        actor: Principal rendering the verdict — recorded in the account
+        actor: Principal recording the review — recorded in the account
             and checked against the flow's gate policy.
         reason: Optional short ground for the decision.
         evidence_ref: JSON-safe reference to the grounds of the decision
             (review findings, gate evidence) — a content-addressed ref or
-            small JSON, never the body itself.  A rejecting verdict's
+            small JSON, never the body itself.  A rejecting review's
             evidence is what seeds the next attempt's envelope.
-        extend_budget: Extra attempts granted with a ``rejected`` verdict —
+        extend_budget: Extra attempts granted with a ``rejected`` review —
             the resume path for an obligation gated on exhaustion (fix the
             environment, then reject with a fresh budget to re-run).
     """
-    decision: str = Field(pattern="^(accepted|rejected)$")
+    decision: str = Field(pattern="^(approved|rejected)$")
     actor: str = Field(min_length=1, max_length=256)
     reason: str | None = Field(None, max_length=1024)
     evidence_ref: Any = None
@@ -428,12 +428,12 @@ class TransitionPageResponse(Base):
     cursor: int
 
 
-class AdjudicationResponse(Base):
-    """API model for the adjudication outcome.
+class ReviewResponse(Base):
+    """API model for the review outcome.
 
     Attributes:
-        run_id: The adjudicated obligation.
-        status: Projection status after the verdict was applied.
+        run_id: The reviewed obligation.
+        status: Projection status after the review was applied.
         decision: The recorded decision.
     """
     run_id: UUID
@@ -466,7 +466,7 @@ class FlowSubmissionResponse(Base):
     """
     job_id: UUID
     run_id: UUID
-    status: RunStatus = Field(default=RunStatus.pending)
+    status: ReportedStatus = Field(default=ReportedStatus.pending)
     submitted_at: TimestampDTO
     deduplicated: bool = False
 
@@ -483,7 +483,7 @@ class CancelRunResponse(Base):
         cancel_requested: Whether the cooperative-cancellation flag is set.
     """
     run_id: UUID
-    status: RunStatus
+    status: ReportedStatus
     cancel_requested: bool
 
 
@@ -555,7 +555,7 @@ class SpanRecordDTO(Base):
         name: Span (flow/task) name.
         flow_name: Root flow name.
         attempt: Execution attempt this span belongs to.
-        span_type: Whether the span is a flow or a task.
+        span_type: Open kind label, as recorded on the span.
         status: Terminal status of the span.
         status_message: Error description when failed.
         start_ts: Span start time.
@@ -569,8 +569,8 @@ class SpanRecordDTO(Base):
     name: str | None = None
     flow_name: str | None = None
     attempt: int = 1
-    span_type: RunType | None = None
-    status: RunStatus | None = None
+    span_type: str | None = None
+    status: ReportedStatus | None = None
     status_message: str | None = None
     start_ts: TimestampDTO | None = None
     end_ts: TimestampDTO | None = None
@@ -578,16 +578,16 @@ class SpanRecordDTO(Base):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
-class RunSummaryDTO(Base):
+class TraceSummaryDTO(Base):
     """API DTO for a single span's summary within a run.
 
-    Mirrors :class:`~flowlet.models.RunSummary`. The tree of ``children``
+    Mirrors :class:`~flowlet.models.TraceSummary`. The tree of ``children``
     recursively represents the full span hierarchy of a run.
 
     Attributes:
         span_id: Unique identifier of the span.
         span_name: Human-readable name of the span.
-        span_type: Whether this span is a flow or a task.
+        span_type: Open kind label, as recorded on the span.
         status: Most recent execution status of the span.
         start_ts: Wall-clock start time, or ``None`` if not yet started.
         end_ts: Wall-clock end time, or ``None`` if still running.
@@ -597,11 +597,11 @@ class RunSummaryDTO(Base):
     """
     span_id: str
     span_name: str
-    span_type: RunType
-    status: RunStatus
+    span_type: str | None
+    status: ReportedStatus
     start_ts: TimestampDTO | None
     end_ts: TimestampDTO | None
-    children: list[RunSummaryDTO]
+    children: list[TraceSummaryDTO]
 
     @computed_field
     @property
@@ -617,10 +617,10 @@ class RunSummaryDTO(Base):
         return humanize_timedelta(self.end_ts - self.start_ts)
 
 
-class RunDTO(RunSummaryDTO):
+class TraceDTO(TraceSummaryDTO):
     """API DTO for a complete run including its log entries.
 
-    Extends :class:`RunSummaryDTO` with the full list of recorded spans.
+    Extends :class:`TraceSummaryDTO` with the full list of recorded spans.
 
     Attributes:
         logs: All span records for this run (all attempts), in file order.
@@ -628,10 +628,10 @@ class RunDTO(RunSummaryDTO):
     logs: list[SpanRecordDTO]
 
 
-class RunStateDTO(Base):
+class ObligationSummaryDTO(Base):
     """API DTO for the worker-owned execution state of a run.
 
-    Mirrors :class:`~flowlet.models.RunState`. Exposes liveness and retry
+    Mirrors :class:`~flowlet.models.ObligationSummary`. Exposes liveness and retry
     metadata written atomically by the owning worker on every state transition.
 
     Attributes:
@@ -646,7 +646,7 @@ class RunStateDTO(Base):
     """
     run_id: UUID
     flow_name: str
-    status: RunStatus
+    status: ReportedStatus
     worker_id: str
     started_at: TimestampDTO
     ended_at: TimestampDTO | None

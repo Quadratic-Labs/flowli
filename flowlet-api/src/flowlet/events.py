@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 @define(slots=True, kw_only=True)
-class RunEventLog:
+class EventLog:
     """Writer for per-run lifecycle event streams.
 
     Attributes:

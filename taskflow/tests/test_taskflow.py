@@ -7,7 +7,7 @@ callables through the kernel's executor seam.
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from flowlet.models import ObligationStatus, RunStatus, VerdictDecision
+from flowlet.models import ObligationStatus, ReportedStatus, Decision
 from flowlet.worker import execute_job
 
 from taskflow import RegistryExecutor, Taskflow
@@ -38,7 +38,7 @@ def _work_once(tf, worker_id="w1") -> int:
         tf.signals,
         worker_id,
         events=tf.events,
-        adjudication_for=tf.adjudication_for,
+        review_policy_for=tf.review_policy_for,
     )
 
 
@@ -161,24 +161,24 @@ class TestWorkerLoop:
         assert _work_once(tf) == 0
 
         view = tf.state_repo.list_views("risky")[0]
-        assert view.record.obligation.status == ObligationStatus.awaiting_adjudication
+        assert view.record.obligation.status == ObligationStatus.awaiting_review
         run_id = str(view.record.obligation.id)
 
         refused = http.post(
-            f"/runs/{run_id}/adjudicate",
-            json={"decision": "accepted", "actor": "intern"},
+            f"/runs/{run_id}/review",
+            json={"decision": "approved", "actor": "intern"},
         )
         assert refused.status_code == 403
 
-        accepted = http.post(
-            f"/runs/{run_id}/adjudicate",
-            json={"decision": "accepted", "actor": "lead"},
+        approved = http.post(
+            f"/runs/{run_id}/review",
+            json={"decision": "approved", "actor": "lead"},
         )
-        assert accepted.status_code == 200
+        assert approved.status_code == 200
         record = tf.state_repo.list_views("risky")[0].record
         assert record.obligation.status == ObligationStatus.discharged
-        assert record.last_attempt.verdict.decision == VerdictDecision.accepted
-        assert record.last_attempt.verdict.by == "lead"
+        assert record.last_attempt.review.decision == Decision.approved
+        assert record.last_attempt.review.by == "lead"
 
     def test_failed_flow_parks_for_retry(self, tf, http):
         @tf.flow(max_retries=3)
@@ -189,5 +189,5 @@ class TestWorkerLoop:
         assert _work_once(tf) == 1
 
         view = tf.state_repo.list_views("flaky")[0]
-        assert view.state.status == RunStatus.pending
+        assert view.state.status == ReportedStatus.pending
         assert view.record.last_attempt.error == "RuntimeError"

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from flowlet.api.cache import CacheRepository
     from flowlet.api.controller import FlowController
     from flowlet.api.query import RunQuery
-    from flowlet.events import RunEventLog
+    from flowlet.events import EventLog
     from flowlet.history import RunHistory
     from flowlet.transitions import TransitionFeed
     from flowlet.queue import JobQueueProtocol
@@ -64,7 +64,7 @@ class FlowletDeps(TypedDict, total=False):
     cache_repo: CacheRepository
     querier: RunQuery | None
     dispatch_repo: "DispatchKeyRepository | None"
-    events: "RunEventLog | None"
+    events: "EventLog | None"
     history: "RunHistory | None"
     transitions: "TransitionFeed | None"
     queue: JobQueueProtocol | None
@@ -105,7 +105,7 @@ class Flowlet:
     resources: "ResourceLeaseRepository | None"
     history: "RunHistory | None"
     dispatch_repo: "DispatchKeyRepository | None"
-    events: "RunEventLog | None"
+    events: "EventLog | None"
     transitions: "TransitionFeed | None"
 
     def __init__(self, **deps):
@@ -208,7 +208,7 @@ class Flowlet:
 
             # LogRepository and CacheRepository are added to deps so that
             # RunQuery(**deps) can pick them up via its own named parameters.
-            from flowlet.events import RunEventLog
+            from flowlet.events import EventLog
             from flowlet.repository.dispatch import DispatchKeyRepository
             from flowlet.repository.signals import SignalRepository
             from flowlet.repository.state import StateRepository
@@ -225,7 +225,7 @@ class Flowlet:
 
                 deps["transitions"] = TransitionFeed(store=store)
                 logger.info("flowlet_transitions_configured")
-            deps["events"] = RunEventLog(store=store, feed=deps["transitions"])
+            deps["events"] = EventLog(store=store, feed=deps["transitions"])
             deps["cache_repo"] = CacheRepository.from_deps(**deps)
             deps["querier"] = RunQuery(**deps)
 
@@ -254,7 +254,7 @@ class Flowlet:
                 deps["queue"] = AccountJobSource(
                     state_repo=deps["state_repo"],
                     signals=deps["signals"],
-                    adjudication_for=deps.get("adjudication_for"),
+                    review_policy_for=deps.get("review_policy_for"),
                 )
             if deps["queue"] is not None:
                 logger.info(
@@ -273,7 +273,7 @@ class Flowlet:
             transitions=deps.get("transitions"),
             prepare_submission=deps.get("prepare_submission"),
             gate_policy=deps.get("gate_policy"),
-            adjudication_for=deps.get("adjudication_for"),
+            review_policy_for=deps.get("review_policy_for"),
         )
 
         from flowlet.api.router import build_router

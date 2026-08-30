@@ -145,9 +145,9 @@ async def query_runs():
             print(f"  Children: {len(summary.children)}")
 
         # Count runs by status
-        from flowlet.types import RunStatus
-        completed = client.count_runs(status=RunStatus.completed)
-        failed = client.count_runs(status=RunStatus.failed)
+        from flowlet.types import ReportedStatus
+        completed = client.count_runs(status=ReportedStatus.completed)
+        failed = client.count_runs(status=ReportedStatus.failed)
         print(f"\nCompleted: {completed}, Failed: {failed}")
 
 asyncio.run(query_runs())

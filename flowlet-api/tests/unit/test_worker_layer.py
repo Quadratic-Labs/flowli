@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb.storage.filesystem import FilesystemStorage
 
-from flowlet.models import RunStatus
+from flowlet.models import ReportedStatus
 from flowlet.repository import SignalRepository, StateRepository, StateView
 from flowlet.types import Timestamp
 from flowlet.worker import JobState, execute_job, existing_state_case
@@ -96,24 +96,24 @@ class TestExistingStateCase:
         assert existing_state_case(None) == JobState.new
 
     def test_closed_statuses_are_closed(self, make_record):
-        for status in (RunStatus.completed, RunStatus.failed, RunStatus.canceled):
+        for status in (ReportedStatus.completed, ReportedStatus.failed, ReportedStatus.canceled):
             view = _view(make_record(status=status))
             assert existing_state_case(view) == JobState.closed
 
     def test_running_with_live_lease_is_busy(self, make_record):
         view = _view(
-            make_record(status=RunStatus.running),
+            make_record(status=ReportedStatus.running),
             holder="other-worker", deadline=_ts_in(300),
         )
         assert existing_state_case(view) == JobState.busy
 
     def test_released_pending_is_ready(self, make_record):
-        view = _view(make_record(status=RunStatus.pending))
+        view = _view(make_record(status=ReportedStatus.pending))
         assert existing_state_case(view) == JobState.ready
 
     def test_running_past_deadline_is_expired(self, make_record):
         view = _view(
-            make_record(status=RunStatus.running),
+            make_record(status=ReportedStatus.running),
             holder="dead-worker", deadline=_ts_in(-1),
         )
         assert existing_state_case(view) == JobState.expired
@@ -122,7 +122,7 @@ class TestExistingStateCase:
         # attempt=4: three consuming (raised/rejected) attempts spend the
         # budget; the dead in-flight attempt is a crash and bills nothing.
         view = _view(
-            make_record(status=RunStatus.running, attempt=4, max_retries=3),
+            make_record(status=ReportedStatus.running, attempt=4, max_retries=3),
             holder="dead-worker", deadline=_ts_in(-1),
         )
         assert existing_state_case(view) == JobState.failed
@@ -134,7 +134,7 @@ class TestExistingStateCase:
         budget spent only by prior real failures short of the cap is a
         takeover, not a permanent failure."""
         view = _view(
-            make_record(status=RunStatus.running, attempt=3, max_retries=3),
+            make_record(status=ReportedStatus.running, attempt=3, max_retries=3),
             holder="dead-worker", deadline=_ts_in(-1),
         )
         assert existing_state_case(view) == JobState.expired
@@ -157,7 +157,7 @@ class TestExecuteJobSuccess:
         assert rc == 0
         assert seen == [{"x": 1}]
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.completed
+        assert view.state.status == ReportedStatus.completed
         assert view.state.attempt == 1
         assert view.state.ended_at is not None
         assert view.state.kwargs == {"x": 1}  # persisted for sweeper re-enqueue
@@ -219,7 +219,7 @@ class TestExecuteJobRetries:
 
         assert rc == 1
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.pending
+        assert view.state.status == ReportedStatus.pending
         assert view.state.attempt == 1
         assert view.holder is None  # parked, reclaimable
         # A fresh wake-up message with backoff, carrying the same run_id and kwargs
@@ -242,7 +242,7 @@ class TestExecuteJobRetries:
 
         view = state_repo.read(job.flow_name, job.run_id)
         assert view.state.attempt == 2
-        assert view.state.status == RunStatus.pending
+        assert view.state.status == ReportedStatus.pending
         assert view.epoch == 2  # one epoch bump per (re)acquisition
 
     def test_exhausted_retries_marks_failed_terminal(
@@ -260,7 +260,7 @@ class TestExecuteJobRetries:
         assert execute_job(q2, executor, state_repo, signals, "w1") == 1
 
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.failed
+        assert view.state.status == ReportedStatus.failed
         assert view.state.attempt == 2
         assert view.state.ended_at is not None
         assert q2.enqueued == []  # no further retries
@@ -274,7 +274,7 @@ class TestExecuteJobSkips:
         done = make_run_state(
             run_id=job.run_id,
             flow_name=job.flow_name,
-            status=RunStatus.completed,
+            status=ReportedStatus.completed,
         )
         seed_lease(store, done)
 
@@ -301,7 +301,7 @@ class TestExecuteJobSkips:
         busy = make_run_state(
             run_id=job.run_id,
             flow_name=job.flow_name,
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             worker_id="other-worker",
         )
         seed_lease(
@@ -334,7 +334,7 @@ class TestExecuteJobTakeover:
         expired = make_run_state(
             run_id=job.run_id,
             flow_name=job.flow_name,
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             worker_id="dead-worker",
             attempt=1,
             max_retries=3,
@@ -359,7 +359,7 @@ class TestExecuteJobTakeover:
         # Takeover re-executes with the kwargs persisted in the state payload.
         assert seen == [{"orig": True}]
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.completed
+        assert view.state.status == ReportedStatus.completed
         assert view.state.attempt == 2
         assert view.state.worker_id == "w2"
         assert view.epoch == 2  # the takeover was a fenced steal
@@ -373,7 +373,7 @@ class TestExecuteJobTakeover:
         expired = make_run_state(
             run_id=job.run_id,
             flow_name=job.flow_name,
-            status=RunStatus.running,
+            status=ReportedStatus.running,
             worker_id="dead-worker",
             attempt=4,
             max_retries=3,
@@ -396,7 +396,7 @@ class TestExecuteJobTakeover:
         assert rc == 1
         assert calls == []
         view = state_repo.read(job.flow_name, job.run_id)
-        assert view.state.status == RunStatus.failed
+        assert view.state.status == ReportedStatus.failed
         assert view.state.worker_id == "dead-worker"  # the attempt's executor
         assert queue.acked == [job.job_id]
 
@@ -428,7 +428,7 @@ class TestStateRepositoryFiles:
     def test_archive_moves_state_out_of_active_dir(
         self, state_repo, make_run_state, seed_lease, store, tmp_path
     ):
-        state = make_run_state(status=RunStatus.completed, ended_at=Timestamp.now())
+        state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
         state_repo.archive(state.flow_name, state.run_id)
 

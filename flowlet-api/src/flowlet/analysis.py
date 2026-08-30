@@ -1,9 +1,9 @@
 """
 Run analysis: derives structured summaries from recorded spans.
 """
-from flowlet.models import RunSummary, SpanRecord
+from flowlet.models import TraceSummary, SpanRecord
 
-def summarise(spans: list[SpanRecord]) -> RunSummary:
+def summarise(spans: list[SpanRecord]) -> TraceSummary:
     """Build the run's summary tree from its recorded spans.
 
     Args:
@@ -11,7 +11,7 @@ def summarise(spans: list[SpanRecord]) -> RunSummary:
             multiple attempts.
 
     Returns:
-        The RunSummary of the latest attempt's root span, with children
+        The TraceSummary of the latest attempt's root span, with children
         nested recursively.
 
     Raises:
@@ -23,8 +23,8 @@ def summarise(spans: list[SpanRecord]) -> RunSummary:
     latest_attempt = max(span.attempt for span in spans)
     attempt_spans = [span for span in spans if span.attempt == latest_attempt]
 
-    summaries: dict[str, RunSummary] = {
-        span.span_id: RunSummary(
+    summaries: dict[str, TraceSummary] = {
+        span.span_id: TraceSummary(
             span_id=span.span_id,
             span_name=span.name,
             span_type=span.span_type,
@@ -36,7 +36,7 @@ def summarise(spans: list[SpanRecord]) -> RunSummary:
         for span in attempt_spans
     }
 
-    root: RunSummary | None = None
+    root: TraceSummary | None = None
     for span in attempt_spans:
         parent_id = span.parent_span_id
         if parent_id is not None and parent_id in summaries:

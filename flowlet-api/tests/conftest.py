@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 from flowlet.api.cache import Base
 from flowlet.api.controller import FlowController
-from flowlet.models import FlowJob, RunState, RunStatus, RunType, SpanEvent, SpanRecord
+from flowlet.models import FlowJob, ObligationSummary, ReportedStatus, SpanEvent, SpanRecord
 from flowlet.types import Timestamp
 
 # ============================================================================
@@ -38,7 +38,7 @@ def _make_run_state(
     *,
     run_id: UUID | None = None,
     flow_name: str = "test_flow",
-    status: RunStatus = RunStatus.running,
+    status: ReportedStatus = ReportedStatus.running,
     worker_id: str = "worker-1",
     started_at: Timestamp | None = None,
     ended_at: Timestamp | None = None,
@@ -46,9 +46,9 @@ def _make_run_state(
     max_retries: int = 3,
     kwargs: dict | None = None,
     cancel_requested: bool = False,
-) -> RunState:
+) -> ObligationSummary:
     now = _make_ts()
-    return RunState(
+    return ObligationSummary(
         run_id=run_id or uuid7(),
         flow_name=flow_name,
         status=status,
@@ -62,11 +62,11 @@ def _make_run_state(
     )
 
 
-def _record_from_state(state: RunState) -> "ObligationRecord":
-    """Reconstruct an ObligationRecord account matching a RunState spec.
+def _record_from_state(state: ObligationSummary) -> "ObligationRecord":
+    """Reconstruct an ObligationRecord account matching a ObligationSummary spec.
 
     Test seeding convenience: builders keep describing runs in the flat
-    RunState vocabulary, and this expands them into a consistent account —
+    ObligationSummary vocabulary, and this expands them into a consistent account —
     ``running`` gets an open in-flight attempt, ``pending`` closed rejected
     attempts, terminal statuses a closed obligation.  The record's
     ``summary()`` round-trips back to the given state.
@@ -74,11 +74,11 @@ def _record_from_state(state: RunState) -> "ObligationRecord":
     from flowlet.models import (
         Attempt,
         AttemptOutcome,
+        Decision,
         Obligation,
         ObligationRecord,
         ObligationStatus,
-        Verdict,
-        VerdictDecision,
+        Review,
     )
 
     obligation = Obligation(
@@ -93,28 +93,28 @@ def _record_from_state(state: RunState) -> "ObligationRecord":
     record = ObligationRecord(obligation=obligation)
 
     def _attempt(n: int, outcome, decision) -> Attempt:
-        verdict = None
+        review = None
         if decision is not None:
-            verdict = Verdict(decision=decision, rendered_at=_make_ts())
+            review = Review(decision=decision, decided_at=_make_ts())
         return Attempt(
             n=n,
             executor=state.worker_id,
             started_at=state.started_at,
             ended_at=_make_ts() if outcome is not None else None,
             outcome=outcome,
-            verdict=verdict,
+            review=review,
         )
 
-    rejected = (AttemptOutcome.raised, VerdictDecision.rejected)
-    if state.status == RunStatus.running:
+    rejected = (AttemptOutcome.raised, Decision.rejected)
+    if state.status == ReportedStatus.running:
         finals = [(None, None)]
-    elif state.status == RunStatus.pending:
+    elif state.status == ReportedStatus.pending:
         finals = [rejected]
-    elif state.status == RunStatus.completed:
-        finals = [(AttemptOutcome.returned, VerdictDecision.accepted)]
+    elif state.status == ReportedStatus.completed:
+        finals = [(AttemptOutcome.returned, Decision.approved)]
         obligation.status = ObligationStatus.discharged
         obligation.closed_at = state.ended_at or _make_ts()
-    elif state.status == RunStatus.canceled:
+    elif state.status == ReportedStatus.canceled:
         finals = [(AttemptOutcome.interrupted, None)]
         obligation.status = ObligationStatus.abandoned
         obligation.cause = "canceled"
@@ -145,7 +145,7 @@ def _seed_lease(
 ) -> None:
     """Write an obligation's lease document directly — test seeding only.
 
-    Accepts either an ObligationRecord or a RunState spec (expanded via
+    Accepts either an ObligationRecord or a ObligationSummary spec (expanded via
     :func:`_record_from_state`).  Defaults model a *released* lease
     (holder None, deadline = now, the release time).  Pass ``holder`` and a
     future ``deadline`` for a held lease, or a past deadline for an
@@ -155,7 +155,7 @@ def _seed_lease(
 
     from flowlet.serdes import to_payload
 
-    record = state if not isinstance(state, RunState) else _record_from_state(state)
+    record = state if not isinstance(state, ObligationSummary) else _record_from_state(state)
     doc = {
         "epoch": epoch,
         "holder": holder,
@@ -192,8 +192,8 @@ def _make_span_record(
     name: str = "test_flow",
     flow_name: str = "test_flow",
     attempt: int = 1,
-    span_type: RunType = RunType.flow,
-    status: RunStatus = RunStatus.completed,
+    span_type: str = "flow",
+    status: ReportedStatus = ReportedStatus.completed,
     status_message: str | None = None,
     start_ts: Timestamp | None = None,
     end_ts: Timestamp | None = None,
@@ -244,7 +244,7 @@ def seed_lease():
 
 @pytest.fixture
 def make_record():
-    """Build an ObligationRecord from RunState-style keyword arguments."""
+    """Build an ObligationRecord from ObligationSummary-style keyword arguments."""
     return lambda **kwargs: _record_from_state(_make_run_state(**kwargs))
 
 

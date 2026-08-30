@@ -17,7 +17,7 @@ from flowlet.storage.snapshot import (
 )
 from flowlet.storage.manifest import SnapshotConfig
 from flowlet.client import FlowletClient, FlowletClientConfig
-from flowlet.types import RunStatus
+from flowlet.types import ReportedStatus
 
 
 async def server_side_example():
@@ -147,8 +147,8 @@ async def client_side_example(storage_root: Path):
             # Example 3: Count runs by status
             print("\n4. Counting runs by status...")
             total_runs = client.count_runs()
-            completed = client.count_runs(status=RunStatus.completed)
-            failed = client.count_runs(status=RunStatus.failed)
+            completed = client.count_runs(status=ReportedStatus.completed)
+            failed = client.count_runs(status=ReportedStatus.failed)
 
             print(f"   Total: {total_runs}")
             print(f"   Completed: {completed}")

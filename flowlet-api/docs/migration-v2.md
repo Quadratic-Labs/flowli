@@ -51,7 +51,7 @@ API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on deman
 | IDs | stdlib `uuid7` everywhere; drop `uuid7_desc` | one convention; uuid7 == 128-bit OTel trace_id; recency via date partitions + explicit `DESC` |
 | Span identity | native OTel 64-bit span_id (hex) in records | no impedance with SDK; run_id remains the join key |
 | Log layout | `runs/<flow>/<date>/<run_id>/spans-<attempt>.jsonl` | 1 read per run; hierarchy from parent_span_id fields; per-attempt file avoids two-writer appends after takeover |
-| Retry authority | `RunState.attempt/max_retries` only | queue knows nothing about retries |
+| Retry authority | `ObligationSummary.attempt/max_retries` only | queue knows nothing about retries |
 | kwargs persistence | stored in the state file at claim time | sweeper must be able to re-enqueue a crashed run without the original message |
 | Lease default | `@flow(timeout=...)`, default 15 min; deadline = now + timeout per attempt | failure detection = deadline + sweep interval |
 | Sweeper deploy | Container Apps cron job, same image, `flowlet sweep` | operational homogeneity with workers; ~$0 either way |
@@ -79,7 +79,7 @@ Mechanical, isolated, do first so later phases churn one convention only.
 
 The biggest safety payoff; independent of OTel.
 
-- `models.RunState`: drop `heartbeat_at`; add `kwargs` (claim-time copy) and
+- `models.ObligationSummary`: drop `heartbeat_at`; add `kwargs` (claim-time copy) and
   keep `deadline_at` as the sole liveness signal. `FlowJob`: drop `retry_count`,
   `visibility_timeout`; add per-flow `timeout` plumbed from the decorator
   (`@flow(timeout=900)`) through registry → job → state.
