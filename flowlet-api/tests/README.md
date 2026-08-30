@@ -117,7 +117,7 @@ from tests.factories import RunFactory, RunLogFactory, RunLinkFactory
 run = RunFactory(name="my_flow", run_type="flow")
 
 # Create with custom values
-log = RunLogFactory(run_id=run.run_id, status="success")
+log = RunLogFactory(obligation_id=run.obligation_id, status="success")
 ```
 
 ### Domain Model Factories

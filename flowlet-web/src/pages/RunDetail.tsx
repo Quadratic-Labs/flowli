@@ -186,7 +186,7 @@ function Section({ title, icon, defaultOpen = false, children }: { title: string
 }
 
 export default function RunDetail() {
-  const { id: runId = '' } = useParams<{ id: string }>();
+  const { id: obligationId = '' } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const parentId = searchParams.get('parentId');
   const flowHint = searchParams.get('flow');
@@ -208,8 +208,8 @@ export default function RunDetail() {
     }
   };
   const { data: run, isLoading, error } = useQuery({
-    queryKey: ['run', runId],
-    queryFn: () => fetchRunOrNull(runId),
+    queryKey: ['run', obligationId],
+    queryFn: () => fetchRunOrNull(obligationId),
     retry: false,
     refetchInterval: (q) => (q.state.data ? false : 2500),
   });
@@ -222,8 +222,8 @@ export default function RunDetail() {
   // run is in flight they are the only live signal, so keep polling until
   // the timeline reaches a terminal event.
   const { data: events = [] } = useQuery({
-    queryKey: ['run-events', runId],
-    queryFn: () => api.getRunEvents(runId),
+    queryKey: ['run-events', obligationId],
+    queryFn: () => api.getRunEvents(obligationId),
     retry: false,
     refetchInterval: (q) => {
       const evs = q.state.data;
@@ -237,8 +237,8 @@ export default function RunDetail() {
   // refresh the run record whenever the timeline grows.
   const eventCount = events.length;
   useEffect(() => {
-    if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['run', runId] });
-  }, [eventCount, runId, queryClient]);
+    if (eventCount > 0) queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
+  }, [eventCount, obligationId, queryClient]);
 
   const runNotFoundYet = run === null;
 
@@ -280,7 +280,7 @@ export default function RunDetail() {
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-medium">Run Details</h2>
-                {events.length > 0 && runActive && <CancelRunButton runId={runId} small />}
+                {events.length > 0 && runActive && <CancelRunButton obligationId={obligationId} small />}
               </div>
               <span className="flex items-center gap-2 text-sm text-gray-500">
                 <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
@@ -289,7 +289,7 @@ export default function RunDetail() {
             </div>
             <div className="text-sm space-y-1">
               {flowHint && <p><strong>Flow:</strong> {flowHint}</p>}
-              <p><strong>Run ID:</strong> <span className="font-mono text-xs">{runId}</span></p>
+              <p><strong>Run ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
               <p><strong>Status:</strong> <StatusBadge status={eventToStatus(lastEvent)} /></p>
             </div>
             <p className="text-gray-500 text-sm mt-4">
@@ -299,7 +299,7 @@ export default function RunDetail() {
             </p>
           </div>
 
-          {eventToStatus(lastEvent) === 'gated' && <ReviewRunPanel runId={runId} />}
+          {eventToStatus(lastEvent) === 'gated' && <ReviewRunPanel obligationId={obligationId} />}
         </div>
       )}
 
@@ -309,7 +309,7 @@ export default function RunDetail() {
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-medium">Run Details</h2>
-                {runActive && <CancelRunButton runId={runId} small />}
+                {runActive && <CancelRunButton obligationId={obligationId} small />}
               </div>
               {attempts.length > 1 && (
                 <div className="flex items-center gap-2">
@@ -338,7 +338,7 @@ export default function RunDetail() {
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p><strong>Name:</strong> {view.span_name}</p>
-                <p><strong>Run ID:</strong> <span className="font-mono text-xs">{runId}</span></p>
+                <p><strong>Run ID:</strong> <span className="font-mono text-xs">{obligationId}</span></p>
                 <p><strong>Root span:</strong> <span className="font-mono text-xs">{view.span_id}</span></p>
                 <p><strong>Status:</strong> <StatusBadge status={displayStatus} />
                   {attempts.length > 1 && (
@@ -353,7 +353,7 @@ export default function RunDetail() {
             </div>
           </div>
 
-          {isGated && <ReviewRunPanel runId={runId} />}
+          {isGated && <ReviewRunPanel obligationId={obligationId} />}
 
           <Section title="Execution Flamegraph" icon={<span>⏱</span>} defaultOpen>
             <RunFlamegraph runData={view} />

@@ -8,7 +8,7 @@ export interface SpanEventDTO {
   attributes: Record<string, unknown>;
 }
 export interface SpanRecordDTO {
-  run_id: string | null; span_id: string | null; parent_span_id: string | null;
+  obligation_id: string | null; span_id: string | null; parent_span_id: string | null;
   name: string | null; flow_name: string | null; attempt: number;
   span_type: string | null; status: string | null; status_message: string | null;
   start_ts: string | null; end_ts: string | null;
@@ -20,22 +20,22 @@ export interface FlowSchema {
   parameters?: Array<{ name: string; type: string; required: boolean; default?: unknown }>;
 }
 export interface ObligationSummaryDTO {
-  run_id: string; flow_name: string; status: string; worker_id: string;
+  obligation_id: string; flow_name: string; status: string; worker_id: string;
   started_at: string; ended_at: string | null;
   attempt: number; max_retries: number;
 }
 export interface FlowSubmissionResponse {
-  job_id: string; run_id: string; status: string;
+  job_id: string; obligation_id: string; status: string;
   submitted_at: string; deduplicated: boolean;
 }
 export interface CancelRunResponse {
-  run_id: string; status: string; cancel_requested: boolean;
+  obligation_id: string; status: string; cancel_requested: boolean;
 }
 export interface ReviewResponse {
-  run_id: string; status: string; decision: string;
+  obligation_id: string; status: string; decision: string;
 }
 export interface RunEvent {
-  ts: string; run_id: string; flow_name: string; event: string; actor: string;
+  ts: string; obligation_id: string; flow_name: string; event: string; actor: string;
   attempt?: number; from?: string; to?: string; cause?: string;
   details?: Record<string, unknown>;
 }
@@ -105,13 +105,13 @@ export const api = {
     }),
   queryRuns: (last_n = 50, names?: string[]) =>
     apiFetch<ObligationSummaryDTO[]>('/runs/query', { method: 'POST', body: JSON.stringify({ last_n, ...(names ? { names } : {}) }) }),
-  getRunById: (runId: string, with_logs = true) =>
-    apiFetch<TraceDTO>(`/runs/${runId}?with_logs=${with_logs}`),
-  getRunEvents: (runId: string) => apiFetch<RunEvent[]>(`/runs/${runId}/events`),
-  cancelRun: (runId: string) =>
-    apiFetch<CancelRunResponse>(`/runs/${runId}/cancel`, { method: 'POST' }),
-  reviewRun: (runId: string, decision: 'approved' | 'rejected', actor: string, reason?: string) =>
-    apiFetch<ReviewResponse>(`/runs/${runId}/review`, {
+  getRunById: (obligationId: string, with_logs = true) =>
+    apiFetch<TraceDTO>(`/runs/${obligationId}?with_logs=${with_logs}`),
+  getRunEvents: (obligationId: string) => apiFetch<RunEvent[]>(`/runs/${obligationId}/events`),
+  cancelRun: (obligationId: string) =>
+    apiFetch<CancelRunResponse>(`/runs/${obligationId}/cancel`, { method: 'POST' }),
+  reviewRun: (obligationId: string, decision: 'approved' | 'rejected', actor: string, reason?: string) =>
+    apiFetch<ReviewResponse>(`/runs/${obligationId}/review`, {
       method: 'POST',
       body: JSON.stringify({ decision, actor, ...(reason ? { reason } : {}) }),
     }),

@@ -50,7 +50,7 @@ class TestRefresh:
 
         rows = await _rows(cache)
         assert len(rows) == 1
-        assert rows[0].run_id == state.run_id
+        assert rows[0].obligation_id == state.obligation_id
         assert rows[0].status == ReportedStatus.running.value
 
     async def test_state_transitions_are_reflected(
@@ -76,14 +76,14 @@ class TestRefresh:
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
-        state_repo.archive(state.flow_name, state.run_id)
+        state_repo.archive(state.flow_name, state.obligation_id)
         assert state_repo.list_states() == []
 
         await cache.refresh()
 
         rows = await _rows(cache)
         assert len(rows) == 1
-        assert rows[0].run_id == state.run_id
+        assert rows[0].obligation_id == state.obligation_id
         assert rows[0].status == ReportedStatus.completed.value
 
     async def test_ttl_throttles_scans(
@@ -103,7 +103,7 @@ class TestRefresh:
 
 @pytest.mark.unit
 class TestHistorySeeding:
-    """When history is configured, a newly-seen archived run_id is looked up
+    """When history is configured, a newly-seen archived obligation_id is looked up
     there first — coverage must be identical whether or not it's found."""
 
     def test_run_known_to_history_is_seeded_without_reading_state_json(
@@ -116,16 +116,16 @@ class TestHistorySeeding:
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
-        state_repo.archive(state.flow_name, state.run_id)
+        state_repo.archive(state.flow_name, state.obligation_id)
 
         history.record_many([state])  # sync — must run outside any event loop
 
         # Prove the cache doesn't need the blob's content: corrupt it before
         # refreshing.  Deleting it outright would also remove it from the
-        # listing _read_new_archived_states discovers run_ids from in the
+        # listing _read_new_archived_states discovers obligation_ids from in the
         # first place, which would prove nothing either way.
         from flowlet.storage import run_prefix
-        key = f"{run_prefix(state.flow_name, state.run_id)}/state.json"
+        key = f"{run_prefix(state.flow_name, state.obligation_id)}/state.json"
         store.put_object_sync(key, b"not valid json")
 
         cache = CacheRepository(state_repo=state_repo, store=store, history=history, ttl=0.0)
@@ -133,7 +133,7 @@ class TestHistorySeeding:
 
         rows = asyncio.run(_rows(cache))
         assert len(rows) == 1
-        assert rows[0].run_id == state.run_id
+        assert rows[0].obligation_id == state.obligation_id
         assert rows[0].status == ReportedStatus.completed.value
 
     async def test_run_unknown_to_history_falls_back_to_state_json(
@@ -146,7 +146,7 @@ class TestHistorySeeding:
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
-        state_repo.archive(state.flow_name, state.run_id)
+        state_repo.archive(state.flow_name, state.obligation_id)
         # Deliberately not recorded to history.
 
         cache = CacheRepository(state_repo=state_repo, store=store, history=history, ttl=0.0)
@@ -154,5 +154,5 @@ class TestHistorySeeding:
 
         rows = await _rows(cache)
         assert len(rows) == 1
-        assert rows[0].run_id == state.run_id
+        assert rows[0].obligation_id == state.obligation_id
         assert rows[0].status == ReportedStatus.completed.value

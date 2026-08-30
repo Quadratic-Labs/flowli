@@ -17,22 +17,22 @@ from flowlet.types import Timestamp
 logger = logging.getLogger(__name__)
 
 
-def run_prefix(flow_name: str, run_id: UUID) -> str:
+def run_prefix(flow_name: str, obligation_id: UUID) -> str:
     """Key prefix of a run's record folder, computed from its identity.
 
-    The date partition comes from the run_id's embedded uuid7 timestamp,
+    The date partition comes from the obligation_id's embedded uuid7 timestamp,
     so no listing is needed to locate a known run.
 
     Args:
         flow_name: The flow the run belongs to.
-        run_id: The run's UUID (uuid7).
+        obligation_id: The run's UUID (uuid7).
 
     Returns:
-        Key prefix ``runs/<flow_name>/<yyyy-mm-dd>/<run_id>`` (no trailing
+        Key prefix ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>`` (no trailing
         slash).
     """
-    date = Timestamp.from_uuid7(run_id).value.strftime("%Y-%m-%d")
-    return f"runs/{flow_name}/{date}/{run_id}"
+    date = Timestamp.from_uuid7(obligation_id).value.strftime("%Y-%m-%d")
+    return f"runs/{flow_name}/{date}/{obligation_id}"
 
 
 def append_lines(store: BlobStorage, key: str, lines: str) -> bool:

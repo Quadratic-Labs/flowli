@@ -25,7 +25,7 @@ app_logger = logging.getLogger("myapp.component")
 
 @flowlet.task()
 def my_task():
-    # Logs automatically include run_id, span_id, etc.
+    # Logs automatically include obligation_id, span_id, etc.
     app_logger.info("processing started")
 
     # Your code here
@@ -51,30 +51,30 @@ result = my_flow()
 # Emit run summary
 all_runs = ExecutionContext.get_all_runs()
 if all_runs:
-    run_id = str(all_runs[0].run_id)
-    get_logging_manager().emit_run_summary(run_id)
+    obligation_id = str(all_runs[0].obligation_id)
+    get_logging_manager().emit_run_summary(obligation_id)
 ```
 
 ## What You Get
 
-### 1. Full Logs (logs/{run_id}.jsonl)
+### 1. Full Logs (logs/{obligation_id}.jsonl)
 - All logs (Flowlet + your application)
 - JSON format, one per line
 - Automatic context injection
 
 ```jsonl
-{"logger":"flowlet","run_id":"019b...","span_id":"019b...","status":"starting",...}
-{"logger":"myapp.component","run_id":"019b...","span_id":"019b...","message":"processing started",...}
+{"logger":"flowlet","obligation_id":"019b...","span_id":"019b...","status":"starting",...}
+{"logger":"myapp.component","obligation_id":"019b...","span_id":"019b...","message":"processing started",...}
 ```
 
-### 2. Run Summary (runs/{run_id}.json)
+### 2. Run Summary (runs/{obligation_id}.json)
 - Only Flowlet logs (filtered)
 - Hierarchical structure
 - Timing information
 
 ```json
 {
-  "run_id": "019b...",
+  "obligation_id": "019b...",
   "span": {
     "span_id": "019b...",
     "span_type": "flow",
@@ -91,8 +91,8 @@ Every log automatically includes:
 
 | Field | Description | Example |
 |-------|-------------|---------|
-| `run_id` | UUID7 for this execution | `"019b49b8..."` |
-| `span_id` | Same as run_id | `"019b49b8..."` |
+| `obligation_id` | UUID7 for this execution | `"019b49b8..."` |
+| `span_id` | Same as obligation_id | `"019b49b8..."` |
 | `parent_span_id` | Parent flow/task ID | `"019b49a1..."` |
 | `span_type` | Type of execution | `"flow"` or `"task"` |
 | `name` | Flow/task name | `"my_task"` |
@@ -111,7 +111,7 @@ Every log automatically includes:
             v                  v
     ┌───────────────────────────────────┐
     │  ContextInjectingFilter            │
-    │  (adds run_id, span_id, etc.)     │
+    │  (adds obligation_id, span_id, etc.)     │
     └───────────────┬───────────────────┘
                     │
         ┌───────────┼───────────┐
@@ -122,7 +122,7 @@ Every log automatically includes:
    └────┬───┘  └────────┘  └──────┬───────┘
         │                          │
         v                          v
- logs/{run_id}              runs/{run_id}.json
+ logs/{obligation_id}              runs/{obligation_id}.json
  .jsonl                     (summary)
 ```
 

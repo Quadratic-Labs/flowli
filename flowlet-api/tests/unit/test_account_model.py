@@ -205,7 +205,7 @@ class TestSummaryProjection:
     def test_summary_carries_identity_and_contract(self):
         record = _record(kwargs={"x": 1}, max_retries=5)
         state = record.summary()
-        assert state.run_id == record.obligation.id
+        assert state.obligation_id == record.obligation.id
         assert state.kwargs == {"x": 1}
         assert state.max_retries == 5
 
@@ -303,7 +303,7 @@ class TestAccountThroughWorker:
         executor = FakeExecutor({job.flow_name: lambda **kw: None})
         execute_job(queue, executor, state_repo, signals, "w1")
 
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.parent_id == parent
         assert record.obligation.root_id == root
 
@@ -312,7 +312,7 @@ class TestAccountThroughWorker:
     ):
         job = make_flow_job()
         crashed = make_record(
-            run_id=job.run_id,
+            obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
             worker_id="dead-worker",
@@ -329,7 +329,7 @@ class TestAccountThroughWorker:
         rc = execute_job(queue, executor, state_repo, signals, "w2")
 
         assert rc == 0
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert len(record.attempts) == 2
         first, second = record.attempts
         # The dead attempt was closed by whoever discovered the crash …
@@ -360,7 +360,7 @@ class TestAccountThroughWorker:
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         outcomes = [a.outcome for a in record.attempts]
         decisions = [a.review.decision for a in record.attempts]
         assert outcomes == [

@@ -76,7 +76,7 @@ class TestRunHistory:
         asyncio.run(refresh_history_db(store, db_path))
 
         rows = _rows(db_path)
-        assert {row[0] for row in rows} == {str(s.run_id) for s in states}
+        assert {row[0] for row in rows} == {str(s.obligation_id) for s in states}
         assert all(row[1] == "etl" and row[2] == "completed" for row in rows)
         # state_json keeps the full serialized state for forward compatibility
         payload = json.loads(rows[0][3])
@@ -142,7 +142,7 @@ class TestRunHistoryQuerying:
         readable_history.record_many(states)
 
         rows = asyncio.run(readable_history.list_states(["etl"]))
-        assert {r.run_id for r in rows} == {s.run_id for s in states}
+        assert {r.obligation_id for r in rows} == {s.obligation_id for s in states}
         assert all(r.status == ReportedStatus.completed for r in rows)
 
     def test_list_states_respects_last_n(self, readable_history, make_run_state):
@@ -203,7 +203,7 @@ class TestSweeperHistoryIntegration:
         stats = sweep(state_repo, self._FakeQueue(), archive_grace=3600, history=history)
 
         assert stats.archived == 1
-        assert state_repo.read(state.flow_name, state.run_id) is None
+        assert state_repo.read(state.flow_name, state.obligation_id) is None
         assert asyncio.run(history_log.list_commits()) == [1]
 
     def test_sweep_without_history_archives_as_before(self, store, make_run_state):
@@ -232,7 +232,7 @@ class TestSweeperHistoryIntegration:
 
         assert stats.archived == 0
         assert stats.errors == 1
-        assert state_repo.read(state.flow_name, state.run_id) is not None
+        assert state_repo.read(state.flow_name, state.obligation_id) is not None
 
     def test_recent_closed_run_not_recorded(
         self, store, history_log, history, make_run_state

@@ -217,7 +217,7 @@ def deploy_to_prod_flow(target: str = "prod"):
     obligation then suspends as ``awaiting_review`` instead of
     auto-discharging. Resolve it with:
 
-        POST /runs/{run_id}/review {"decision": "approved", "actor": "lead"}
+        POST /runs/{obligation_id}/review {"decision": "approved", "actor": "lead"}
 
     Only the 'lead' actor is eligible (see the gate policy above); any other
     actor gets a 403. 'rejected' reopens the obligation for another attempt.

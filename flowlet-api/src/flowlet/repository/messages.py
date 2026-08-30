@@ -2,7 +2,7 @@
 
 Where a signal is a single-shot latch (one name, first payload wins), a
 message channel is a stream: senders append immutable objects under
-``messages/<flow_name>/<run_id>/<topic>/<uuid7>.json`` and the obligation's
+``messages/<flow_name>/<obligation_id>/<topic>/<uuid7>.json`` and the obligation's
 executor consumes them in order through ``flowlet.recv``.  The uuid7 hex id
 is the ordering — the blob store's lexicographic prefix listing returns the
 topic in send order with no index.
@@ -77,23 +77,23 @@ class MessageRepository:
     store: BlobStorage
 
     @staticmethod
-    def _prefix(flow_name: str, run_id: UUID, topic: str | None = None) -> str:
-        base = f"messages/{flow_name}/{run_id}/"
+    def _prefix(flow_name: str, obligation_id: UUID, topic: str | None = None) -> str:
+        base = f"messages/{flow_name}/{obligation_id}/"
         return f"{base}{topic}/" if topic is not None else base
 
     @classmethod
-    def _key(cls, flow_name: str, run_id: UUID, topic: str, message_id: str) -> str:
-        return f"{cls._prefix(flow_name, run_id, topic)}{message_id}.json"
+    def _key(cls, flow_name: str, obligation_id: UUID, topic: str, message_id: str) -> str:
+        return f"{cls._prefix(flow_name, obligation_id, topic)}{message_id}.json"
 
     @classmethod
-    def _dedup_key(cls, flow_name: str, run_id: UUID, topic: str, dedup: str) -> str:
+    def _dedup_key(cls, flow_name: str, obligation_id: UUID, topic: str, dedup: str) -> str:
         digest = hashlib.sha256(dedup.encode()).hexdigest()
-        return f"{cls._prefix(flow_name, run_id, topic)}_dedup/{digest}.json"
+        return f"{cls._prefix(flow_name, obligation_id, topic)}_dedup/{digest}.json"
 
     def send(
         self,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         topic: str,
         body: Any = None,
         *,
@@ -109,7 +109,7 @@ class MessageRepository:
 
         Args:
             flow_name: Flow the run belongs to.
-            run_id: The run's UUID.
+            obligation_id: The run's UUID.
             topic: Channel name (see :func:`validate_topic`).
             body: JSON-safe message payload.
             actor: Who sent it — recorded in the message.
@@ -129,7 +129,7 @@ class MessageRepository:
         if dedup_key is not None:
             claim = claim_sync(
                 self.store,
-                self._dedup_key(flow_name, run_id, topic, dedup_key),
+                self._dedup_key(flow_name, obligation_id, topic, dedup_key),
                 {"message_id": message_id},
             )
             if not claim.won:
@@ -144,16 +144,16 @@ class MessageRepository:
         # exist (the winner wrote it) or be missing (the winner crashed in
         # between) — either way the channel converges on one object.
         claim_sync(
-            self.store, self._key(flow_name, run_id, topic, message_id), payload
+            self.store, self._key(flow_name, obligation_id, topic, message_id), payload
         )
         return message_id, created
 
     def read(
-        self, flow_name: str, run_id: UUID, topic: str, message_id: str
+        self, flow_name: str, obligation_id: UUID, topic: str, message_id: str
     ) -> MessageDoc | None:
         """Read one message by id, or None when it does not exist."""
         obj = self.store.get_object_sync(
-            self._key(flow_name, run_id, topic, message_id)
+            self._key(flow_name, obligation_id, topic, message_id)
         )
         if obj is None:
             return None
@@ -162,7 +162,7 @@ class MessageRepository:
         except Exception:
             logger.exception(
                 "message_parse_error",
-                extra={"run_id": str(run_id), "topic": topic, "id": message_id},
+                extra={"obligation_id": str(obligation_id), "topic": topic, "id": message_id},
             )
             return None
         return MessageDoc(
@@ -176,7 +176,7 @@ class MessageRepository:
     def list_topic(
         self,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         topic: str,
         *,
         after: str | None = None,
@@ -185,11 +185,11 @@ class MessageRepository:
 
         Args:
             flow_name: Flow the run belongs to.
-            run_id: The run's UUID.
+            obligation_id: The run's UUID.
             topic: Channel name.
             after: Message id to resume past (exclusive); None from the start.
         """
-        prefix = self._prefix(flow_name, run_id, topic)
+        prefix = self._prefix(flow_name, obligation_id, topic)
         ids = sorted(
             key.removeprefix(prefix).removesuffix(".json")
             for key in self.store.list_objects_sync(prefix)
@@ -199,14 +199,14 @@ class MessageRepository:
         for message_id in ids:
             if after is not None and message_id <= after:
                 continue
-            doc = self.read(flow_name, run_id, topic, message_id)
+            doc = self.read(flow_name, obligation_id, topic, message_id)
             if doc is not None:
                 found.append(doc)
         return found
 
-    def counts(self, flow_name: str, run_id: UUID) -> dict[str, int]:
+    def counts(self, flow_name: str, obligation_id: UUID) -> dict[str, int]:
         """Total messages per topic for a run (dedup claims excluded)."""
-        prefix = self._prefix(flow_name, run_id)
+        prefix = self._prefix(flow_name, obligation_id)
         totals: dict[str, int] = {}
         for key in self.store.list_objects_sync(prefix):
             parts = key.removeprefix(prefix).split("/")
@@ -215,9 +215,9 @@ class MessageRepository:
             totals[parts[0]] = totals.get(parts[0], 0) + 1
         return totals
 
-    def clear(self, flow_name: str, run_id: UUID) -> None:
+    def clear(self, flow_name: str, obligation_id: UUID) -> None:
         """Remove all of a run's messages (archive-time cleanup)."""
-        for key in self.store.list_objects_sync(self._prefix(flow_name, run_id)):
+        for key in self.store.list_objects_sync(self._prefix(flow_name, obligation_id)):
             try:
                 self.store.delete_object_sync(key)
             except Exception:

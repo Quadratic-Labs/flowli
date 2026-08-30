@@ -130,7 +130,7 @@ async def client_side_example(storage_root: Path):
             # Example 2: Get specific run with hierarchy
             print("\n3. Getting run hierarchy for first run...")
             first_run = runs[0]
-            summary = client.get_run_summary(first_run.run_id)
+            summary = client.get_run_summary(first_run.obligation_id)
 
             if summary:
                 print(f"   Run: {summary.span_name}")
@@ -168,7 +168,7 @@ async def client_side_example(storage_root: Path):
                 if parent:
                     print(f"   Parent of first child: {parent.name}")
 
-                children = client.get_run_children(first_run.run_id)
+                children = client.get_run_children(first_run.obligation_id)
                 print(f"   Direct children of root: {len(children)}")
 
             print("\n✓ Client-side querying complete!")

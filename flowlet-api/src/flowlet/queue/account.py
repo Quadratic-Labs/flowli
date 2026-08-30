@@ -91,7 +91,7 @@ class AccountJobSource:
         )
         record = ObligationRecord(
             obligation=Obligation(
-                id=job.run_id,
+                id=job.obligation_id,
                 flow_name=job.flow_name,
                 kwargs=job.kwargs,
                 parent_id=job.parent_id,
@@ -102,10 +102,10 @@ class AccountJobSource:
                 created_at=Timestamp.now(),
             )
         )
-        created = self.state_repo.create(job.flow_name, job.run_id, record)
+        created = self.state_repo.create(job.flow_name, job.obligation_id, record)
         logger.info(
             "account_obligation_recorded" if created else "account_obligation_exists",
-            extra={"run_id": str(job.run_id), "flow_name": job.flow_name},
+            extra={"obligation_id": str(job.obligation_id), "flow_name": job.flow_name},
         )
         return job.job_id
 
@@ -121,19 +121,19 @@ class AccountJobSource:
             for view in self.state_repo.list_views()
             if _claimable(view, now)
         ]
-        # uuid7 run_ids: chronological order = submission order.
+        # uuid7 obligation_ids: chronological order = submission order.
         candidates.sort(key=lambda view: view.record.obligation.id)
         for view in candidates:
             obligation = view.record.obligation
             if self.signals is not None and self.signals.paused_scopes(
                 flow_name=obligation.flow_name,
-                run_id=obligation.id,
+                obligation_id=obligation.id,
                 parent_id=obligation.parent_id,
                 root_id=obligation.root_id,
             ):
                 continue
             return FlowJob(
-                run_id=obligation.id,
+                obligation_id=obligation.id,
                 flow_name=obligation.flow_name,
                 kwargs=obligation.kwargs,
                 max_retries=obligation.max_retries,

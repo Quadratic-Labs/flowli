@@ -156,7 +156,7 @@ class TestExecuteJobSuccess:
 
         assert rc == 0
         assert seen == [{"x": 1}]
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.completed
         assert view.state.attempt == 1
         assert view.state.ended_at is not None
@@ -185,7 +185,7 @@ class TestExecuteJobSuccess:
         observed = []
 
         def flow(**kw):
-            view = state_repo.read(job.flow_name, job.run_id)
+            view = state_repo.read(job.flow_name, job.obligation_id)
             observed.append(view)
 
         queue = FakeQueue([job])
@@ -218,14 +218,14 @@ class TestExecuteJobRetries:
         )
 
         assert rc == 1
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.pending
         assert view.state.attempt == 1
         assert view.holder is None  # parked, reclaimable
-        # A fresh wake-up message with backoff, carrying the same run_id and kwargs
+        # A fresh wake-up message with backoff, carrying the same obligation_id and kwargs
         assert len(queue.enqueued) == 1
         retry_job, delay = queue.enqueued[0]
-        assert retry_job.run_id == job.run_id
+        assert retry_job.obligation_id == job.obligation_id
         assert retry_job.job_id != job.job_id
         assert retry_job.kwargs == {"a": 1}
         assert delay > 0
@@ -240,7 +240,7 @@ class TestExecuteJobRetries:
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.attempt == 2
         assert view.state.status == ReportedStatus.pending
         assert view.epoch == 2  # one epoch bump per (re)acquisition
@@ -259,7 +259,7 @@ class TestExecuteJobRetries:
         q2 = FakeQueue([job])
         assert execute_job(q2, executor, state_repo, signals, "w1") == 1
 
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.failed
         assert view.state.attempt == 2
         assert view.state.ended_at is not None
@@ -272,7 +272,7 @@ class TestExecuteJobSkips:
     ):
         job = make_flow_job()
         done = make_run_state(
-            run_id=job.run_id,
+            obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.completed,
         )
@@ -292,14 +292,14 @@ class TestExecuteJobSkips:
         assert calls == []
         assert queue.acked == [job.job_id]
         # The closed document was never rewritten (epoch untouched).
-        assert state_repo.read(job.flow_name, job.run_id).epoch == 1
+        assert state_repo.read(job.flow_name, job.obligation_id).epoch == 1
 
     def test_busy_state_acks_duplicate_wakeup(
         self, state_repo, signals, make_flow_job, make_run_state, seed_lease, store
     ):
         job = make_flow_job()
         busy = make_run_state(
-            run_id=job.run_id,
+            obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
             worker_id="other-worker",
@@ -322,7 +322,7 @@ class TestExecuteJobSkips:
         assert rc == 2
         assert calls == []
         assert queue.acked == [job.job_id]
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.holder == "other-worker"  # untouched
 
 
@@ -332,7 +332,7 @@ class TestExecuteJobTakeover:
     ):
         job = make_flow_job()
         expired = make_run_state(
-            run_id=job.run_id,
+            obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
             worker_id="dead-worker",
@@ -358,7 +358,7 @@ class TestExecuteJobTakeover:
         assert rc == 0
         # Takeover re-executes with the kwargs persisted in the state payload.
         assert seen == [{"orig": True}]
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.completed
         assert view.state.attempt == 2
         assert view.state.worker_id == "w2"
@@ -371,7 +371,7 @@ class TestExecuteJobTakeover:
         # Three consuming attempts spend the budget; the dead in-flight
         # fourth is a free crash — exhaustion comes from the real failures.
         expired = make_run_state(
-            run_id=job.run_id,
+            obligation_id=job.obligation_id,
             flow_name=job.flow_name,
             status=ReportedStatus.running,
             worker_id="dead-worker",
@@ -395,7 +395,7 @@ class TestExecuteJobTakeover:
 
         assert rc == 1
         assert calls == []
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.failed
         assert view.state.worker_id == "dead-worker"  # the attempt's executor
         assert queue.acked == [job.job_id]
@@ -421,7 +421,7 @@ class TestStateRepositoryFiles:
     ):
         state = make_run_state()
         seed_lease(store, state)
-        state_repo.delete(state.flow_name, state.run_id)
+        state_repo.delete(state.flow_name, state.obligation_id)
 
         assert state_repo.store.list_objects_sync("state/") == []
 
@@ -430,9 +430,9 @@ class TestStateRepositoryFiles:
     ):
         state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
-        state_repo.archive(state.flow_name, state.run_id)
+        state_repo.archive(state.flow_name, state.obligation_id)
 
-        assert state_repo.read(state.flow_name, state.run_id) is None
+        assert state_repo.read(state.flow_name, state.obligation_id) is None
         archived = list((tmp_path / "runs").rglob("state.json"))
         assert len(archived) == 1
-        assert str(state.run_id) in str(archived[0].parent)
+        assert str(state.obligation_id) in str(archived[0].parent)

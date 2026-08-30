@@ -34,33 +34,33 @@ def events(store, feed):
     return EventLog(store=store, feed=feed)
 
 
-def _append(events, run_id, event, **kwargs):
+def _append(events, obligation_id, event, **kwargs):
     events.append(
-        flow_name="test_flow", run_id=run_id, event=event, actor="w1", **kwargs
+        flow_name="test_flow", obligation_id=obligation_id, event=event, actor="w1", **kwargs
     )
 
 
 @pytest.mark.unit
 class TestTransitionFeed:
     def test_events_land_on_the_feed_in_order(self, events, feed):
-        run_id = uuid7()
-        _append(events, run_id, "claimed", attempt=1)
-        _append(events, run_id, "completed", attempt=1, to_status="completed")
+        obligation_id = uuid7()
+        _append(events, obligation_id, "claimed", attempt=1)
+        _append(events, obligation_id, "completed", attempt=1, to_status="completed")
 
         page = feed.read()
         assert [e["event"] for e in page.entries] == ["claimed", "completed"]
-        assert page.entries[0]["run_id"] == str(run_id)
+        assert page.entries[0]["obligation_id"] == str(obligation_id)
         assert page.entries[1]["to"] == "completed"
         assert all("seq" in e for e in page.entries)
         assert page.cursor > 0
 
     def test_cursor_resumes_without_skip_or_replay(self, events, feed):
-        run_id = uuid7()
-        _append(events, run_id, "claimed")
+        obligation_id = uuid7()
+        _append(events, obligation_id, "claimed")
         first = feed.read()
         assert [e["event"] for e in first.entries] == ["claimed"]
 
-        _append(events, run_id, "completed")
+        _append(events, obligation_id, "completed")
         second = feed.read(after=first.cursor)
         assert [e["event"] for e in second.entries] == ["completed"]
 
@@ -70,9 +70,9 @@ class TestTransitionFeed:
         assert tail.cursor == second.cursor
 
     def test_limit_pages_on_commit_boundaries(self, events, feed):
-        run_id = uuid7()
+        obligation_id = uuid7()
         for name in ("a", "b", "c"):
-            _append(events, run_id, name)
+            _append(events, obligation_id, name)
 
         collected = []
         cursor = 0
@@ -97,11 +97,11 @@ class TestTransitionFeed:
             raise RuntimeError("log unavailable")
 
         monkeypatch.setattr(TransitionFeed, "_append", boom)
-        run_id = uuid7()
-        _append(events, run_id, "claimed")  # must not raise
+        obligation_id = uuid7()
+        _append(events, obligation_id, "claimed")  # must not raise
 
         # The per-run event log still has the event; the feed simply lost it.
-        assert [e["event"] for e in events.read("test_flow", run_id)] == [
+        assert [e["event"] for e in events.read("test_flow", obligation_id)] == [
             "claimed"
         ]
 
@@ -127,7 +127,7 @@ class TestWorkerLifecycleOnTheFeed:
         assert rc == 0
         page = feed.read()
         assert any(
-            e["event"] == "completed" and e["run_id"] == str(job.run_id)
+            e["event"] == "completed" and e["obligation_id"] == str(job.obligation_id)
             for e in page.entries
         )
 
@@ -135,8 +135,8 @@ class TestWorkerLifecycleOnTheFeed:
 @pytest.mark.unit
 class TestTransitionsEndpoint:
     def test_list_transitions_serves_entries_and_cursor(self, events, feed):
-        run_id = uuid7()
-        _append(events, run_id, "claimed")
+        obligation_id = uuid7()
+        _append(events, obligation_id, "claimed")
         controller = FlowController(transitions=feed)
 
         resp = controller.list_transitions()

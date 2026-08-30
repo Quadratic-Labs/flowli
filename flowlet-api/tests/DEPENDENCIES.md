@@ -178,7 +178,7 @@ from tests.factories import RunFactory, RunLogFactory
 def test_with_factory(db_session):
     # Create test data easily
     run = RunFactory(name="test_flow", run_type="flow")
-    log = RunLogFactory(run_id=run.run_id, status="success")
+    log = RunLogFactory(obligation_id=run.obligation_id, status="success")
 
     # Use in tests
     assert run.name == "test_flow"

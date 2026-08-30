@@ -16,7 +16,7 @@ One container image runs three roles on Azure Container Apps:
                                        │ CAS-claim lease → run → finalize
                                        ▼
    Azure Blob Storage   <── state/  (active runs, CAS via ETag)
-        "flowlet"       <── runs/<flow>/<date>/<run_id>/  (spans + state.json)
+        "flowlet"       <── runs/<flow>/<date>/<obligation_id>/  (spans + state.json)
                                        ▲
    flowlet-sweeper (Cron job, */5) ────┘ recover expired leases,
                                          re-enqueue, archive closed runs

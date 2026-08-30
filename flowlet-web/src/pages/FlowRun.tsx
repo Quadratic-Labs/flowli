@@ -40,11 +40,11 @@ export default function FlowRun() {
       const resp = await api.submitFlow(name, kwargs, dispatchKey.trim() || undefined);
       setToast({
         msg: resp.deduplicated
-          ? `Dispatch key already submitted — resolved to existing run ${resp.run_id.slice(0, 8)}…`
-          : `Flow "${name}" submitted as run ${resp.run_id.slice(0, 8)}…`,
+          ? `Dispatch key already submitted — resolved to existing run ${resp.obligation_id.slice(0, 8)}…`
+          : `Flow "${name}" submitted as run ${resp.obligation_id.slice(0, 8)}…`,
         ok: true,
       });
-      setTimeout(() => nav(`/runs/${resp.run_id}?flow=${encodeURIComponent(name)}`), 1500);
+      setTimeout(() => nav(`/runs/${resp.obligation_id}?flow=${encodeURIComponent(name)}`), 1500);
     } catch (err) {
       setToast({ msg: `Failed: ${err}`, ok: false });
     } finally {

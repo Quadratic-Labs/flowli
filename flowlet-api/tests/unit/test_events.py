@@ -31,8 +31,8 @@ def event_log(store):
     return EventLog(store=store)
 
 
-def _read_events(store, flow_name, run_id):
-    obj = store.get_object_sync(f"{run_prefix(flow_name, run_id)}/events.jsonl")
+def _read_events(store, flow_name, obligation_id):
+    obj = store.get_object_sync(f"{run_prefix(flow_name, obligation_id)}/events.jsonl")
     if obj is None:
         return []
     return [json.loads(line) for line in obj.data.decode().splitlines()]
@@ -45,41 +45,41 @@ def _read_events(store, flow_name, run_id):
 
 class TestAppend:
     def test_event_lands_in_run_folder(self, event_log, store):
-        run_id = uuid7()
+        obligation_id = uuid7()
         event_log.append(
-            flow_name="flow", run_id=run_id, event="submitted", actor="api"
+            flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api"
         )
-        events = _read_events(store, "flow", run_id)
+        events = _read_events(store, "flow", obligation_id)
         assert len(events) == 1
         assert events[0]["event"] == "submitted"
         assert events[0]["actor"] == "api"
-        assert events[0]["run_id"] == str(run_id)
+        assert events[0]["obligation_id"] == str(obligation_id)
         assert events[0]["flow_name"] == "flow"
         assert "ts" in events[0]
 
     def test_appends_accumulate_in_order(self, event_log, store):
-        run_id = uuid7()
+        obligation_id = uuid7()
         for name in ("submitted", "claimed", "completed"):
             event_log.append(
-                flow_name="flow", run_id=run_id, event=name, actor="w1"
+                flow_name="flow", obligation_id=obligation_id, event=name, actor="w1"
             )
-        events = _read_events(store, "flow", run_id)
+        events = _read_events(store, "flow", obligation_id)
         assert [e["event"] for e in events] == ["submitted", "claimed", "completed"]
 
     def test_optional_fields_are_omitted_when_absent(self, event_log, store):
-        run_id = uuid7()
+        obligation_id = uuid7()
         event_log.append(
-            flow_name="flow", run_id=run_id, event="submitted", actor="api"
+            flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api"
         )
-        record = _read_events(store, "flow", run_id)[0]
+        record = _read_events(store, "flow", obligation_id)[0]
         for key in ("attempt", "from", "to", "cause", "details"):
             assert key not in record
 
     def test_transition_fields_are_recorded(self, event_log, store):
-        run_id = uuid7()
+        obligation_id = uuid7()
         event_log.append(
             flow_name="flow",
-            run_id=run_id,
+            obligation_id=obligation_id,
             event="claimed",
             actor="w1",
             attempt=2,
@@ -88,7 +88,7 @@ class TestAppend:
             cause="retry",
             details={"case": "ready"},
         )
-        record = _read_events(store, "flow", run_id)[0]
+        record = _read_events(store, "flow", obligation_id)[0]
         assert record["attempt"] == 2
         assert record["from"] == "pending"
         assert record["to"] == "running"
@@ -100,7 +100,7 @@ class TestAppend:
         # keys under it — the append must swallow the resulting error.
         (tmp_path / "runs").write_text("not a directory")
         log = EventLog(store=store)
-        log.append(flow_name="flow", run_id=uuid7(), event="submitted", actor="api")
+        log.append(flow_name="flow", obligation_id=uuid7(), event="submitted", actor="api")
 
 
 # ============================================================================
@@ -110,28 +110,28 @@ class TestAppend:
 
 class TestRead:
     def test_read_returns_appended_events(self, event_log):
-        run_id = uuid7()
-        event_log.append(flow_name="flow", run_id=run_id, event="submitted", actor="api")
-        event_log.append(flow_name="flow", run_id=run_id, event="claimed", actor="w1")
-        records = event_log.read("flow", run_id)
+        obligation_id = uuid7()
+        event_log.append(flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api")
+        event_log.append(flow_name="flow", obligation_id=obligation_id, event="claimed", actor="w1")
+        records = event_log.read("flow", obligation_id)
         assert [r["event"] for r in records] == ["submitted", "claimed"]
 
     def test_read_missing_file_returns_empty(self, event_log):
         assert event_log.read("flow", uuid7()) == []
 
     def test_read_skips_malformed_lines(self, event_log, store):
-        run_id = uuid7()
-        event_log.append(flow_name="flow", run_id=run_id, event="submitted", actor="api")
-        key = f"{run_prefix('flow', run_id)}/events.jsonl"
+        obligation_id = uuid7()
+        event_log.append(flow_name="flow", obligation_id=obligation_id, event="submitted", actor="api")
+        key = f"{run_prefix('flow', obligation_id)}/events.jsonl"
         obj = store.get_object_sync(key)
         store.put_object_sync(key, obj.data + b"not json\n", if_match=obj.etag)
-        event_log.append(flow_name="flow", run_id=run_id, event="claimed", actor="w1")
-        records = event_log.read("flow", run_id)
+        event_log.append(flow_name="flow", obligation_id=obligation_id, event="claimed", actor="w1")
+        records = event_log.read("flow", obligation_id)
         assert [r["event"] for r in records] == ["submitted", "claimed"]
 
 
 # ============================================================================
-# Controller — GET /runs/{run_id}/events
+# Controller — GET /runs/{obligation_id}/events
 # ============================================================================
 
 
@@ -165,11 +165,11 @@ class TestRunEventsEndpoint:
         state = make_run_state(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
-            flow_name=state.flow_name, run_id=state.run_id,
+            flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="claimed", actor="w1",
         )
 
-        response = await controller.get_run_events(_request(), state.run_id)
+        response = await controller.get_run_events(_request(), state.obligation_id)
         assert [r["event"] for r in _body_events(response)] == ["claimed"]
 
     @pytest.mark.asyncio
@@ -180,9 +180,9 @@ class TestRunEventsEndpoint:
 
         from flowlet.api.controller import FlowController
 
-        run_id = uuid7()
+        obligation_id = uuid7()
         event_log.append(
-            flow_name="flow", run_id=run_id, event="completed", actor="w1"
+            flow_name="flow", obligation_id=obligation_id, event="completed", actor="w1"
         )
         querier = AsyncMock()
         querier.find_flow_name = AsyncMock(return_value="flow")
@@ -190,7 +190,7 @@ class TestRunEventsEndpoint:
             state_repo=state_repo, events=event_log, querier=querier,
         )
 
-        response = await controller.get_run_events(_request(), run_id)
+        response = await controller.get_run_events(_request(), obligation_id)
         assert [r["event"] for r in _body_events(response)] == ["completed"]
 
     @pytest.mark.asyncio
@@ -219,25 +219,25 @@ class TestRunEventsEndpoint:
         state = make_run_state(status=ReportedStatus.running)
         seed_lease(store, state)
         event_log.append(
-            flow_name=state.flow_name, run_id=state.run_id,
+            flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="claimed", actor="w1",
         )
 
-        first = await controller.get_run_events(_request(), state.run_id)
+        first = await controller.get_run_events(_request(), state.obligation_id)
         etag = first.headers["etag"]
         second = await controller.get_run_events(
-            _request({"If-None-Match": etag}), state.run_id
+            _request({"If-None-Match": etag}), state.obligation_id
         )
         assert second.status_code == 304
         assert second.headers["etag"] == etag
 
         # New content invalidates the tag — full body again.
         event_log.append(
-            flow_name=state.flow_name, run_id=state.run_id,
+            flow_name=state.flow_name, obligation_id=state.obligation_id,
             event="completed", actor="w1",
         )
         third = await controller.get_run_events(
-            _request({"If-None-Match": etag}), state.run_id
+            _request({"If-None-Match": etag}), state.obligation_id
         )
         assert third.status_code == 200
         assert third.headers["etag"] != etag
@@ -264,7 +264,7 @@ class TestWorkerEmission:
         rc = execute_job(queue, executor, state_repo, signals, "w1", events=event_log)
 
         assert rc == 0
-        names = [e["event"] for e in _read_events(store, job.flow_name, job.run_id)]
+        names = [e["event"] for e in _read_events(store, job.flow_name, job.obligation_id)]
         assert names == ["claimed", "completed"]
 
     def test_failure_emits_retry_then_final_failure(
@@ -287,7 +287,7 @@ class TestWorkerEmission:
         queue.jobs = [retry_job]
         execute_job(queue, executor, state_repo, signals, "w1", events=event_log)  # attempt 2
 
-        events = _read_events(store, job.flow_name, job.run_id)
+        events = _read_events(store, job.flow_name, job.obligation_id)
         names = [e["event"] for e in events]
         assert names == ["claimed", "retry_scheduled", "claimed", "failed"]
         assert events[1]["cause"] == "ValueError"
@@ -313,7 +313,7 @@ class TestSweeperEmission:
         stats = sweep(state_repo, queue, events=event_log)
 
         assert stats.requeued == 1
-        events = _read_events(store, state.flow_name, state.run_id)
+        events = _read_events(store, state.flow_name, state.obligation_id)
         assert [e["event"] for e in events] == ["requeued"]
         assert events[0]["actor"] == "sweeper"
         assert events[0]["cause"] == "lease_expired"

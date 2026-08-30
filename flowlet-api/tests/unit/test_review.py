@@ -68,7 +68,7 @@ def _exhausted_gated_record(job) -> ObligationRecord:
     """
     record = ObligationRecord(
         obligation=Obligation(
-            id=job.run_id, flow_name=job.flow_name, max_retries=1,
+            id=job.obligation_id, flow_name=job.flow_name, max_retries=1,
             review_policy=GATED, created_at=Timestamp.now(),
         )
     )
@@ -110,7 +110,7 @@ class TestGatedSuspension:
         rc = _run_gated(state_repo, signals, job)
 
         assert rc == 0
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         record = view.record
         assert record.obligation.status == ObligationStatus.awaiting_review
         assert record.last_attempt.outcome == AttemptOutcome.returned
@@ -124,7 +124,7 @@ class TestGatedSuspension:
     ):
         job = make_flow_job()
         _run_gated(state_repo, signals, job)
-        epoch_before = state_repo.read(job.flow_name, job.run_id).epoch
+        epoch_before = state_repo.read(job.flow_name, job.obligation_id).epoch
 
         executed = []
         executor = FakeExecutor({job.flow_name: lambda **kw: executed.append(1)})
@@ -135,7 +135,7 @@ class TestGatedSuspension:
 
         assert rc == 2
         assert executed == []
-        assert state_repo.read(job.flow_name, job.run_id).epoch == epoch_before
+        assert state_repo.read(job.flow_name, job.obligation_id).epoch == epoch_before
 
     def test_sweeper_leaves_gated_runs_alone(
         self, state_repo, signals, make_flow_job
@@ -165,14 +165,14 @@ class TestReview:
         controller = _Controller(state_repo, signals)
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(
                 decision="approved", actor="reviewer-7", reason="looks good"
             ),
         )
 
         assert resp.status == "completed"
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.discharged
         review = record.last_attempt.review
         assert review.decision == Decision.approved
@@ -188,17 +188,17 @@ class TestReview:
         controller = _Controller(state_repo, signals, queue=queue)
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="rejected", actor="reviewer-7"),
         )
 
         assert resp.status == "pending"
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.open
         assert record.last_attempt.review.decision == Decision.rejected
         # A wake-up carrying provenance was enqueued …
         wake, _ = queue.enqueued[0]
-        assert wake.run_id == job.run_id
+        assert wake.obligation_id == job.obligation_id
         assert wake.caused_by == "review:rejected_by:reviewer-7"
         # … and a worker executes attempt 2, suspending again for judgment
         # (the obligation was created gated; the policy is fixed at creation).
@@ -208,7 +208,7 @@ class TestReview:
             state_repo, signals, "w2",
         )
         assert rc == 0
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert len(record.attempts) == 2
         assert record.obligation.status == ObligationStatus.awaiting_review
 
@@ -222,7 +222,7 @@ class TestReview:
         controller = _Controller(state_repo, signals)
 
         controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(
                 decision="rejected", actor="reviewer-7",
                 reason="needs_rework",
@@ -230,7 +230,7 @@ class TestReview:
             ),
         )
 
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         review = record.last_attempt.review
         assert review.decision == Decision.rejected
         assert review.evidence_ref == {"report": "sha256:abc123"}
@@ -243,12 +243,12 @@ class TestReview:
         controller = _Controller(state_repo, signals)
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="rejected", actor="reviewer-7"),
         )
 
         assert resp.status == "failed"
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.abandoned
         assert record.obligation.cause == "rejected"
 
@@ -262,16 +262,16 @@ class TestReview:
 
         with pytest.raises(HTTPException) as exc:
             controller.review_run(
-                job.run_id,
+                job.obligation_id,
                 ReviewRequest(decision="approved", actor="intern-1"),
             )
         assert exc.value.status_code == 403
         # The account is untouched — the refusal never reached the record.
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.awaiting_review
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="approved", actor="admin-2"),
         )
         assert resp.status == "completed"
@@ -297,10 +297,10 @@ class TestReview:
         _run_gated(state_repo, signals, job)
         controller = _Controller(state_repo, signals)
 
-        resp = controller.cancel_run(job.run_id)
+        resp = controller.cancel_run(job.obligation_id)
 
         assert resp.status == ReportedStatus.canceled
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.abandoned
         assert record.obligation.cause == "canceled"
 
@@ -325,7 +325,7 @@ class TestGatedExhaustion:
         rc = _run_gated(state_repo, signals, job, fn=boom)
 
         assert rc == 1
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         record = view.record
         assert record.obligation.status == ObligationStatus.awaiting_review
         assert record.last_attempt.outcome == AttemptOutcome.raised
@@ -352,7 +352,7 @@ class TestGatedExhaustion:
         )
 
         assert rc == 1
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.open
         assert record.last_attempt.review.decision == Decision.rejected
         assert record.last_attempt.review.by == "auto"
@@ -381,7 +381,7 @@ class TestGatedExhaustion:
 
         assert rc == 2
         assert calls == []  # nothing executed — parked, not re-attempted
-        recovered = state_repo.read(job.flow_name, job.run_id).record
+        recovered = state_repo.read(job.flow_name, job.obligation_id).record
         assert recovered.obligation.status == ObligationStatus.awaiting_review
         assert recovered.last_attempt.outcome == AttemptOutcome.crashed
         assert recovered.last_attempt.review is None  # judgment pending
@@ -393,7 +393,7 @@ class TestGatedExhaustion:
         spends the budget, so the claim accounts the crash and re-runs."""
         job = make_flow_job(max_retries=1)
         obligation = Obligation(
-            id=job.run_id, flow_name=job.flow_name, max_retries=1,
+            id=job.obligation_id, flow_name=job.flow_name, max_retries=1,
             review_policy=GATED, created_at=Timestamp.now(),
         )
         record = ObligationRecord(obligation=obligation)
@@ -412,7 +412,7 @@ class TestGatedExhaustion:
 
         assert rc == 0
         assert calls == [1]  # the work re-ran
-        recovered = state_repo.read(job.flow_name, job.run_id).record
+        recovered = state_repo.read(job.flow_name, job.obligation_id).record
         crashed = recovered.attempts[0]
         assert crashed.outcome == AttemptOutcome.crashed
         assert crashed.review.decision == Decision.rejected
@@ -439,7 +439,7 @@ class TestGatedExhaustion:
         assert stats.failed == 0
         assert stats.requeued == 0
         assert queue.enqueued == []  # a wake-up could not execute anything
-        recovered = state_repo.read(job.flow_name, job.run_id).record
+        recovered = state_repo.read(job.flow_name, job.obligation_id).record
         assert recovered.obligation.status == ObligationStatus.awaiting_review
         assert recovered.last_attempt.outcome == AttemptOutcome.crashed
         assert recovered.last_attempt.review is None
@@ -463,13 +463,13 @@ class TestGatedExhaustion:
             review_policy_for=lambda _f: GATED,
         )
         assert rc == 1
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.awaiting_review
 
         queue = FakeQueue([])
         controller = _Controller(state_repo, signals, queue=queue)
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(
                 decision="rejected", actor="human:tz",
                 reason="ssh key fixed", extend_budget=1,
@@ -477,7 +477,7 @@ class TestGatedExhaustion:
         )
 
         assert resp.status == "pending"
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.open
         assert record.obligation.max_retries == 2  # budget extended
         assert record.last_attempt.review.decision == Decision.rejected
@@ -489,12 +489,12 @@ class TestGatedExhaustion:
         queue.jobs = [wake]
         rc = execute_job(queue, executor, state_repo, signals, "w2")
         assert rc == 0
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert len(record.attempts) == 2
         assert record.obligation.status == ObligationStatus.awaiting_review
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="approved", actor="human:tz"),
         )
         assert resp.status == "completed"
@@ -513,12 +513,12 @@ class TestGatedExhaustion:
         controller = _Controller(state_repo, signals)
 
         resp = controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="rejected", actor="human:tz"),
         )
 
         assert resp.status == "failed"
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.abandoned
         assert record.obligation.cause == "rejected"
 
@@ -545,7 +545,7 @@ class TestEffects:
 
         assert rc == 0
         assert fired == [1]
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert len(record.effects) == 1
         effect = record.effects[0]
         assert effect.name == "send_email"
@@ -573,7 +573,7 @@ class TestEffects:
 
         assert rc == 0
         assert fired == [1]  # the side effect fired exactly once
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert len(record.attempts) == 2
         assert len(record.effects) == 1  # recorded once, on the producing attempt
         assert record.effects[0].attempt_n == 1
@@ -592,7 +592,7 @@ class TestEffects:
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
         assert fired == [1, 1]
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert [e.occurrence for e in record.effects] == ["1", "manual-2"]
 
     def test_effect_outside_run_context_is_a_plain_call(self):
@@ -614,7 +614,7 @@ class TestProvenance:
         executor = FakeExecutor({job.flow_name: lambda **kw: None})
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.caused_by == "dispatch:webhook-42"
 
     def test_retry_wakeup_carries_attempt_provenance(
@@ -666,16 +666,16 @@ class TestReviewAsWork:
         controller = _Controller(state_repo, signals, queue=queue)
 
         review = controller.submit_flow(
-            "review_flow", FlowArguments(reviews=job.run_id)
+            "review_flow", FlowArguments(reviews=job.obligation_id)
         )
-        parked = state_repo.read(job.flow_name, job.run_id).record
-        assert parked.obligation.reviewer_id == review.run_id
+        parked = state_repo.read(job.flow_name, job.obligation_id).record
+        assert parked.obligation.reviewer_id == review.obligation_id
 
         controller.review_run(
-            job.run_id,
+            job.obligation_id,
             ReviewRequest(decision="approved", actor="reviewer-flow"),
         )
-        settled = state_repo.read(job.flow_name, job.run_id).record
+        settled = state_repo.read(job.flow_name, job.obligation_id).record
         assert settled.obligation.status == ObligationStatus.discharged
         assert settled.obligation.reviewer_id is None
 
@@ -689,17 +689,17 @@ class TestReviewAsWork:
 
         review = controller.submit_flow(
             "review_flow",
-            FlowArguments(kwargs={"report": "sha256:abc"}, reviews=job.run_id),
+            FlowArguments(kwargs={"report": "sha256:abc"}, reviews=job.obligation_id),
         )
 
         # The wake-up carries the convention; the claim will land it on the
         # reviewer obligation's account.
         wake, _ = queue.enqueued[0]
-        assert wake.run_id == review.run_id
-        assert wake.caused_by == f"review:{job.run_id}"
+        assert wake.obligation_id == review.obligation_id
+        assert wake.caused_by == f"review:{job.obligation_id}"
         # The parked parent records who owes it the review.
-        parent = state_repo.read(job.flow_name, job.run_id).record
-        assert parent.obligation.reviewer_id == review.run_id
+        parent = state_repo.read(job.flow_name, job.obligation_id).record
+        assert parent.obligation.reviewer_id == review.obligation_id
 
     def test_reviews_requires_a_parked_target(
         self, state_repo, signals, make_flow_job
@@ -730,7 +730,7 @@ class TestReviewAsWork:
         )  # open, parked for retry — not awaiting review
         with pytest.raises(HTTPException) as exc:
             controller.submit_flow(
-                "review_flow", FlowArguments(reviews=failing.run_id)
+                "review_flow", FlowArguments(reviews=failing.obligation_id)
             )
         assert exc.value.status_code == 409
         assert queue.enqueued == []  # neither submission was enqueued
@@ -747,12 +747,12 @@ class TestReviewAsWork:
         controller = _Controller(state_repo, signals, queue=queue)
 
         review = controller.submit_flow(
-            "review_flow", FlowArguments(reviews=job.run_id)
+            "review_flow", FlowArguments(reviews=job.obligation_id)
         )
 
         def review_flow(**kw):
             controller.review_run(
-                job.run_id,
+                job.obligation_id,
                 ReviewRequest(
                     decision="approved", actor="reviewer-flow",
                     reason="claims verified",
@@ -767,10 +767,10 @@ class TestReviewAsWork:
         )
 
         assert rc == 0
-        parent = state_repo.read(job.flow_name, job.run_id).record
+        parent = state_repo.read(job.flow_name, job.obligation_id).record
         assert parent.obligation.status == ObligationStatus.discharged
         assert parent.obligation.reviewer_id is None
         assert parent.last_attempt.review.by == "reviewer-flow"
-        reviewer = state_repo.read("review_flow", review.run_id).record
+        reviewer = state_repo.read("review_flow", review.obligation_id).record
         assert reviewer.obligation.status == ObligationStatus.discharged
-        assert reviewer.obligation.caused_by == f"review:{job.run_id}"
+        assert reviewer.obligation.caused_by == f"review:{job.obligation_id}"

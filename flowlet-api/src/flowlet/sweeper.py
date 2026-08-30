@@ -135,7 +135,7 @@ def sweep(
             elif record.obligation.status == ObligationStatus.open:
                 if signals is not None and signals.paused_scopes(
                     flow_name=record.obligation.flow_name,
-                    run_id=record.obligation.id,
+                    obligation_id=record.obligation.id,
                     parent_id=record.obligation.parent_id,
                     root_id=record.obligation.root_id,
                 ):
@@ -152,7 +152,7 @@ def sweep(
                 "sweep_run_error",
                 extra={
                     "flow_name": view.record.obligation.flow_name,
-                    "run_id": str(view.record.obligation.id),
+                    "obligation_id": str(view.record.obligation.id),
                 },
             )
 
@@ -245,7 +245,7 @@ def _recover_crashed(
         logger.warning(
             "sweep_run_failed_permanently",
             extra={
-                "run_id": str(recovered.obligation.id),
+                "obligation_id": str(recovered.obligation.id),
                 "attempt": len(recovered.attempts),
             },
         )
@@ -261,7 +261,7 @@ def _recover_crashed(
         logger.warning(
             "sweep_run_gated_on_exhaustion",
             extra={
-                "run_id": str(recovered.obligation.id),
+                "obligation_id": str(recovered.obligation.id),
                 "attempt": len(recovered.attempts),
             },
         )
@@ -273,7 +273,7 @@ def _recover_crashed(
     logger.info(
         "sweep_run_requeued",
         extra={
-            "run_id": str(recovered.obligation.id),
+            "obligation_id": str(recovered.obligation.id),
             "attempt": len(recovered.attempts),
         },
     )
@@ -305,7 +305,7 @@ def _maybe_requeue_parked(
     logger.info(
         "sweep_pending_requeued",
         extra={
-            "run_id": str(view.record.obligation.id),
+            "obligation_id": str(view.record.obligation.id),
             "attempt": len(view.record.attempts),
         },
     )
@@ -335,7 +335,7 @@ def _archive_all(
     Recording happens strictly before any state document is removed: if the
     history write fails, all candidates stay in ``state/`` and the whole
     step is retried on the next sweep.  Re-recording is harmless — the
-    history projection upserts by run_id.  Each archived run's signals are
+    history projection upserts by obligation_id.  Each archived run's signals are
     cleared after its state document is gone.
     """
     if not to_archive:
@@ -380,7 +380,7 @@ def _fire_due_timers(
     """
     for timer in timers.due(now):
         try:
-            view = state_repo.read(timer.flow_name, timer.run_id)
+            view = state_repo.read(timer.flow_name, timer.obligation_id)
             closed = (
                 view is None or view.record.obligation.status.is_closed()
             )
@@ -388,7 +388,7 @@ def _fire_due_timers(
                 if timer.signal is not None and signals is not None:
                     signals.send(
                         timer.flow_name,
-                        timer.run_id,
+                        timer.obligation_id,
                         timer.signal,
                         actor="timer",
                         details={"timer": timer.name, **(timer.details or {})},
@@ -397,7 +397,7 @@ def _fire_due_timers(
                     obligation = view.record.obligation
                     queue.enqueue(
                         FlowJob(
-                            run_id=obligation.id,
+                            obligation_id=obligation.id,
                             flow_name=obligation.flow_name,
                             kwargs=obligation.kwargs,
                             max_retries=obligation.max_retries,
@@ -409,14 +409,14 @@ def _fire_due_timers(
                 stats.timers_fired += 1
                 logger.info(
                     "timer_fired",
-                    extra={"run_id": str(timer.run_id), "timer": timer.name},
+                    extra={"obligation_id": str(timer.obligation_id), "timer": timer.name},
                 )
-            timers.clear(timer.flow_name, timer.run_id, timer.name)
+            timers.clear(timer.flow_name, timer.obligation_id, timer.name)
         except Exception:
             stats.errors += 1
             logger.exception(
                 "timer_fire_error",
-                extra={"run_id": str(timer.run_id), "timer": timer.name},
+                extra={"obligation_id": str(timer.obligation_id), "timer": timer.name},
             )
 
 
@@ -428,7 +428,7 @@ def _emit(
         return
     events.append(
         flow_name=record.obligation.flow_name,
-        run_id=record.obligation.id,
+        obligation_id=record.obligation.id,
         event=event,
         actor="sweeper",
         attempt=len(record.attempts),
@@ -442,7 +442,7 @@ def _enqueue_wakeup(queue: JobQueueProtocol, record: ObligationRecord) -> None:
     obligation = record.obligation
     queue.enqueue(
         FlowJob(
-            run_id=obligation.id,
+            obligation_id=obligation.id,
             flow_name=obligation.flow_name,
             kwargs=obligation.kwargs,
             max_retries=obligation.max_retries,

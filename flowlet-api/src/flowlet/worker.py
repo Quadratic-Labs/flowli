@@ -173,7 +173,7 @@ def _ack_safely(queue: JobQueueProtocol, job: FlowJob) -> None:
     except Exception:
         logger.warning(
             "job_ack_failed",
-            extra={"job_id": str(job.job_id), "run_id": str(job.run_id)},
+            extra={"job_id": str(job.job_id), "obligation_id": str(job.obligation_id)},
             exc_info=True,
         )
 
@@ -190,7 +190,7 @@ def _emit(
         return
     events.append(
         flow_name=record.obligation.flow_name,
-        run_id=record.obligation.id,
+        obligation_id=record.obligation.id,
         event=event,
         actor=actor,
         attempt=len(record.attempts),
@@ -253,7 +253,7 @@ def _claim_transition(
     if existing is None:
         record = ObligationRecord(
             obligation=Obligation(
-                id=job.run_id,
+                id=job.obligation_id,
                 flow_name=job.flow_name,
                 flow_version=job.flow_version,
                 kwargs=job.kwargs,
@@ -423,7 +423,7 @@ def conclude_attempt(
         )
         if queue is not None:
             retry_job = FlowJob(
-                run_id=record.obligation.id,
+                obligation_id=record.obligation.id,
                 flow_name=record.obligation.flow_name,
                 kwargs=record.obligation.kwargs,
                 max_retries=record.obligation.max_retries,
@@ -439,7 +439,7 @@ def conclude_attempt(
                 # left; the sweeper re-enqueues the parked obligation.
                 logger.warning(
                     "job_retry_enqueue_failed",
-                    extra={"run_id": str(record.obligation.id)},
+                    extra={"obligation_id": str(record.obligation.id)},
                     exc_info=True,
                 )
         return "pending"
@@ -502,7 +502,7 @@ def execute_job(
         extra={
             "job_id": str(job.job_id),
             "flow_name": job.flow_name,
-            "run_id": str(job.run_id),
+            "obligation_id": str(job.obligation_id),
         },
     )
 
@@ -511,7 +511,7 @@ def execute_job(
     # the sweeper once the pause is revoked.
     paused = signals.paused_scopes(
         flow_name=job.flow_name,
-        run_id=job.run_id,
+        obligation_id=job.obligation_id,
         parent_id=job.parent_id,
         root_id=job.root_id,
     )
@@ -519,12 +519,12 @@ def execute_job(
         _ack_safely(queue, job)
         logger.info(
             "job_admission_paused",
-            extra={"run_id": str(job.run_id), "scopes": paused},
+            extra={"obligation_id": str(job.obligation_id), "scopes": paused},
         )
         return 2
 
     # Advisory early-outs: skip closed/busy runs without bumping the epoch.
-    view = state_repo.read(job.flow_name, job.run_id)
+    view = state_repo.read(job.flow_name, job.obligation_id)
     job_state = existing_state_case(view)
     if job_state == JobState.closed:
         assert view is not None
@@ -532,7 +532,7 @@ def execute_job(
         logger.info(
             "job_already_finished",
             extra={
-                "run_id": str(job.run_id),
+                "obligation_id": str(job.obligation_id),
                 "status": view.record.obligation.status,
             },
         )
@@ -547,14 +547,14 @@ def execute_job(
         logger.info(
             "job_not_claimable",
             extra={
-                "run_id": str(job.run_id),
+                "obligation_id": str(job.obligation_id),
                 "case": str(job_state),
                 "holder": view.holder,
             },
         )
         return 2
 
-    cancel_pending = signals.get(job.flow_name, job.run_id, CANCEL) is not None
+    cancel_pending = signals.get(job.flow_name, job.obligation_id, CANCEL) is not None
     gated = (
         review_policy_for is not None
         and review_policy_for(job.flow_name) == "gated"
@@ -564,7 +564,7 @@ def execute_job(
     try:
         lease = state_repo.acquire(
             job.flow_name,
-            job.run_id,
+            job.obligation_id,
             ttl=timeout,
             holder=worker_id,
             state_fn=lambda existing: _claim_transition(
@@ -578,14 +578,14 @@ def execute_job(
         )
     except Unclaimable:
         _ack_safely(queue, job)
-        logger.info("job_awaiting_review", extra={"run_id": str(job.run_id)})
+        logger.info("job_awaiting_review", extra={"obligation_id": str(job.obligation_id)})
         return 2
     except AlreadyClosed as closed:
         _ack_safely(queue, job)
         logger.info(
             "job_already_finished",
             extra={
-                "run_id": str(job.run_id),
+                "obligation_id": str(job.obligation_id),
                 "status": closed.record.obligation.status,
             },
         )
@@ -593,7 +593,7 @@ def execute_job(
     if lease is None:
         # Another worker holds (or won) the lease; they own the run now.
         _ack_safely(queue, job)
-        logger.info("job_claim_lost", extra={"run_id": str(job.run_id)})
+        logger.info("job_claim_lost", extra={"obligation_id": str(job.obligation_id)})
         return 2
 
     record = lease.record
@@ -606,7 +606,7 @@ def execute_job(
     if case == _ClaimCase.canceled:
         _release_terminal(lease, events, record, "canceled", worker_id,
                           cause="cancel_requested_before_claim")
-        logger.info("job_canceled_before_claim", extra={"run_id": str(job.run_id)})
+        logger.info("job_canceled_before_claim", extra={"obligation_id": str(job.obligation_id)})
         return 0
 
     if case == _ClaimCase.exhausted:
@@ -614,7 +614,7 @@ def execute_job(
                           cause="max_retries_exceeded")
         logger.warning(
             "job_max_retries_exceeded",
-            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+            extra={"obligation_id": str(job.obligation_id), "attempt": len(record.attempts)},
         )
         return 1
 
@@ -631,7 +631,7 @@ def execute_job(
         )
         logger.warning(
             "job_gated_on_exhaustion",
-            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+            extra={"obligation_id": str(job.obligation_id), "attempt": len(record.attempts)},
         )
         return 2
 
@@ -656,13 +656,13 @@ def execute_job(
         executor.execute(record.obligation, len(record.attempts))
     except RunCancelled:
         cancelled = True
-        logger.info("job_cancelled", extra={"run_id": str(job.run_id)})
+        logger.info("job_cancelled", extra={"obligation_id": str(job.obligation_id)})
     except LeaseLost:
         lease_lost = True
-        logger.warning("job_lease_lost", extra={"run_id": str(job.run_id)})
+        logger.warning("job_lease_lost", extra={"obligation_id": str(job.obligation_id)})
     except Exception as exc:
         flow_exc = exc
-        logger.exception("job_failed", extra={"run_id": str(job.run_id)})
+        logger.exception("job_failed", extra={"obligation_id": str(job.obligation_id)})
     finally:
         unbind_lease(lease_token)
 
@@ -676,10 +676,10 @@ def execute_job(
             events=events, actor=worker_id,
         )
         if route == "canceled":
-            logger.info("job_canceled", extra={"run_id": str(job.run_id)})
+            logger.info("job_canceled", extra={"obligation_id": str(job.obligation_id)})
             return 0
         logger.warning(
-            "job_cancel_ownership_lost", extra={"run_id": str(job.run_id)}
+            "job_cancel_ownership_lost", extra={"obligation_id": str(job.obligation_id)}
         )
         return 2
 
@@ -690,16 +690,16 @@ def execute_job(
         )
         if route == "gated":
             logger.info(
-                "job_awaiting_review", extra={"run_id": str(job.run_id)}
+                "job_awaiting_review", extra={"obligation_id": str(job.obligation_id)}
             )
             return 0
         if route == "completed":
-            logger.info("job_completed", extra={"run_id": str(job.run_id)})
+            logger.info("job_completed", extra={"obligation_id": str(job.obligation_id)})
             return 0
         # Lease expired mid-run and someone reclaimed: they own the outcome.
         logger.warning(
             "job_completion_ownership_lost",
-            extra={"run_id": str(job.run_id)},
+            extra={"obligation_id": str(job.obligation_id)},
         )
         return 2
 
@@ -712,23 +712,23 @@ def execute_job(
     if route == "pending":
         logger.info(
             "job_requeued",
-            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+            extra={"obligation_id": str(job.obligation_id), "attempt": len(record.attempts)},
         )
     elif route == "gated":
         # Budget spent on a gated obligation: parked for human judgment.
         logger.warning(
             "job_gated_on_exhaustion",
-            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+            extra={"obligation_id": str(job.obligation_id), "attempt": len(record.attempts)},
         )
     elif route == "failed":
         logger.warning(
             "job_failed_permanently",
-            extra={"run_id": str(job.run_id), "attempt": len(record.attempts)},
+            extra={"obligation_id": str(job.obligation_id), "attempt": len(record.attempts)},
         )
     else:
         logger.warning(
             "job_conclusion_ownership_lost",
-            extra={"run_id": str(job.run_id)},
+            extra={"obligation_id": str(job.obligation_id)},
         )
 
     return 1

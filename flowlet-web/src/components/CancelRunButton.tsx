@@ -7,18 +7,18 @@ import { api } from '@/lib/api';
  *  Pending runs are closed as canceled immediately; running runs are flagged
  *  and stop at their next heartbeat, so the status may stay "running" for a
  *  short while after a successful request. */
-export function CancelRunButton({ runId, small = false, onDone }: {
-  runId: string;
+export function CancelRunButton({ obligationId, small = false, onDone }: {
+  obligationId: string;
   small?: boolean;
   onDone?: (status: string) => void;
 }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: () => api.cancelRun(runId),
+    mutationFn: () => api.cancelRun(obligationId),
     onSuccess: (resp) => {
       queryClient.invalidateQueries({ queryKey: ['runs'] });
-      queryClient.invalidateQueries({ queryKey: ['run', runId] });
-      queryClient.invalidateQueries({ queryKey: ['run-events', runId] });
+      queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['run-events', obligationId] });
       onDone?.(resp.status);
     },
   });

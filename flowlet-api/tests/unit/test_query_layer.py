@@ -51,7 +51,7 @@ def _archived(make_run_state, **overrides):
 @pytest.mark.unit
 class TestHistoryMerge:
     """list_recent_states merges the ephemeral cache with the durable history
-    projection: additive, deduped by run_id, cache wins on conflict."""
+    projection: additive, deduped by obligation_id, cache wins on conflict."""
 
     def test_run_visible_only_via_history_is_merged_in(
         self, query, history, make_run_state
@@ -62,19 +62,19 @@ class TestHistoryMerge:
         history.record_many([state])
 
         rows = asyncio.run(query.list_recent_states(["etl"]))
-        assert [r.run_id for r in rows] == [state.run_id]
+        assert [r.obligation_id for r in rows] == [state.obligation_id]
 
     def test_cache_row_wins_over_history_duplicate(
         self, query, store, history, seed_lease, make_run_state
     ):
-        """The same run_id known to both sources is returned once, from the cache."""
+        """The same obligation_id known to both sources is returned once, from the cache."""
         state = _archived(make_run_state, flow_name="etl")
         seed_lease(store, state)
         history.record_many([state])
 
         rows = asyncio.run(query.list_recent_states(["etl"]))
         assert len(rows) == 1
-        assert rows[0].run_id == state.run_id
+        assert rows[0].obligation_id == state.obligation_id
 
     def test_history_extends_flow_discovery_when_flow_names_is_none(
         self, query, history, make_run_state
@@ -84,7 +84,7 @@ class TestHistoryMerge:
         history.record_many([state])
 
         rows = asyncio.run(query.list_recent_states())
-        assert state.run_id in {r.run_id for r in rows}
+        assert state.obligation_id in {r.obligation_id for r in rows}
 
     def test_last_n_respected_across_merged_sources(
         self, query, history, make_run_state

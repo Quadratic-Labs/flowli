@@ -82,59 +82,59 @@ def _claimed_run_lease(state_repo, signals, messages, make_record, holder="w1"):
 @pytest.mark.unit
 class TestMessageRepository:
     def test_messages_list_in_send_order(self, messages):
-        run_id = uuid7()
+        obligation_id = uuid7()
         ids = [
-            messages.send("f", run_id, "steer", {"n": n}, actor="a")[0]
+            messages.send("f", obligation_id, "steer", {"n": n}, actor="a")[0]
             for n in range(3)
         ]
 
-        listed = messages.list_topic("f", run_id, "steer")
+        listed = messages.list_topic("f", obligation_id, "steer")
 
         assert [doc.id for doc in listed] == ids
         assert [doc.body["n"] for doc in listed] == [0, 1, 2]
 
     def test_list_after_cursor_excludes_consumed(self, messages):
-        run_id = uuid7()
-        first, _ = messages.send("f", run_id, "steer", "one", actor="a")
-        messages.send("f", run_id, "steer", "two", actor="a")
+        obligation_id = uuid7()
+        first, _ = messages.send("f", obligation_id, "steer", "one", actor="a")
+        messages.send("f", obligation_id, "steer", "two", actor="a")
 
-        listed = messages.list_topic("f", run_id, "steer", after=first)
+        listed = messages.list_topic("f", obligation_id, "steer", after=first)
 
         assert [doc.body for doc in listed] == ["two"]
 
     def test_dedup_key_converges_on_one_message(self, messages):
-        run_id = uuid7()
+        obligation_id = uuid7()
         first_id, created = messages.send(
-            "f", run_id, "hook", "payload-1", actor="a", dedup_key="delivery-42"
+            "f", obligation_id, "hook", "payload-1", actor="a", dedup_key="delivery-42"
         )
         second_id, again = messages.send(
-            "f", run_id, "hook", "payload-2", actor="a", dedup_key="delivery-42"
+            "f", obligation_id, "hook", "payload-2", actor="a", dedup_key="delivery-42"
         )
 
         assert created is True
         assert again is False
         assert second_id == first_id
-        listed = messages.list_topic("f", run_id, "hook")
+        listed = messages.list_topic("f", obligation_id, "hook")
         assert len(listed) == 1
         assert listed[0].body == "payload-1"  # first write wins
 
     def test_counts_per_topic_exclude_dedup_claims(self, messages):
-        run_id = uuid7()
-        messages.send("f", run_id, "steer", 1, actor="a")
-        messages.send("f", run_id, "steer", 2, actor="a")
-        messages.send("f", run_id, "hook", 3, actor="a", dedup_key="k")
+        obligation_id = uuid7()
+        messages.send("f", obligation_id, "steer", 1, actor="a")
+        messages.send("f", obligation_id, "steer", 2, actor="a")
+        messages.send("f", obligation_id, "hook", 3, actor="a", dedup_key="k")
 
-        assert messages.counts("f", run_id) == {"steer": 2, "hook": 1}
+        assert messages.counts("f", obligation_id) == {"steer": 2, "hook": 1}
 
     def test_clear_removes_all_topics(self, messages):
-        run_id = uuid7()
-        messages.send("f", run_id, "steer", 1, actor="a")
-        messages.send("f", run_id, "hook", 2, actor="a", dedup_key="k")
+        obligation_id = uuid7()
+        messages.send("f", obligation_id, "steer", 1, actor="a")
+        messages.send("f", obligation_id, "hook", 2, actor="a", dedup_key="k")
 
-        messages.clear("f", run_id)
+        messages.clear("f", obligation_id)
 
-        assert messages.counts("f", run_id) == {}
-        assert messages.list_topic("f", run_id, "steer") == []
+        assert messages.counts("f", obligation_id) == {}
+        assert messages.list_topic("f", obligation_id, "steer") == []
 
     def test_unsafe_topic_is_refused(self, messages):
         with pytest.raises(ValueError):
@@ -239,7 +239,7 @@ class TestRecv:
         """End to end through execute_job: the ambient lease carries the
         channel, so plain flows call flowlet.recv()."""
         job = make_flow_job()
-        messages.send(job.flow_name, job.run_id, "steer", "left", actor="api")
+        messages.send(job.flow_name, job.obligation_id, "steer", "left", actor="api")
         received = []
 
         def flow(**kwargs):
@@ -272,7 +272,7 @@ class TestMessageEndpoints:
         controller = _controller(state_repo, signals)
 
         sent = controller.send_run_message(
-            state.run_id, "steer",
+            state.obligation_id, "steer",
             RunMessageRequest(
                 flow_name=state.flow_name, actor="operator", body={"go": 1}
             ),
@@ -280,13 +280,13 @@ class TestMessageEndpoints:
         assert sent.deduplicated is False
 
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         assert claim.messages == {"steer": 1}
 
         first = controller.recv_run_message(
-            state.run_id,
+            state.obligation_id,
             ExecutorRecvRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 topic="steer", seq=1,
@@ -297,7 +297,7 @@ class TestMessageEndpoints:
         assert first.pending == 0
 
         empty = controller.recv_run_message(
-            state.run_id,
+            state.obligation_id,
             ExecutorRecvRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 topic="steer", seq=2,
@@ -311,19 +311,19 @@ class TestMessageEndpoints:
         state = self._seed_ready(make_run_state, seed_lease, store)
         controller = _controller(state_repo, signals)
         controller.send_run_message(
-            state.run_id, "steer",
+            state.obligation_id, "steer",
             RunMessageRequest(
                 flow_name=state.flow_name, actor="operator", body="one"
             ),
         )
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
         def _recv(seq):
             return controller.recv_run_message(
-                state.run_id,
+                state.obligation_id,
                 ExecutorRecvRequest(
                     flow_name=state.flow_name, executor="s1",
                     epoch=claim.epoch, topic="steer", seq=seq,
@@ -345,18 +345,18 @@ class TestMessageEndpoints:
         state = self._seed_ready(make_run_state, seed_lease, store)
         controller = _controller(state_repo, signals)
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         controller.send_run_message(
-            state.run_id, "steer",
+            state.obligation_id, "steer",
             RunMessageRequest(
                 flow_name=state.flow_name, actor="operator", body="hello"
             ),
         )
 
         renewed = controller.renew_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorRenewRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch
             ),
@@ -374,8 +374,8 @@ class TestMessageEndpoints:
             dedup_key="delivery-1",
         )
 
-        first = controller.send_run_message(state.run_id, "hook", req)
-        second = controller.send_run_message(state.run_id, "hook", req)
+        first = controller.send_run_message(state.obligation_id, "hook", req)
+        second = controller.send_run_message(state.obligation_id, "hook", req)
 
         assert second.deduplicated is True
         assert second.message_id == first.message_id
@@ -398,7 +398,7 @@ class TestMessageEndpoints:
 
         with pytest.raises(HTTPException) as exc:
             controller.send_run_message(
-                state.run_id, "steer",
+                state.obligation_id, "steer",
                 RunMessageRequest(
                     flow_name=state.flow_name, actor="a", body=1
                 ),
@@ -412,7 +412,7 @@ class TestMessageEndpoints:
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
             controller.send_run_message(
-                state.run_id, "_dedup",
+                state.obligation_id, "_dedup",
                 RunMessageRequest(
                     flow_name=state.flow_name, actor="a", body=1
                 ),
@@ -454,7 +454,7 @@ class TestFlowVersion:
         executor = FakeExecutor({"f": lambda **kw: None})
         execute_job(FakeQueue([job]), executor, state_repo, signals, "w1")
 
-        view = state_repo.read("f", response.run_id)
+        view = state_repo.read("f", response.obligation_id)
         assert view.record.obligation.flow_version == "rel-2026.08"
 
 
@@ -475,11 +475,11 @@ class TestArchiveClearsMessages:
         seed_lease(
             store, state, deadline=datetime.now(UTC) - timedelta(hours=3)
         )
-        messages.send(state.flow_name, state.run_id, "steer", "x", actor="a")
+        messages.send(state.flow_name, state.obligation_id, "steer", "x", actor="a")
 
         stats = sweep(
             state_repo, FakeQueue([]), signals=signals, archive_grace=3600
         )
 
         assert stats.archived == 1
-        assert messages.counts(state.flow_name, state.run_id) == {}
+        assert messages.counts(state.flow_name, state.obligation_id) == {}

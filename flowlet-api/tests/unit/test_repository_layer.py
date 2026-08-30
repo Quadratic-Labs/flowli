@@ -7,7 +7,7 @@ Covers:
   implements the same conditional-write contract as the cloud backends, so
   these exercise genuine CAS and epoch fencing without mocks)
 - SignalRepository: idempotent run-scoped signals
-- LogRepository: span reading over the runs/<flow>/<date>/<run_id>/ layout
+- LogRepository: span reading over the runs/<flow>/<date>/<obligation_id>/ layout
 """
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -120,7 +120,7 @@ class TestStateRepository:
             deadline=datetime.now(UTC) - timedelta(seconds=5),
         )
         thief = state_repo.acquire(
-            state.flow_name, state.run_id,
+            state.flow_name, state.obligation_id,
             ttl=60, holder="w2", state_fn=lambda s: s,
         )
         assert thief is not None
@@ -136,7 +136,7 @@ class TestStateRepository:
         )
         stale = thief  # epoch 2 handle, but the document was rewritten
         third = state_repo.acquire(
-            state.flow_name, state.run_id,
+            state.flow_name, state.obligation_id,
             ttl=60, holder="w3", state_fn=lambda s: s,
         )
         assert third is not None
@@ -156,11 +156,11 @@ class TestStateRepository:
 
         with pytest.raises(AlreadyClosed):
             state_repo.acquire(
-                state.flow_name, state.run_id,
+                state.flow_name, state.obligation_id,
                 ttl=60, holder="w1", state_fn=refuse,
             )
         # Nothing was written: still released at epoch 1.
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.epoch == 1
         assert view.holder is None
 
@@ -180,8 +180,8 @@ class TestStateRepository:
     def test_delete_removes_state(self, state_repo, make_run_state, seed_lease, store):
         state = make_run_state(flow_name="temp_flow")
         seed_lease(store, state)
-        state_repo.delete(state.flow_name, state.run_id)
-        assert state_repo.read(state.flow_name, state.run_id) is None
+        state_repo.delete(state.flow_name, state.obligation_id)
+        assert state_repo.read(state.flow_name, state.obligation_id) is None
 
     def test_list_views_returns_all(self, state_repo, make_run_state, seed_lease, store):
         states = [make_run_state(flow_name="batch_flow") for _ in range(3)]
@@ -189,7 +189,7 @@ class TestStateRepository:
             seed_lease(store, s)
 
         listed = state_repo.list_views(flow_name="batch_flow")
-        assert {v.state.run_id for v in listed} == {s.run_id for s in states}
+        assert {v.state.obligation_id for v in listed} == {s.obligation_id for s in states}
 
     def test_list_states_filtered_by_flow(
         self, state_repo, make_run_state, seed_lease, store
@@ -222,11 +222,11 @@ class TestStateRepository:
         state = make_run_state(flow_name="my_flow", status=ReportedStatus.completed)
         seed_lease(store, state)
 
-        state_repo.archive(state.flow_name, state.run_id)
+        state_repo.archive(state.flow_name, state.obligation_id)
 
-        assert state_repo.read(state.flow_name, state.run_id) is None
+        assert state_repo.read(state.flow_name, state.obligation_id) is None
         archived = store.get_object_sync(
-            f"{run_prefix(state.flow_name, state.run_id)}/state.json"
+            f"{run_prefix(state.flow_name, state.obligation_id)}/state.json"
         )
         assert archived is not None
         # The archived object is the bare account wire format (no envelope).
@@ -234,7 +234,7 @@ class TestStateRepository:
         from flowlet.serdes import from_json
 
         restored = from_json(ObligationRecord)(archived.data.decode())
-        assert restored.obligation.id == state.run_id
+        assert restored.obligation.id == state.obligation_id
         assert restored.obligation.status == ObligationStatus.discharged
         assert restored.summary().status == ReportedStatus.completed
 
@@ -247,27 +247,27 @@ class TestStateRepository:
 @pytest.mark.unit
 class TestSignalRepository:
     def test_send_and_get_round_trip(self, signals):
-        run_id = uuid7()
-        assert signals.send("my_flow", run_id, CANCEL, actor="api") is True
-        payload = signals.get("my_flow", run_id, CANCEL)
+        obligation_id = uuid7()
+        assert signals.send("my_flow", obligation_id, CANCEL, actor="api") is True
+        payload = signals.get("my_flow", obligation_id, CANCEL)
         assert payload is not None
         assert payload["actor"] == "api"
 
     def test_send_is_idempotent(self, signals):
-        run_id = uuid7()
-        assert signals.send("my_flow", run_id, CANCEL, actor="api") is True
-        assert signals.send("my_flow", run_id, CANCEL, actor="other") is False
+        obligation_id = uuid7()
+        assert signals.send("my_flow", obligation_id, CANCEL, actor="api") is True
+        assert signals.send("my_flow", obligation_id, CANCEL, actor="other") is False
         # First sender's payload wins.
-        assert signals.get("my_flow", run_id, CANCEL)["actor"] == "api"
+        assert signals.get("my_flow", obligation_id, CANCEL)["actor"] == "api"
 
     def test_get_missing_returns_none(self, signals):
         assert signals.get("my_flow", uuid7(), CANCEL) is None
 
     def test_clear_removes_all_signals(self, signals):
-        run_id = uuid7()
-        signals.send("my_flow", run_id, CANCEL, actor="api")
-        signals.clear("my_flow", run_id)
-        assert signals.get("my_flow", run_id, CANCEL) is None
+        obligation_id = uuid7()
+        signals.send("my_flow", obligation_id, CANCEL, actor="api")
+        signals.clear("my_flow", obligation_id)
+        assert signals.get("my_flow", obligation_id, CANCEL) is None
 
 
 # ============================================================================
@@ -275,9 +275,9 @@ class TestSignalRepository:
 # ============================================================================
 
 
-def _write_span_file(store, flow_name: str, run_id, spans: list[SpanRecord], attempt: int = 1) -> None:
-    """Write a spans-<attempt>.jsonl object in the runs/<flow>/<date>/<run_id>/ layout."""
-    key = f"{run_prefix(flow_name, run_id)}/spans-{attempt}.jsonl"
+def _write_span_file(store, flow_name: str, obligation_id, spans: list[SpanRecord], attempt: int = 1) -> None:
+    """Write a spans-<attempt>.jsonl object in the runs/<flow>/<date>/<obligation_id>/ layout."""
+    key = f"{run_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
     store.put_object_sync(
         key, "\n".join(to_json(span) for span in spans).encode("utf-8")
     )
@@ -294,53 +294,53 @@ class TestLogRepository:
         assert log_repo.get_spans("ghost_flow", uuid7()) == []
 
     def test_get_spans_returns_written_records(self, log_repo, store, make_span_record):
-        run_id = uuid7()
+        obligation_id = uuid7()
         spans = [
-            make_span_record(run_id=run_id, span_id="a" * 16),
-            make_span_record(run_id=run_id, span_id="b" * 16, parent_span_id="a" * 16),
+            make_span_record(obligation_id=obligation_id, span_id="a" * 16),
+            make_span_record(obligation_id=obligation_id, span_id="b" * 16, parent_span_id="a" * 16),
         ]
-        _write_span_file(store, "my_flow", run_id, spans)
+        _write_span_file(store, "my_flow", obligation_id, spans)
 
-        assert len(log_repo.get_spans("my_flow", run_id)) == 2
+        assert len(log_repo.get_spans("my_flow", obligation_id)) == 2
 
     def test_get_spans_merges_attempts(self, log_repo, store, make_span_record):
-        run_id = uuid7()
+        obligation_id = uuid7()
         _write_span_file(
-            store, "my_flow", run_id,
-            [make_span_record(run_id=run_id, attempt=1)], attempt=1,
+            store, "my_flow", obligation_id,
+            [make_span_record(obligation_id=obligation_id, attempt=1)], attempt=1,
         )
         _write_span_file(
-            store, "my_flow", run_id,
-            [make_span_record(run_id=run_id, attempt=2)], attempt=2,
+            store, "my_flow", obligation_id,
+            [make_span_record(obligation_id=obligation_id, attempt=2)], attempt=2,
         )
 
-        spans = log_repo.get_spans("my_flow", run_id)
+        spans = log_repo.get_spans("my_flow", obligation_id)
         assert sorted(s.attempt for s in spans) == [1, 2]
 
     def test_list_run_ids_for_flow(self, log_repo, store, make_span_record):
-        run_id = uuid7()
-        _write_span_file(store, "my_flow", run_id, [make_span_record(run_id=run_id)])
+        obligation_id = uuid7()
+        _write_span_file(store, "my_flow", obligation_id, [make_span_record(obligation_id=obligation_id)])
 
         results = log_repo.list_run_ids(flow_name="my_flow")
-        assert results == [("my_flow", run_id)]
+        assert results == [("my_flow", obligation_id)]
 
     def test_list_run_ids_empty_when_no_runs_prefix(self, log_repo):
         assert log_repo.list_run_ids() == []
 
     def test_list_run_ids_sorted_chronologically(self, log_repo, store, make_span_record):
         first, second = uuid7(), uuid7()
-        _write_span_file(store, "my_flow", second, [make_span_record(run_id=second)])
-        _write_span_file(store, "my_flow", first, [make_span_record(run_id=first)])
+        _write_span_file(store, "my_flow", second, [make_span_record(obligation_id=second)])
+        _write_span_file(store, "my_flow", first, [make_span_record(obligation_id=first)])
 
         results = log_repo.list_run_ids(flow_name="my_flow")
         assert [r for _, r in results] == sorted([first, second], key=str)
 
     def test_malformed_lines_are_skipped(self, log_repo, store, make_span_record):
-        run_id = uuid7()
-        span = make_span_record(run_id=run_id)
-        key = f"{run_prefix('my_flow', run_id)}/spans-1.jsonl"
+        obligation_id = uuid7()
+        span = make_span_record(obligation_id=obligation_id)
+        key = f"{run_prefix('my_flow', obligation_id)}/spans-1.jsonl"
         store.put_object_sync(
             key, (to_json(span) + "\n{not json}\n").encode("utf-8")
         )
 
-        assert len(log_repo.get_spans("my_flow", run_id)) == 1
+        assert len(log_repo.get_spans("my_flow", obligation_id)) == 1

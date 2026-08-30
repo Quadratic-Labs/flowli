@@ -42,7 +42,7 @@ from flowlet.serdes import from_json, to_json
 logger = logging.getLogger(__name__)
 
 RUN_ARCHIVED = "run.archived"
-HISTORY_SCHEMA_VERSION = "1.0.0"
+HISTORY_SCHEMA_VERSION = "1.1.0"
 HISTORY_LOG_NAME = "history"
 DEFAULT_TTL_SECONDS = 5.0
 
@@ -83,7 +83,7 @@ async def init_history_schema(db_path: str) -> None:
 
 @history_registry.handler(RUN_ARCHIVED)
 async def _handle_run_archived(db, entry) -> None:
-    """Upsert one archived run; idempotent per run_id."""
+    """Upsert one archived run; idempotent per obligation id."""
     payload = entry.payload
     await db.execute(
         """
@@ -93,7 +93,7 @@ async def _handle_run_archived(db, entry) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            payload["run_id"],
+            payload.get("obligation_id") or payload["run_id"],
             payload["flow_name"],
             payload["status"],
             payload.get("worker_id"),
@@ -224,7 +224,7 @@ class RunHistory:
                 )
         return states
 
-    async def get_states(self, run_ids: Iterable[UUID]) -> dict[UUID, ObligationSummary]:
+    async def get_states(self, obligation_ids: Iterable[UUID]) -> dict[UUID, ObligationSummary]:
         """Look up specific archived runs by ID from the local projection.
 
         Bulk point-lookup for CacheRepository's archived-run seeding: a
@@ -232,18 +232,18 @@ class RunHistory:
         Refreshes first (TTL-throttled).
 
         Args:
-            run_ids: Run IDs to look up.
+            obligation_ids: Obligation ids to look up.
 
         Returns:
-            Mapping of the run_ids that were found to their ObligationSummary. A
-            run_id absent from the projection — archived before history was
-            enabled, or not yet replayed — is simply absent from the
-            result; callers should fall back to reading its state.json
-            directly.
+            Mapping of the obligation ids that were found to their
+            ObligationSummary.  An id absent from the projection — archived
+            before history was enabled, or not yet replayed — is simply
+            absent from the result; callers should fall back to reading its
+            state.json directly.
         """
         import aiosqlite
 
-        ids = list(run_ids)
+        ids = list(obligation_ids)
         if not ids:
             return {}
         await self.refresh()
@@ -254,8 +254,8 @@ class RunHistory:
                 f"SELECT run_id, state_json FROM runs WHERE run_id IN ({placeholders})",
                 [str(rid) for rid in ids],
             )
-            for run_id_str, state_json in await cursor.fetchall():
-                results[UUID(run_id_str)] = from_json(ObligationSummary)(state_json)
+            for obligation_id_str, state_json in await cursor.fetchall():
+                results[UUID(obligation_id_str)] = from_json(ObligationSummary)(state_json)
         return results
 
 

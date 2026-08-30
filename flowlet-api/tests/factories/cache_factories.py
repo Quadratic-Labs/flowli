@@ -22,7 +22,7 @@ class ObligationRowFactory(factory.Factory):
     class Meta:
         model = ObligationRow
 
-    run_id        = factory.LazyFunction(uuid7)
+    obligation_id        = factory.LazyFunction(uuid7)
     flow_name     = factory.Sequence(lambda n: f"flow_{n}")
     status        = ReportedStatus.running.value
     worker_id     = "worker-1"

@@ -1,7 +1,7 @@
 """Durable timers as swept documents — nothing in the engine fires at time T.
 
 A timer is a small mutable document at
-``timers/<flow_name>/<run_id>/<name>.json`` declaring when it is due and
+``timers/<flow_name>/<obligation_id>/<name>.json`` declaring when it is due and
 what firing means: send a named signal to the obligation, enqueue a wake-up
 message, or both.  The sweeper's pass fires due timers (see
 ``flowlet.sweeper``); firing is idempotent by construction — signal sends
@@ -32,7 +32,7 @@ class TimerDoc:
 
     Attributes:
         flow_name: Flow the obligation belongs to.
-        run_id: The obligation the timer concerns.
+        obligation_id: The obligation the timer concerns.
         name: Timer name (unique per obligation).
         due_at: When the timer becomes due.
         signal: Signal name to send on firing, or None.
@@ -41,7 +41,7 @@ class TimerDoc:
     """
 
     flow_name: str
-    run_id: UUID
+    obligation_id: UUID
     name: str
     due_at: Timestamp
     signal: str | None = None
@@ -60,13 +60,13 @@ class TimerRepository:
     store: BlobStorage
 
     @staticmethod
-    def _key(flow_name: str, run_id: UUID, name: str) -> str:
-        return f"timers/{flow_name}/{run_id}/{name}.json"
+    def _key(flow_name: str, obligation_id: UUID, name: str) -> str:
+        return f"timers/{flow_name}/{obligation_id}/{name}.json"
 
     def set(
         self,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         name: str,
         *,
         due_at: Timestamp,
@@ -78,7 +78,7 @@ class TimerRepository:
 
         Args:
             flow_name: Flow the obligation belongs to.
-            run_id: The obligation the timer concerns.
+            obligation_id: The obligation the timer concerns.
             name: Timer name, unique per obligation (re-set to reschedule).
             due_at: When the timer becomes due.
             signal: Optional signal name sent to the obligation on firing.
@@ -93,22 +93,22 @@ class TimerRepository:
         if details:
             doc["details"] = details
         self.store.put_object_sync(
-            self._key(flow_name, run_id, name), json.dumps(doc).encode()
+            self._key(flow_name, obligation_id, name), json.dumps(doc).encode()
         )
 
-    def clear(self, flow_name: str, run_id: UUID, name: str) -> None:
+    def clear(self, flow_name: str, obligation_id: UUID, name: str) -> None:
         """Remove a timer (fired, or its waiting condition resolved early)."""
         try:
-            self.store.delete_object_sync(self._key(flow_name, run_id, name))
+            self.store.delete_object_sync(self._key(flow_name, obligation_id, name))
         except Exception:
             logger.exception(
                 "timer_delete_error",
-                extra={"run_id": str(run_id), "timer": name},
+                extra={"obligation_id": str(obligation_id), "timer": name},
             )
 
-    def clear_all(self, flow_name: str, run_id: UUID) -> None:
+    def clear_all(self, flow_name: str, obligation_id: UUID) -> None:
         """Remove all of an obligation's timers (archive-time cleanup)."""
-        for key in self.store.list_objects_sync(f"timers/{flow_name}/{run_id}/"):
+        for key in self.store.list_objects_sync(f"timers/{flow_name}/{obligation_id}/"):
             try:
                 self.store.delete_object_sync(key)
             except Exception:
@@ -139,7 +139,7 @@ class TimerRepository:
                 found.append(
                     TimerDoc(
                         flow_name=parts[1],
-                        run_id=UUID(parts[2]),
+                        obligation_id=UUID(parts[2]),
                         name=parts[3].removesuffix(".json"),
                         due_at=due_at,
                         signal=raw.get("signal"),

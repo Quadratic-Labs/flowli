@@ -122,7 +122,7 @@ class FlowArguments(Base):
             "collapse onto one run"
         ),
     )
-    parent_run_id: UUID | None = Field(
+    parent_obligation_id: UUID | None = Field(
         None,
         description=(
             "Submit as a sub-obligation of this run: the child gets its own "
@@ -147,7 +147,7 @@ class FlowArguments(Base):
         pattern="^(auto|gated)$",
         description=(
             "Entry gate: 'gated' records the obligation durably but born "
-            "held — not claimable until POST /runs/{run_id}/admit releases "
+            "held — not claimable until POST /runs/{obligation_id}/admit releases "
             "it. Requires storage. Default 'auto' (claimable immediately)."
         ),
     )
@@ -157,7 +157,7 @@ class FlowArguments(Base):
             "Submit this obligation as the reviewer of the given run "
             "(which must be awaiting_review): its job is to record "
             "the review, its terminal effect a call to that run's "
-            "review endpoint. Stamps caused_by 'review:<run_id>' "
+            "review endpoint. Stamps caused_by 'review:<obligation_id>' "
             "and records this obligation's id as the target's "
             "reviewer_id — the parked account answers 'who owes me the "
             "review'. Requires storage."
@@ -198,7 +198,7 @@ class ExecutorClaimResponse(Base):
     """The claimed obligation and the fencing token.
 
     Attributes:
-        run_id: The obligation claimed.
+        obligation_id: The obligation claimed.
         epoch: Fence token — pass it to every subsequent call; a 409 on a
             later call means the lease was stolen and the outcome must be
             discarded.
@@ -209,11 +209,11 @@ class ExecutorClaimResponse(Base):
             on a returned outcome instead of self-discharging.
         signals: Signals already pending at claim time.
         messages: Unconsumed message counts per topic at claim time —
-            consume them via POST /runs/{run_id}/recv.
+            consume them via POST /runs/{obligation_id}/recv.
         flow_version: The version the obligation was minted against, when
             recorded (see FlowArguments.flow_version).
     """
-    run_id: UUID
+    obligation_id: UUID
     epoch: int
     deadline_at: TimestampDTO
     attempt: int
@@ -234,8 +234,8 @@ class ExecutorRenewRequest(Base):
 
 class ExecutorRenewResponse(Base):
     """Renewal outcome: new deadline, pending signals, and unconsumed
-    message counts per topic (consume via POST /runs/{run_id}/recv)."""
-    run_id: UUID
+    message counts per topic (consume via POST /runs/{obligation_id}/recv)."""
+    obligation_id: UUID
     deadline_at: TimestampDTO
     signals: dict[str, Any]
     messages: dict[str, int] = Field(default_factory=dict)
@@ -260,7 +260,7 @@ class ExecutorEffectResponse(Base):
 
     ``produced`` is False when a previous execution's result was returned.
     """
-    run_id: UUID
+    obligation_id: UUID
     name: str
     occurrence: str
     result: Any
@@ -285,7 +285,7 @@ class ExecutorOutcomeRequest(Base):
 
 class ExecutorOutcomeResponse(Base):
     """The route the account took: completed/gated/pending/failed/canceled."""
-    run_id: UUID
+    obligation_id: UUID
     status: str
 
 
@@ -315,7 +315,7 @@ class RunMessageResponse(Base):
     ``deduplicated`` is True when the dedup_key resolved to a message an
     earlier send created.
     """
-    run_id: UUID
+    obligation_id: UUID
     topic: str
     message_id: str
     deduplicated: bool = False
@@ -349,7 +349,7 @@ class ExecutorRecvResponse(Base):
     """The consumed (or replayed) message, or None when nothing is pending.
 
     Attributes:
-        run_id: The obligation.
+        obligation_id: The obligation.
         topic: Channel consumed from.
         seq: The recv ordinal answered.
         message: ``{"id", "body", "actor", "sent_at"}``, or None when no
@@ -358,7 +358,7 @@ class ExecutorRecvResponse(Base):
             message was returned again.
         pending: Unconsumed messages left on the topic after this call.
     """
-    run_id: UUID
+    obligation_id: UUID
     topic: str
     seq: int
     message: dict[str, Any] | None = None
@@ -398,7 +398,7 @@ class AdmissionRequest(Base):
             on a completion event (e.g. ``dep-controller``); recorded in
             the account as ``admitted_by``.
         reason: Optional short ground for the release (e.g.
-            ``dependency_discharged:<run_id>``); carried in the event log.
+            ``dependency_discharged:<obligation_id>``); carried in the event log.
     """
     actor: str = Field(min_length=1, max_length=256)
     reason: str | None = Field(None, max_length=1024)
@@ -408,10 +408,10 @@ class AdmissionResponse(Base):
     """API model for the admission outcome.
 
     Attributes:
-        run_id: The admitted obligation.
+        obligation_id: The admitted obligation.
         status: Projection status after the release (normally ``pending``).
     """
-    run_id: UUID
+    obligation_id: UUID
     status: str
 
 
@@ -419,7 +419,7 @@ class TransitionPageResponse(Base):
     """One page of the account-transition feed.
 
     Attributes:
-        entries: Lifecycle event records in log order (run_id, flow_name,
+        entries: Lifecycle event records in log order (obligation_id, flow_name,
             event, actor, attempt, from/to, cause, plus ``seq``).
         cursor: Pass back as ``after`` to continue; unchanged when the
             page is empty (the tail was reached).
@@ -432,11 +432,11 @@ class ReviewResponse(Base):
     """API model for the review outcome.
 
     Attributes:
-        run_id: The reviewed obligation.
+        obligation_id: The reviewed obligation.
         status: Projection status after the review was applied.
         decision: The recorded decision.
     """
-    run_id: UUID
+    obligation_id: UUID
     status: str
     decision: str
 
@@ -449,7 +449,7 @@ class FlowSubmissionResponse(Base):
 
     Attributes:
         job_id: Unique job identifier in the queue.
-        run_id: Identifier of the run this submission maps to — the
+        obligation_id: Identifier of the run this submission maps to — the
             pre-existing run when ``deduplicated`` is True.
         status: Initial status — ``pending``, or ``held`` when the
             submission declared ``admission: gated``.
@@ -460,12 +460,12 @@ class FlowSubmissionResponse(Base):
     Example:
         >>> response = FlowSubmissionResponse(
         ...     job_id=UUID("..."),
-        ...     run_id=UUID("..."),
+        ...     obligation_id=UUID("..."),
         ...     submitted_at=datetime.now()
         ... )
     """
     job_id: UUID
-    run_id: UUID
+    obligation_id: UUID
     status: ReportedStatus = Field(default=ReportedStatus.pending)
     submitted_at: TimestampDTO
     deduplicated: bool = False
@@ -475,14 +475,14 @@ class CancelRunResponse(Base):
     """API model for a run-cancellation request's outcome.
 
     Attributes:
-        run_id: The targeted run.
+        obligation_id: The targeted run.
         status: Run status after the request — ``canceled`` when the run
             was closed directly (it was not executing), ``running`` when a
             cooperative cancel was flagged for the owning worker, or the
             pre-existing terminal status when the run was already closed.
         cancel_requested: Whether the cooperative-cancellation flag is set.
     """
-    run_id: UUID
+    obligation_id: UUID
     status: ReportedStatus
     cancel_requested: bool
 
@@ -513,18 +513,18 @@ class LogQueryRequest(Base):
 
     Attributes:
         flow_name: Name of the flow that owns the run.
-        run_id: UUID of the run to fetch.
+        obligation_id: UUID of the run to fetch.
         with_logs: When ``True`` (default) the response includes all log
             entries recorded during the run.
 
     Example:
         >>> request = LogQueryRequest(
         ...     flow_name="ingest",
-        ...     run_id=UUID("018f..."),
+        ...     obligation_id=UUID("018f..."),
         ... )
     """
     flow_name: str = Field(description="Name of the flow that owns the run")
-    run_id: UUID = Field(description="UUID of the run to fetch")
+    obligation_id: UUID = Field(description="UUID of the run to fetch")
     with_logs: bool = Field(True, description="Include log entries in the response")
 
 
@@ -549,7 +549,7 @@ class SpanRecordDTO(Base):
     Mirrors :class:`~flowlet.models.SpanRecord`.
 
     Attributes:
-        run_id: Identifier of the enclosing run (equals the trace id).
+        obligation_id: Identifier of the enclosing run (equals the trace id).
         span_id: OTel span id, 16-char hex string.
         parent_span_id: Parent span id, or ``None`` for the root span.
         name: Span (flow/task) name.
@@ -563,7 +563,7 @@ class SpanRecordDTO(Base):
         events: Log events recorded inside the span.
         attributes: Remaining span attributes.
     """
-    run_id: UUID | None = None
+    obligation_id: UUID | None = None
     span_id: str | None = None
     parent_span_id: str | None = None
     name: str | None = None
@@ -635,7 +635,7 @@ class ObligationSummaryDTO(Base):
     metadata written atomically by the owning worker on every state transition.
 
     Attributes:
-        run_id: Unique identifier of the run.
+        obligation_id: Unique identifier of the run.
         flow_name: Name of the flow being executed.
         status: Current execution status.
         worker_id: Identifier of the owning worker process.
@@ -644,7 +644,7 @@ class ObligationSummaryDTO(Base):
         attempt: Current attempt number (1-based).
         max_retries: Maximum number of retry attempts allowed.
     """
-    run_id: UUID
+    obligation_id: UUID
     flow_name: str
     status: ReportedStatus
     worker_id: str

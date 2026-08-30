@@ -36,7 +36,7 @@ def _make_ts(dt: datetime | None = None) -> Timestamp:
 
 def _make_run_state(
     *,
-    run_id: UUID | None = None,
+    obligation_id: UUID | None = None,
     flow_name: str = "test_flow",
     status: ReportedStatus = ReportedStatus.running,
     worker_id: str = "worker-1",
@@ -49,7 +49,7 @@ def _make_run_state(
 ) -> ObligationSummary:
     now = _make_ts()
     return ObligationSummary(
-        run_id=run_id or uuid7(),
+        obligation_id=obligation_id or uuid7(),
         flow_name=flow_name,
         status=status,
         worker_id=worker_id,
@@ -82,7 +82,7 @@ def _record_from_state(state: ObligationSummary) -> "ObligationRecord":
     )
 
     obligation = Obligation(
-        id=state.run_id,
+        id=state.obligation_id,
         flow_name=state.flow_name,
         kwargs=state.kwargs,
         max_retries=state.max_retries,
@@ -186,7 +186,7 @@ def _make_flow_job(
 
 def _make_span_record(
     *,
-    run_id: UUID | None = None,
+    obligation_id: UUID | None = None,
     span_id: str | None = None,
     parent_span_id: str | None = None,
     name: str = "test_flow",
@@ -203,7 +203,7 @@ def _make_span_record(
     import secrets
 
     return SpanRecord(
-        run_id=run_id or uuid7(),
+        obligation_id=obligation_id or uuid7(),
         span_id=span_id or secrets.token_hex(8),
         parent_span_id=parent_span_id,
         name=name,

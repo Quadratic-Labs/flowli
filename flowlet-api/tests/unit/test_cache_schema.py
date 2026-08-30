@@ -3,14 +3,14 @@ Unit tests for the cache's ORM schema (api/cache.py) — async snapshot function
 
 Covers:
 - ensure_snapshot_schema creates the runs table (no RunLink)
-- upsert_run_state inserts a new row
-- upsert_run_state updates an existing row (idempotent)
+- upsert_obligation_summary inserts a new row
+- upsert_obligation_summary updates an existing row (idempotent)
 """
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from flowlet.api.cache import ObligationRow, upsert_run_state
+from flowlet.api.cache import ObligationRow, upsert_obligation_summary
 from flowlet.models import ReportedStatus
 
 
@@ -36,29 +36,29 @@ class TestEnsureSnapshotSchema:
 
 @pytest.mark.unit
 class TestUpsertRunState:
-    """upsert_run_state inserts on first call and updates on re-call."""
+    """upsert_obligation_summary inserts on first call and updates on re-call."""
 
     async def test_insert(self, async_session: AsyncSession, make_run_state):
         state = make_run_state(flow_name="flow_a")
-        await upsert_run_state(async_session, state)
+        await upsert_obligation_summary(async_session, state)
         await async_session.flush()
 
-        row = await async_session.get(ObligationRow, state.run_id)
+        row = await async_session.get(ObligationRow, state.obligation_id)
         assert row is not None
         assert row.flow_name == "flow_a"
         assert row.status == ReportedStatus.running.value
 
     async def test_update_is_idempotent(self, async_session: AsyncSession, make_run_state):
         state = make_run_state(status=ReportedStatus.running)
-        await upsert_run_state(async_session, state)
+        await upsert_obligation_summary(async_session, state)
         await async_session.flush()
 
         from attrs import evolve
         updated = evolve(state, status=ReportedStatus.completed)
-        await upsert_run_state(async_session, updated)
+        await upsert_obligation_summary(async_session, updated)
         await async_session.flush()
 
-        row = await async_session.get(ObligationRow, state.run_id)
+        row = await async_session.get(ObligationRow, state.obligation_id)
         assert row.status == ReportedStatus.completed.value
 
 

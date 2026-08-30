@@ -44,7 +44,7 @@ class FlowletDeps(TypedDict, total=False):
         cache_repo: Pull-refreshed SQLite run cache; present only when
             storage is configured.
         querier: Read-side query object; None when no storage is configured.
-        dispatch_repo: Dispatch-key → run_id mapping enabling idempotent
+        dispatch_repo: Dispatch-key → obligation_id mapping enabling idempotent
             submissions; present only when storage is configured.
         events: Run lifecycle event-log writer; present only when storage
             is configured.

@@ -37,7 +37,7 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
     kwargs = payload.kwargs or {}
 
     state_repo = tf.state_repo
-    run_id = uuid7()
+    obligation_id = uuid7()
     executor = RegistryExecutor(registry)
 
     if state_repo is None:
@@ -48,7 +48,7 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
     def _initial(_existing) -> ObligationRecord:
         record = ObligationRecord(
             obligation=Obligation(
-                id=run_id,
+                id=obligation_id,
                 flow_name=flow_name,
                 kwargs=kwargs,
                 max_retries=1,  # synchronous calls are never retried
@@ -64,7 +64,7 @@ def _run_flow_sync(tf: Taskflow, flow_name: str, payload: FlowArguments) -> None
     assert tf.signals is not None
 
     lease = state_repo.acquire(
-        flow_name, run_id, ttl=DEFAULT_TIMEOUT, holder="sync-worker",
+        flow_name, obligation_id, ttl=DEFAULT_TIMEOUT, holder="sync-worker",
         state_fn=_initial,
     )
     assert lease is not None  # fresh uuid7 — cannot be held

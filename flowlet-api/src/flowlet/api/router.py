@@ -87,7 +87,7 @@ _SUBMIT_FLOW = RouteSpec(
 )
 
 _CANCEL_RUN = RouteSpec(
-    path="/runs/{run_id}/cancel",
+    path="/runs/{obligation_id}/cancel",
     method="POST",
     summary="Request cancellation of an active run",
     description=(
@@ -107,7 +107,7 @@ _CANCEL_RUN = RouteSpec(
 )
 
 _REVIEW_RUN = RouteSpec(
-    path="/runs/{run_id}/review",
+    path="/runs/{obligation_id}/review",
     method="POST",
     summary="Resolve a gated obligation with a review",
     description=(
@@ -130,7 +130,7 @@ _REVIEW_RUN = RouteSpec(
 )
 
 _ADMIT_RUN = RouteSpec(
-    path="/runs/{run_id}/admit",
+    path="/runs/{obligation_id}/admit",
     method="POST",
     summary="Release a held obligation's admission",
     description=(
@@ -152,7 +152,7 @@ _ADMIT_RUN = RouteSpec(
 )
 
 _CLAIM_RUN = RouteSpec(
-    path="/runs/{run_id}/claim",
+    path="/runs/{obligation_id}/claim",
     method="POST",
     summary="Claim an obligation for a detached executor",
     description=(
@@ -174,7 +174,7 @@ _CLAIM_RUN = RouteSpec(
 )
 
 _RENEW_RUN = RouteSpec(
-    path="/runs/{run_id}/renew",
+    path="/runs/{obligation_id}/renew",
     method="POST",
     summary="Heartbeat a held lease and observe signals",
     tags=["Executor"],
@@ -188,7 +188,7 @@ _RENEW_RUN = RouteSpec(
 )
 
 _RUN_EFFECT = RouteSpec(
-    path="/runs/{run_id}/effects",
+    path="/runs/{obligation_id}/effects",
     method="POST",
     summary="Record a side-effect exactly once per occurrence",
     tags=["Executor"],
@@ -202,7 +202,7 @@ _RUN_EFFECT = RouteSpec(
 )
 
 _SEND_MESSAGE = RouteSpec(
-    path="/runs/{run_id}/messages/{topic}",
+    path="/runs/{obligation_id}/messages/{topic}",
     method="POST",
     summary="Send an ordered message to a run's topic",
     description=(
@@ -224,7 +224,7 @@ _SEND_MESSAGE = RouteSpec(
 )
 
 _RUN_RECV = RouteSpec(
-    path="/runs/{run_id}/recv",
+    path="/runs/{obligation_id}/recv",
     method="POST",
     summary="Consume one message from a topic, checkpointed",
     description=(
@@ -245,7 +245,7 @@ _RUN_RECV = RouteSpec(
 )
 
 _RUN_OUTCOME = RouteSpec(
-    path="/runs/{run_id}/outcome",
+    path="/runs/{obligation_id}/outcome",
     method="POST",
     summary="Conclude the attempt and route the obligation",
     tags=["Executor"],
@@ -280,10 +280,10 @@ _LOGS_QUERY = RouteSpec(
 )
 
 _RUN_BY_ID = RouteSpec(
-    path="/runs/{run_id}",
+    path="/runs/{obligation_id}",
     method="GET",
     summary="Fetch a run by its ID",
-    description="Look up a run using only its run_id without needing flow_name.",
+    description="Look up a run using only its obligation_id without needing flow_name.",
     tags=["Query"],
     response_model=TraceDTO,
     responses={
@@ -312,7 +312,7 @@ _TRANSITIONS = RouteSpec(
 )
 
 _RUN_EVENTS = RouteSpec(
-    path="/runs/{run_id}/events",
+    path="/runs/{obligation_id}/events",
     method="GET",
     summary="Fetch a run's lifecycle event timeline",
     description=(

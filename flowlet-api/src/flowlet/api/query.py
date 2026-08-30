@@ -50,7 +50,7 @@ class RunQuery:
     SQL_RECENT_STATES = (
         select(ObligationRow)
         .where(ObligationRow.flow_name == bindparam("flow_name"))
-        .order_by(ObligationRow.run_id.desc())  # UUIDv7: descending = newest first
+        .order_by(ObligationRow.obligation_id.desc())  # UUIDv7: descending = newest first
         .limit(bindparam("last_n"))
     )
     SQL_STATES = (
@@ -88,15 +88,15 @@ class RunQuery:
         # Mirrors PeriodUUID.covers(): strictly inside (start_id, end_id).
         return (
             stmt
-            .where(ObligationRow.run_id > bindparam("start_id"))
-            .where(ObligationRow.run_id < bindparam("end_id"))
+            .where(ObligationRow.obligation_id > bindparam("start_id"))
+            .where(ObligationRow.obligation_id < bindparam("end_id"))
         )
 
     @classmethod
     def _sql_limit_offset(cls, stmt: Select) -> Select:
         return (
             stmt
-            .order_by(ObligationRow.run_id.desc())  # UUIDv7: descending = newest first
+            .order_by(ObligationRow.obligation_id.desc())  # UUIDv7: descending = newest first
             .limit(bindparam("limit"))
             .offset(bindparam("offset"))
         )
@@ -125,7 +125,7 @@ class RunQuery:
         runs have aged out of the ephemeral cache since the last cold start.
 
         When a RunHistory is configured, its rows are merged in per flow,
-        additively: a run_id already present from the cache is never
+        additively: a obligation_id already present from the cache is never
         duplicated or overwritten (the cache is live and always wins), and
         the merged list per flow is still capped at *last_n*.
 
@@ -161,15 +161,15 @@ class RunQuery:
                 rows.extend(flow_rows)
 
         if self.history is not None:
-            seen = {row.run_id for row in rows}
+            seen = {row.obligation_id for row in rows}
             for name in names:
                 remaining = last_n - cache_counts.get(name, 0)
                 if remaining <= 0:
                     continue
                 for state in await self.history.list_states([name], last_n=remaining):
-                    if state.run_id not in seen:
+                    if state.obligation_id not in seen:
                         rows.append(state)
-                        seen.add(state.run_id)
+                        seen.add(state.obligation_id)
 
         logger.debug(
             "list_recent_states",
@@ -194,7 +194,7 @@ class RunQuery:
             status: Optional status allow-list; ``None`` means no filter.
             limit: Maximum number of rows to return.
             offset: Number of rows to skip before returning results (for
-                cursor-style pagination use ``run_id`` ordering directly).
+                cursor-style pagination use ``obligation_id`` ordering directly).
 
         Returns:
             ``ObligationRow`` rows, newest first.  Compatible with
@@ -222,11 +222,11 @@ class RunQuery:
         logger.debug("list_states", extra={"flows": len(names), "rows": len(rows)})
         return rows
 
-    async def find_flow_name(self, run_id: UUID) -> str | None:
-        """Resolve the flow that owns *run_id*, or None when unknown.
+    async def find_flow_name(self, obligation_id: UUID) -> str | None:
+        """Resolve the flow that owns *obligation_id*, or None when unknown.
 
         Args:
-            run_id: UUID of the run to resolve.
+            obligation_id: UUID of the run to resolve.
 
         Returns:
             The owning flow's name, or None if the run is not in the cache.
@@ -234,18 +234,18 @@ class RunQuery:
         await self.cache.refresh()
         async with self._session_factory()() as session:
             result = await session.execute(
-                select(ObligationRow.flow_name).where(ObligationRow.run_id == run_id)
+                select(ObligationRow.flow_name).where(ObligationRow.obligation_id == obligation_id)
             )
             return result.scalar_one_or_none()
 
-    async def get_run_by_run_id(self, run_id: UUID, with_logs: bool = True) -> dict:
-        """Load a run by run_id alone, looking up flow_name from the database.
+    async def get_run_by_run_id(self, obligation_id: UUID, with_logs: bool = True) -> dict:
+        """Load a run by obligation_id alone, looking up flow_name from the database.
 
         Convenience wrapper around ``get_run`` that first queries the SQLite
         snapshot to discover which flow owns the run.
 
         Args:
-            run_id: UUID of the run to fetch.
+            obligation_id: UUID of the run to fetch.
             with_logs: should or not include logs in the return value
 
         Returns:
@@ -253,23 +253,23 @@ class RunQuery:
             if requested.  Suitable for ``TraceDTO.model_validate(result)``.
 
         Raises:
-            ValueError: When no run with the given ``run_id`` exists.
+            ValueError: When no run with the given ``obligation_id`` exists.
         """
         await self.cache.refresh()
         async with self._session_factory()() as session:
             result = await session.execute(
-                select(ObligationRow).where(ObligationRow.run_id == run_id)
+                select(ObligationRow).where(ObligationRow.obligation_id == obligation_id)
             )
             row = result.scalar_one_or_none()
             if row is None:
-                raise ValueError(f"Run {run_id} not found")
-            return self.get_run(row.flow_name, run_id, with_logs)
+                raise ValueError(f"Run {obligation_id} not found")
+            return self.get_run(row.flow_name, obligation_id, with_logs)
 
-    def get_run(self, flow_name: str, run_id: UUID, with_logs: bool = True) -> dict:
+    def get_run(self, flow_name: str, obligation_id: UUID, with_logs: bool = True) -> dict:
         """Load all logs for a run and compute its hierarchical summary.
 
         Reads log entries recursively from storage starting at the root span
-        identified by (*flow_name*, *run_id*), following every
+        identified by (*flow_name*, *obligation_id*), following every
         the run folder — every span of the run lives there, so subflow and
         all nested subflows and subtasks are included.
 
@@ -279,7 +279,7 @@ class RunQuery:
 
         Args:
             flow_name: Name of the root flow (selects the log subdirectory).
-            run_id: UUID of the root span to start loading from.
+            obligation_id: UUID of the root span to start loading from.
             with_logs: should or not include logs in the return value
 
         Returns:
@@ -293,10 +293,10 @@ class RunQuery:
             ValueError: When the loaded logs contain no identifiable root span
                 (propagated from :func:`~flowlet.analysis.summarise`).
         """
-        logs = self.log_repo.get_spans(flow_name, run_id)
+        logs = self.log_repo.get_spans(flow_name, obligation_id)
         logger.debug(
             "get_run",
-            extra={"flow_name": flow_name, "run_id": str(run_id), "logs": len(logs)},
+            extra={"flow_name": flow_name, "obligation_id": str(obligation_id), "logs": len(logs)},
         )
         summary = analysis.summarise(logs)
         result = destructure(summary)

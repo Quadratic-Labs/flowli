@@ -90,7 +90,7 @@ result = data_pipeline("api")
 from flowlet import FlowManager
 
 manager = FlowManager(db_session_factory)
-run_id = manager.run_flow("data_pipeline", source="api")
+obligation_id = manager.run_flow("data_pipeline", source="api")
 ```
 
 ### Start the API Server
@@ -158,8 +158,8 @@ def my_task(x, y):
 ### Runs
 
 - `GET /runs` - List recent flow runs
-- `GET /runs/{run_id}` - Get specific run details
-- `GET /runs/{run_id}/tasks` - Get tasks for a run
+- `GET /runs/{obligation_id}` - Get specific run details
+- `GET /runs/{obligation_id}/tasks` - Get tasks for a run
 
 ## Configuration
 

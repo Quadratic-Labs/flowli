@@ -6,7 +6,7 @@ run's ``cancel`` signal; outside any worker context it is a no-op, so flows
 remain plain callables.
 
 Cancellation travels out-of-band: the API sets an immutable signal object
-under ``signals/<flow>/<run_id>/``, never touching the lease document.  The
+under ``signals/<flow>/<obligation_id>/``, never touching the lease document.  The
 lease document therefore has exactly one writer — its holder — and a failed
 renewal always means the lease was fenced (stolen after expiry), never a
 flag to reinterpret.
@@ -205,7 +205,7 @@ def recv(topic: str) -> dict | None:
     """Consume the next message on *topic*, checkpointed in the account.
 
     The obligation's message channel: senders append ordered messages
-    (POST ``/runs/{run_id}/messages/{topic}``, or
+    (POST ``/runs/{obligation_id}/messages/{topic}``, or
     ``MessageRepository.send``); the running attempt consumes them in send
     order.  Each consumption is recorded in the account under the lease
     fence, so consumption is exactly-once per obligation and deterministic

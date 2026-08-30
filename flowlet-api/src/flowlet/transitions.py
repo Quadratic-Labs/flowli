@@ -48,7 +48,7 @@ class TransitionPage:
 
     Attributes:
         entries: Transition records in log order — the per-run event record
-            (ts, run_id, flow_name, event, actor, attempt, from/to, cause)
+            (ts, obligation_id, flow_name, event, actor, attempt, from/to, cause)
             plus ``seq``, the entry's ``<commit>.<index>`` position.
         cursor: Commit number of the last fully-consumed commit; pass it
             back as ``after`` to continue.  Unchanged when no entries.
@@ -84,7 +84,7 @@ class TransitionFeed:
             logger.warning(
                 "transition_append_failed",
                 extra={
-                    "run_id": record.get("run_id"),
+                    "obligation_id": record.get("obligation_id"),
                     "event": record.get("event"),
                 },
                 exc_info=True,

@@ -27,9 +27,9 @@ sweeper (cron job, 1–5 min) ──> list state/ ──> re-enqueue expired lea
 API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on demand
 ```
 
-- **Control plane**: `state/<flow>/<run_id>.json`, CAS-written, *active runs only*.
+- **Control plane**: `state/<flow>/<obligation_id>.json`, CAS-written, *active runs only*.
   Ownership = lease (`deadline_at`); no heartbeats, no queue-visibility coupling.
-- **Durable record**: `runs/<flow>/<yyyy-mm-dd>/<run_id>/` containing
+- **Durable record**: `runs/<flow>/<yyyy-mm-dd>/<obligation_id>/` containing
   `spans-<attempt>.jsonl` (OTel spans) and `state.json` (final state, moved
   here on terminal transition). One folder = one run, self-contained.
 - **Queue**: pure wake-up. `enqueue / dequeue / ack`. No retry_count, no
@@ -40,7 +40,7 @@ API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on deman
 - **Reads**: API rebuilds/refreshes an ephemeral local SQLite from
   `state/` (active) + recent `runs/` partitions (history), TTL a few seconds.
   No pubsub, no subscriber, no snapshot rollout/partition machinery.
-- **Observability**: OTel SDK; run_id (uuid7) == trace_id. Mandatory sink is a
+- **Observability**: OTel SDK; obligation_id (uuid7) == trace_id. Mandatory sink is a
   custom `BlobSpanExporter` (product truth); OTLP/App Insights exporters are
   optional add-ons.
 
@@ -49,8 +49,8 @@ API (scale to 0) ──> refresh local SQLite cache from state/ + runs/ on deman
 | Decision | Choice | Rationale |
 |---|---|---|
 | IDs | stdlib `uuid7` everywhere; drop `uuid7_desc` | one convention; uuid7 == 128-bit OTel trace_id; recency via date partitions + explicit `DESC` |
-| Span identity | native OTel 64-bit span_id (hex) in records | no impedance with SDK; run_id remains the join key |
-| Log layout | `runs/<flow>/<date>/<run_id>/spans-<attempt>.jsonl` | 1 read per run; hierarchy from parent_span_id fields; per-attempt file avoids two-writer appends after takeover |
+| Span identity | native OTel 64-bit span_id (hex) in records | no impedance with SDK; obligation_id remains the join key |
+| Log layout | `runs/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl` | 1 read per run; hierarchy from parent_span_id fields; per-attempt file avoids two-writer appends after takeover |
 | Retry authority | `ObligationSummary.attempt/max_retries` only | queue knows nothing about retries |
 | kwargs persistence | stored in the state file at claim time | sweeper must be able to re-enqueue a crashed run without the original message |
 | Lease default | `@flow(timeout=...)`, default 15 min; deadline = now + timeout per attempt | failure detection = deadline + sweep interval |
@@ -108,7 +108,7 @@ The biggest safety payoff; independent of OTel.
 
 - New `tracing.py`: `TracerProvider` setup + `BlobSpanExporter` (groups spans
   by trace_id, appends JSON lines to
-  `runs/<flow>/<date>/<run_id>/spans-<attempt>.jsonl`; flow/attempt carried as
+  `runs/<flow>/<date>/<obligation_id>/spans-<attempt>.jsonl`; flow/attempt carried as
   span attributes). Worker calls `force_flush()` before the terminal CAS write.
 - `@flow`/`@task` decorators → `tracer.start_as_current_span`; user logging
   inside flows becomes span events via a small logging-handler shim.

@@ -28,7 +28,7 @@ class TestSubmitFlow:
         job = mock_queue.enqueue.call_args.args[0]
         assert job.flow_name == "any_flow"
         assert job.kwargs == {"x": 1}
-        assert resp.run_id == job.run_id
+        assert resp.obligation_id == job.obligation_id
 
     def test_kernel_accepts_unregistered_flows(self, controller_with_queue):
         """The kernel knows no registry: external flows (CodeFlow tasks)
@@ -36,7 +36,7 @@ class TestSubmitFlow:
         resp = controller_with_queue.submit_flow(
             "codeflow.task", FlowArguments(kwargs={"intent": "x"})
         )
-        assert resp.run_id is not None
+        assert resp.obligation_id is not None
 
     def test_submission_params_reach_the_job(self, controller_with_queue, mock_queue):
         controller_with_queue.submit_flow(
@@ -100,14 +100,14 @@ class TestQueryRuns:
 class TestQueryLogs:
     def test_no_querier_raises_503(self, controller: FlowController):
         with pytest.raises(HTTPException) as exc:
-            controller.query_logs(LogQueryRequest(flow_name="f", run_id=uuid7()))
+            controller.query_logs(LogQueryRequest(flow_name="f", obligation_id=uuid7()))
         assert exc.value.status_code == 503
 
     def test_value_error_raises_404(self, controller_with_querier, mock_querier):
         mock_querier.get_run = Mock(side_effect=ValueError("not found"))
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
-                LogQueryRequest(flow_name="f", run_id=uuid7())
+                LogQueryRequest(flow_name="f", obligation_id=uuid7())
             )
         assert exc.value.status_code == 404
 
@@ -117,7 +117,7 @@ class TestQueryLogs:
         mock_querier.get_run = Mock(side_effect=RuntimeError("boom"))
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
-                LogQueryRequest(flow_name="f", run_id=uuid7())
+                LogQueryRequest(flow_name="f", obligation_id=uuid7())
             )
         assert exc.value.status_code == 400
 
@@ -129,6 +129,6 @@ class TestQueryLogs:
         mock_querier.get_run = Mock(return_value={"span_id": "not-a-valid-run"})
         with pytest.raises(HTTPException) as exc:
             controller_with_querier.query_logs(
-                LogQueryRequest(flow_name="f", run_id=uuid7())
+                LogQueryRequest(flow_name="f", obligation_id=uuid7())
             )
         assert exc.value.status_code == 500

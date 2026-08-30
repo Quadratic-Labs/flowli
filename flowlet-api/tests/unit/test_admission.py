@@ -43,10 +43,10 @@ def signals(store):
     return SignalRepository(store=store)
 
 
-def _held_record(run_id=None, flow_name="test_flow", **obligation_kwargs):
+def _held_record(obligation_id=None, flow_name="test_flow", **obligation_kwargs):
     return ObligationRecord(
         obligation=Obligation(
-            id=run_id or uuid7(),
+            id=obligation_id or uuid7(),
             flow_name=flow_name,
             admission="gated",
             status=ObligationStatus.held,
@@ -97,7 +97,7 @@ class TestHeldIsNotClaimable:
     ):
         job = make_flow_job()
         state_repo.create(
-            job.flow_name, job.run_id, _held_record(run_id=job.run_id)
+            job.flow_name, job.obligation_id, _held_record(obligation_id=job.obligation_id)
         )
 
         executed = []
@@ -109,7 +109,7 @@ class TestHeldIsNotClaimable:
 
         assert rc == 2
         assert executed == []
-        record = state_repo.read(job.flow_name, job.run_id).record
+        record = state_repo.read(job.flow_name, job.obligation_id).record
         assert record.obligation.status == ObligationStatus.held
         assert record.attempts == []  # nothing was claimed
 
@@ -131,7 +131,7 @@ class TestHeldIsNotClaimable:
 
         wake = source.dequeue()
         assert wake is not None
-        assert wake.run_id == obligation.id
+        assert wake.obligation_id == obligation.id
 
     def test_sweeper_leaves_held_runs_alone(self, state_repo, signals):
         record = _held_record()
@@ -172,7 +172,7 @@ class TestAdmissionEndpoints:
 
         assert resp.status == ReportedStatus.held
         assert queue.enqueued == []  # nothing could execute it
-        record = state_repo.read("test_flow", resp.run_id).record
+        record = state_repo.read("test_flow", resp.obligation_id).record
         assert record.obligation.status == ObligationStatus.held
         assert record.obligation.admission == "gated"
         assert record.obligation.kwargs == {"x": 1}
@@ -186,7 +186,7 @@ class TestAdmissionEndpoints:
         resp = controller.submit_flow(
             "test_flow", FlowArguments(admission="gated")
         )
-        record = state_repo.read("test_flow", resp.run_id).record
+        record = state_repo.read("test_flow", resp.obligation_id).record
         assert record.obligation.review_policy == "gated"
 
     def test_gated_submission_needs_no_queue(self, state_repo, signals):
@@ -204,16 +204,16 @@ class TestAdmissionEndpoints:
         )
 
         admitted = controller.admit_run(
-            resp.run_id,
+            resp.obligation_id,
             AdmissionRequest(actor="dep-controller", reason="dep_discharged"),
         )
 
         assert admitted.status == "pending"
-        record = state_repo.read("test_flow", resp.run_id).record
+        record = state_repo.read("test_flow", resp.obligation_id).record
         assert record.obligation.status == ObligationStatus.open
         assert record.obligation.admitted_by == "dep-controller"
         wake, _ = queue.enqueued[0]
-        assert wake.run_id == resp.run_id
+        assert wake.obligation_id == resp.obligation_id
         assert wake.caused_by == "admission:released_by:dep-controller"
 
     def test_admit_on_non_held_run_is_409(self, state_repo, signals):
@@ -222,10 +222,10 @@ class TestAdmissionEndpoints:
         resp = controller.submit_flow(
             "test_flow", FlowArguments(admission="gated")
         )
-        controller.admit_run(resp.run_id, AdmissionRequest(actor="dep"))
+        controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
 
         with pytest.raises(HTTPException) as exc:
-            controller.admit_run(resp.run_id, AdmissionRequest(actor="dep"))
+            controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
         assert exc.value.status_code == 409
 
     def test_full_loop_held_admitted_executed(
@@ -238,7 +238,7 @@ class TestAdmissionEndpoints:
         resp = controller.submit_flow(
             "test_flow", FlowArguments(kwargs={"x": 1}, admission="gated")
         )
-        controller.admit_run(resp.run_id, AdmissionRequest(actor="dep"))
+        controller.admit_run(resp.obligation_id, AdmissionRequest(actor="dep"))
 
         seen = []
         wake, _ = queue.enqueued[0]
@@ -251,6 +251,6 @@ class TestAdmissionEndpoints:
 
         assert rc == 0
         assert seen == [{"x": 1}]
-        record = state_repo.read("test_flow", resp.run_id).record
+        record = state_repo.read("test_flow", resp.obligation_id).record
         assert record.obligation.status == ObligationStatus.discharged
         assert record.obligation.admitted_by == "dep"

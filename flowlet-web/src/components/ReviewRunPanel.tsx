@@ -7,18 +7,18 @@ import { api } from '@/lib/api';
  *  reject reopens it for another attempt (or abandons it, if the attempt
  *  budget is spent). The kernel's gate policy — not this form — decides
  *  whether the given actor is eligible; a refusal surfaces as a 403. */
-export function ReviewRunPanel({ runId }: { runId: string }) {
+export function ReviewRunPanel({ obligationId }: { obligationId: string }) {
   const [actor, setActor] = useState('');
   const [reason, setReason] = useState('');
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
     mutationFn: (decision: 'approved' | 'rejected') =>
-      api.reviewRun(runId, decision, actor.trim(), reason.trim() || undefined),
+      api.reviewRun(obligationId, decision, actor.trim(), reason.trim() || undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['runs'] });
-      queryClient.invalidateQueries({ queryKey: ['run', runId] });
-      queryClient.invalidateQueries({ queryKey: ['run-events', runId] });
+      queryClient.invalidateQueries({ queryKey: ['run', obligationId] });
+      queryClient.invalidateQueries({ queryKey: ['run-events', obligationId] });
     },
   });
 

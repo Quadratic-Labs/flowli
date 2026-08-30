@@ -31,16 +31,16 @@ export default function RunsList() {
                   <th key={h} className="py-3 px-4">{h}</th>)}</tr>
               </thead>
               <tbody>{runs.map(r => (
-                <tr key={r.run_id} className="border-t hover:bg-gray-50">
+                <tr key={r.obligation_id} className="border-t hover:bg-gray-50">
                   <td className="py-3 px-4 font-semibold">{r.flow_name}</td>
                   <td className="py-3 px-4"><StatusBadge status={r.status} /></td>
                   <td className="py-3 px-4 text-gray-500">{new Date(r.started_at).toLocaleString()}</td>
                   <td className="py-3 px-4 text-gray-500">{r.ended_at ? new Date(r.ended_at).toLocaleString() : 'Running...'}</td>
                   <td className="py-3 px-4">
                     <div className="flex items-center gap-2">
-                      <Link to={`/runs/${r.run_id}`}
+                      <Link to={`/runs/${r.obligation_id}`}
                         className="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm">View Details</Link>
-                      {isCancellable(r.status) && <CancelRunButton runId={r.run_id} small />}
+                      {isCancellable(r.status) && <CancelRunButton obligationId={r.obligation_id} small />}
                     </div>
                   </td>
                 </tr>

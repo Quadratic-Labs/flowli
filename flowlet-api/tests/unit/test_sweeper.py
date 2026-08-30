@@ -63,7 +63,7 @@ class TestLeaseRecovery:
         stats = sweep(state_repo, queue)
 
         assert stats.requeued == 0
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.running
         assert view.epoch == 1  # never touched
 
@@ -81,13 +81,13 @@ class TestLeaseRecovery:
         stats = sweep(state_repo, queue)
 
         assert stats.requeued == 1
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.pending
         assert view.state.attempt == 1  # attempt increments at claim, not at sweep
         assert view.holder is None  # recovered runs are parked, released
         assert view.epoch == 2  # the recovery was a fenced steal
         job, _ = queue.enqueued[0]
-        assert job.run_id == state.run_id
+        assert job.obligation_id == state.obligation_id
         assert job.kwargs == {"x": 1}  # rebuilt from the state payload
 
     def test_expired_lease_with_exhausted_retries_failed(
@@ -106,7 +106,7 @@ class TestLeaseRecovery:
 
         assert stats.failed == 1
         assert queue.enqueued == []
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.failed
         assert view.state.ended_at is not None
         assert view.holder is None
@@ -137,7 +137,7 @@ class TestStuckPending:
 
         assert stats.requeued == 1
         job, _ = queue.enqueued[0]
-        assert job.run_id == state.run_id
+        assert job.obligation_id == state.obligation_id
         assert job.kwargs == {"y": 2}
 
     def test_recent_pending_left_alone(
@@ -164,7 +164,7 @@ class TestArchiving:
         stats = sweep(state_repo, queue, archive_grace=3600)
 
         assert stats.archived == 1
-        assert state_repo.read(state.flow_name, state.run_id) is None
+        assert state_repo.read(state.flow_name, state.obligation_id) is None
         assert list((tmp_path / "runs").rglob("state.json"))
 
     def test_recent_closed_run_kept(
@@ -178,7 +178,7 @@ class TestArchiving:
         stats = sweep(state_repo, queue, archive_grace=3600)
 
         assert stats.archived == 0
-        assert state_repo.read(state.flow_name, state.run_id) is not None
+        assert state_repo.read(state.flow_name, state.obligation_id) is not None
 
     def test_archive_clears_signals(
         self, state_repo, signals, queue, make_run_state, seed_lease, store
@@ -188,9 +188,9 @@ class TestArchiving:
             ended_at=Timestamp(datetime.now(UTC) - timedelta(hours=2)),
         )
         seed_lease(store, state)
-        signals.send(state.flow_name, state.run_id, CANCEL, actor="api")
+        signals.send(state.flow_name, state.obligation_id, CANCEL, actor="api")
 
         stats = sweep(state_repo, queue, signals=signals, archive_grace=3600)
 
         assert stats.archived == 1
-        assert signals.get(state.flow_name, state.run_id, CANCEL) is None
+        assert signals.get(state.flow_name, state.obligation_id, CANCEL) is None

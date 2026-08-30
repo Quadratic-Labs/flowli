@@ -75,12 +75,12 @@ export default function Dashboard() {
                   <th className="py-2 pr-4">Started</th><th className="py-2">Actions</th>
                 </tr></thead>
                 <tbody>{metrics.gatedRuns.map(run => (
-                  <tr key={run.run_id} className="border-b hover:bg-gray-50">
+                  <tr key={run.obligation_id} className="border-b hover:bg-gray-50">
                     <td className="py-2 pr-4 font-medium">{run.flow_name}</td>
                     <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
                     <td className="py-2 pr-4">{timeAgo(run.started_at)}</td>
                     <td className="py-2">
-                      <button onClick={() => nav(`/runs/${run.run_id}`)}
+                      <button onClick={() => nav(`/runs/${run.obligation_id}`)}
                         className="text-blue-600 hover:underline">Review</button>
                     </td>
                   </tr>
@@ -104,13 +104,13 @@ export default function Dashboard() {
                   <th className="py-2">Actions</th>
                 </tr></thead>
                 <tbody>{allFailures.map(run => (
-                  <tr key={run.run_id} className="border-b hover:bg-gray-50">
+                  <tr key={run.obligation_id} className="border-b hover:bg-gray-50">
                     <td className="py-2 pr-4 font-medium">{run.flow_name}</td>
                     <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
                     <td className="py-2 pr-4">—</td>
                     <td className="py-2 pr-4">{timeAgo(run.started_at)}</td>
                     <td className="py-2">
-                      <button onClick={() => nav(`/runs/${run.run_id}`)}
+                      <button onClick={() => nav(`/runs/${run.obligation_id}`)}
                         className="text-blue-600 hover:underline">View Details</button>
                     </td>
                   </tr>

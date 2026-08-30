@@ -2,7 +2,7 @@
 Log repository for reading per-run span files.
 
 Provides LogRepository, which reads the
-``runs/<flow_name>/<yyyy-mm-dd>/<run_id>/spans-<attempt>.jsonl`` objects
+``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>/spans-<attempt>.jsonl`` objects
 produced by the tracing layer (flowlet.tracing.BlobSpanExporter) from the
 CairnDB blob store.
 """
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class LogRepository:
     """Read-only repository for per-run span objects.
 
-    Reads the ``runs/<flow_name>/<date>/<run_id>/`` layout written by the
+    Reads the ``runs/<flow_name>/<date>/<obligation_id>/`` layout written by the
     tracing layer.
 
     Attributes:
@@ -37,7 +37,7 @@ class LogRepository:
         flow_name: str | list[str] | None = None,
         period: Period | PeriodUUID | None = None,
     ) -> list[tuple[str, UUID]]:
-        """List recorded (flow_name, run_id) pairs.
+        """List recorded (flow_name, obligation_id) pairs.
 
         When ``flow_name`` is ``None`` the whole ``runs/`` prefix is listed.
         When a period is given, keys outside the date partitions it covers
@@ -49,7 +49,7 @@ class LogRepository:
 
         Returns:
             Sorted (oldest-first, ascending UUIDv7) list of
-            ``(flow_name, run_id)`` tuples.
+            ``(flow_name, obligation_id)`` tuples.
         """
         if flow_name is None:
             prefixes = ["runs/"]
@@ -64,7 +64,7 @@ class LogRepository:
         found: set[tuple[str, UUID]] = set()
         for prefix in prefixes:
             for key in self.store.list_objects_sync(prefix):
-                # runs/<flow>/<date>/<run_id>/<object>
+                # runs/<flow>/<date>/<obligation_id>/<object>
                 parts = key.split("/")
                 if len(parts) < 5:
                     continue
@@ -81,18 +81,18 @@ class LogRepository:
 
         return sorted(found, key=lambda t: str(t[1]))
 
-    def get_spans(self, flow_name: str, run_id: UUID) -> list[SpanRecord]:
+    def get_spans(self, flow_name: str, obligation_id: UUID) -> list[SpanRecord]:
         """Read all recorded spans for a run, across all attempts.
 
         Args:
             flow_name: The flow the run belongs to.
-            run_id: The run's UUID.
+            obligation_id: The run's UUID.
 
         Returns:
             SpanRecords from every ``spans-<attempt>.jsonl`` under the run
             prefix, in key order.  Empty list when nothing was recorded.
         """
-        prefix = f"{run_prefix(flow_name, run_id)}/"
+        prefix = f"{run_prefix(flow_name, obligation_id)}/"
         spans: list[SpanRecord] = []
         for key in sorted(self.store.list_objects_sync(prefix)):
             leaf = key.rsplit("/", 1)[-1]

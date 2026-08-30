@@ -29,10 +29,10 @@ def dispatch_repo(tmp_path):
 
 class TestResolveOrCreate:
     def test_first_claim_creates(self, dispatch_repo):
-        run_id = uuid7()
-        resolved, created = dispatch_repo.resolve_or_create("flow", "key-1", run_id)
+        obligation_id = uuid7()
+        resolved, created = dispatch_repo.resolve_or_create("flow", "key-1", obligation_id)
         assert created is True
-        assert resolved == run_id
+        assert resolved == obligation_id
 
     def test_second_resolve_returns_existing(self, dispatch_repo):
         first = uuid7()
@@ -52,12 +52,12 @@ class TestResolveOrCreate:
         assert dispatch_repo.resolve_or_create("flow_b", "key", b) == (b, True)
 
     def test_mapping_file_records_raw_key_for_audit(self, dispatch_repo, tmp_path):
-        run_id = uuid7()
-        dispatch_repo.resolve_or_create("flow", "webhook-42", run_id)
+        obligation_id = uuid7()
+        dispatch_repo.resolve_or_create("flow", "webhook-42", obligation_id)
         digest = DispatchKeyRepository.digest("webhook-42")
         path = tmp_path / "dispatch" / "flow" / f"{digest}.json"
         data = json.loads(path.read_text())
-        assert data["run_id"] == str(run_id)
+        assert data["obligation_id"] == str(obligation_id)
         assert data["dispatch_key"] == "webhook-42"
         assert data["flow_name"] == "flow"
 
@@ -88,7 +88,7 @@ class TestSubmitFlowWithDispatchKey:
         first = controller.submit_flow("my_flow", args)
         second = controller.submit_flow("my_flow", args)
         assert second.deduplicated is True
-        assert second.run_id == first.run_id
+        assert second.obligation_id == first.obligation_id
         assert second.job_id != first.job_id  # message ids stay unique
 
     def test_duplicate_still_enqueues_wakeup(self, controller, mock_queue):
@@ -104,13 +104,13 @@ class TestSubmitFlowWithDispatchKey:
         second = controller.submit_flow(
             "my_flow", FlowArguments(kwargs={"x": 1, "y": 2}, dispatch_key="k2")
         )
-        assert first.run_id != second.run_id
+        assert first.obligation_id != second.obligation_id
 
     def test_no_key_never_deduplicates(self, controller):
         args = FlowArguments(kwargs={"x": 1, "y": 2})
         first = controller.submit_flow("my_flow", args)
         second = controller.submit_flow("my_flow", args)
-        assert first.run_id != second.run_id
+        assert first.obligation_id != second.obligation_id
         assert second.deduplicated is False
 
     def test_key_without_dispatch_repo_is_503(self, mock_queue):

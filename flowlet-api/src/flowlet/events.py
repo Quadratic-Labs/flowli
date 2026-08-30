@@ -3,7 +3,7 @@
 Every actor that moves a run through its lifecycle (API submit, worker
 claim/finalize, sweeper recovery, cancel endpoint) appends one JSON line to
 
-    ``runs/<flow_name>/<yyyy-mm-dd>/<run_id>/events.jsonl``
+    ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>/events.jsonl``
 
 colocated with the run's span files, so the run folder remains the complete
 durable record and archiving needs no extra step.  The state snapshot stays
@@ -46,7 +46,7 @@ class EventLog:
         self,
         *,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         event: str,
         actor: str,
         attempt: int | None = None,
@@ -59,7 +59,7 @@ class EventLog:
 
         Args:
             flow_name: Flow the run belongs to.
-            run_id: The run's UUID (uuid7 — determines the date partition).
+            obligation_id: The run's UUID (uuid7 — determines the date partition).
             event: Event name, e.g. ``submitted``, ``claimed``, ``completed``,
                 ``retry_scheduled``, ``failed``, ``canceled``,
                 ``cancel_requested``, ``requeued``.
@@ -72,7 +72,7 @@ class EventLog:
         """
         record: dict[str, Any] = {
             "ts": Timestamp.now().to_iso(),
-            "run_id": str(run_id),
+            "obligation_id": str(obligation_id),
             "flow_name": flow_name,
             "event": event,
             "actor": actor,
@@ -88,16 +88,16 @@ class EventLog:
         if details:
             record["details"] = details
 
-        key = f"{run_prefix(flow_name, run_id)}/events.jsonl"
+        key = f"{run_prefix(flow_name, obligation_id)}/events.jsonl"
         if not append_lines(self.store, key, json.dumps(record, default=str) + "\n"):
             logger.warning(
                 "run_event_append_failed",
-                extra={"run_id": str(run_id), "event": event},
+                extra={"obligation_id": str(obligation_id), "event": event},
             )
         if self.feed is not None:
             self.feed.record(record)
 
-    def read(self, flow_name: str, run_id: UUID) -> list[dict[str, Any]]:
+    def read(self, flow_name: str, obligation_id: UUID) -> list[dict[str, Any]]:
         """Read a run's lifecycle events for display, in append order.
 
         Audit/display use only — never a source for execution decisions.
@@ -105,18 +105,18 @@ class EventLog:
 
         Args:
             flow_name: Flow the run belongs to.
-            run_id: The run's UUID.
+            obligation_id: The run's UUID.
 
         Returns:
             List of event records as plain dicts.
         """
-        key = f"{run_prefix(flow_name, run_id)}/events.jsonl"
+        key = f"{run_prefix(flow_name, obligation_id)}/events.jsonl"
         records: list[dict[str, Any]] = []
         for line in read_lines(self.store, key):
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError:
                 logger.warning(
-                    "run_event_parse_error", extra={"run_id": str(run_id)}
+                    "run_event_parse_error", extra={"obligation_id": str(obligation_id)}
                 )
         return records

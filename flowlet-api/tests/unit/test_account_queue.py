@@ -62,7 +62,7 @@ class TestEnqueue:
 
         assert source.enqueue(job) == job.job_id
 
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view is not None
         assert view.holder is None
         assert view.record.obligation.status == ObligationStatus.open
@@ -76,10 +76,10 @@ class TestEnqueue:
         duplicate = make_flow_job(
             flow_name=job.flow_name, kwargs={"x": 999}
         )
-        duplicate.run_id = job.run_id
+        duplicate.obligation_id = job.obligation_id
         source.enqueue(duplicate)
 
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.record.obligation.kwargs == {"x": 1}  # first claim won
 
     def test_review_policy_stamped_at_creation(
@@ -91,7 +91,7 @@ class TestEnqueue:
         job = make_flow_job()
         source.enqueue(job)
 
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.record.obligation.review_policy == "gated"
 
     def test_delay_is_ignored(self, source, state_repo, make_flow_job):
@@ -117,7 +117,7 @@ class TestDequeue:
 
         wakeup = source.dequeue()
         assert wakeup is not None
-        assert wakeup.run_id == job.run_id
+        assert wakeup.obligation_id == job.obligation_id
         assert wakeup.flow_name == job.flow_name
         assert wakeup.kwargs == {"x": 1}
         assert wakeup.caused_by == "account_poll"
@@ -130,8 +130,8 @@ class TestDequeue:
         source.enqueue(first)
 
         # uuid7 order = creation order, regardless of enqueue order
-        expected = min(first.run_id, second.run_id)
-        assert source.dequeue().run_id == expected
+        expected = min(first.obligation_id, second.obligation_id)
+        assert source.dequeue().obligation_id == expected
 
     def test_held_lease_is_skipped(self, source, store, make_record, seed_lease):
         seed_lease(
@@ -217,7 +217,7 @@ class TestExecuteJobOverAccount:
 
         assert rc == 0
         assert ran == [{"x": 1}]
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.record.obligation.status == ObligationStatus.discharged
 
     def test_failed_flow_parks_and_retries_after_backoff(
@@ -231,7 +231,7 @@ class TestExecuteJobOverAccount:
         source.enqueue(job)
 
         assert execute_job(source, executor, state_repo, signals, "w1") == 1
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.record.obligation.status == ObligationStatus.open
         assert len(view.record.attempts) == 1
 
@@ -244,6 +244,6 @@ class TestExecuteJobOverAccount:
             deadline=datetime.now(UTC) - timedelta(seconds=600),
         )
         assert execute_job(source, executor, state_repo, signals, "w1") == 1
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.record.obligation.status == ObligationStatus.abandoned
         assert view.record.obligation.cause == "max_retries_exceeded"

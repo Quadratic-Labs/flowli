@@ -7,7 +7,7 @@ Flowlet provides a comprehensive structured logging system with automatic contex
 The logging system provides:
 
 1. **JSON-formatted logs** - All logs are structured as JSON with consistent schema
-2. **Automatic context injection** - Run metadata (run_id, span_id, parent_span_id, etc.) is automatically added to all logs
+2. **Automatic context injection** - Run metadata (obligation_id, span_id, parent_span_id, etc.) is automatically added to all logs
 3. **Dual-handler architecture** - Separate handling for full logs and Flowlet-only logs
 4. **UUID7 identifiers** - All run IDs use UUID7 for datetime range queries and id-based queries
 5. **Run summaries** - Compact hierarchical summaries generated from execution logs
@@ -19,9 +19,9 @@ The logging system provides:
 ```
 storage/
 ├── logs/           # Full append-only JSONL logs
-│   └── {run_id}.jsonl
+│   └── {obligation_id}.jsonl
 └── runs/           # Compacted run summaries
-    └── {run_id}.json
+    └── {obligation_id}.json
 ```
 
 ### Log Flow
@@ -34,18 +34,18 @@ User Code               Flowlet Framework
    └──────────┬──────────────┘
               ↓
     ContextInjectingFilter
-    (adds run_id, span_id, etc.)
+    (adds obligation_id, span_id, etc.)
               │
               ├──────────────────────┬──────────────────────┐
               ↓                      ↓                      ↓
        JSONFormatter          JSONFormatter          JSONFormatter
               ↓                      ↓                      ↓
       File Handler          Console Handler      FlowletLogBuffer
-   (logs/{run_id}.jsonl)                         (Flowlet logs only)
+   (logs/{obligation_id}.jsonl)                         (Flowlet logs only)
                                                            ↓
                                                   Compact & Emit
                                                            ↓
-                                                  runs/{run_id}.json
+                                                  runs/{obligation_id}.json
 ```
 
 ### Components
@@ -54,8 +54,8 @@ User Code               Flowlet Framework
 
 Automatically injects execution context into all log records:
 
-- `run_id` - UUID7 identifier for this execution
-- `span_id` - Same as run_id (used for distributed tracing compatibility)
+- `obligation_id` - UUID7 identifier for this execution
+- `span_id` - Same as obligation_id (used for distributed tracing compatibility)
 - `parent_span_id` - UUID7 of parent flow/task
 - `span_type` - Either "flow" or "task"
 - `name` - Name of the flow/task
@@ -69,7 +69,7 @@ Formats log records as JSON with the following schema:
 ```json
 {
   "logger": "flowlet",
-  "run_id": "019b49b8-f27e-73a5-97f4-ef37fd763918",
+  "obligation_id": "019b49b8-f27e-73a5-97f4-ef37fd763918",
   "span_id": "019b49f1-69c5-75f4-8c44-7d41c2a7179d",
   "parent_span_id": null,
   "span_type": "flow",
@@ -87,7 +87,7 @@ Formats log records as JSON with the following schema:
 
 A custom logging handler that:
 - Filters logs to only capture those from the `flowlet` logger
-- Buffers logs in memory per run_id
+- Buffers logs in memory per obligation_id
 - Provides logs for summary generation
 - Can be cleared after summary emission
 
@@ -96,7 +96,7 @@ A custom logging handler that:
 A file handler that:
 - Writes logs in JSONL format (one JSON object per line)
 - Appends to run-specific log files
-- Creates files as `logs/{run_id}.jsonl`
+- Creates files as `logs/{obligation_id}.jsonl`
 
 ## Usage
 
@@ -128,7 +128,7 @@ app_logger = logging.getLogger("myapp.database")
 @flowlet.task()
 def load_data():
     # This log will automatically include:
-    # - run_id, span_id, parent_span_id
+    # - obligation_id, span_id, parent_span_id
     # - span_type="task", name="load_data"
     # - Timestamp, level, etc.
     app_logger.info("connecting to database")
@@ -159,11 +159,11 @@ result = my_flow()
 all_runs = ExecutionContext.get_all_runs()
 if all_runs:
     root_run = all_runs[0]
-    run_id = str(root_run.run_id)
+    obligation_id = str(root_run.obligation_id)
 
     # Emit summary
     manager = get_logging_manager()
-    summary = manager.emit_run_summary(run_id)
+    summary = manager.emit_run_summary(obligation_id)
 ```
 
 ### Advanced: Per-Run Log Files
@@ -176,26 +176,26 @@ from flowlet.logging_manager import get_logging_manager
 log_manager = get_logging_manager()
 
 # Start logging for a run
-run_id = "019b49b8-f27e-73a5-97f4-ef37fd763918"
-log_manager.start_run_logging(run_id)
+obligation_id = "019b49b8-f27e-73a5-97f4-ef37fd763918"
+log_manager.start_run_logging(obligation_id)
 
 # Execute your flow/task
-# All logs during execution will go to logs/{run_id}.jsonl
+# All logs during execution will go to logs/{obligation_id}.jsonl
 
 # Stop logging for this run
-log_manager.stop_run_logging(run_id)
+log_manager.stop_run_logging(obligation_id)
 ```
 
 ## Log Formats
 
 ### Full Logs (JSONL)
 
-Located in `logs/{run_id}.jsonl`:
+Located in `logs/{obligation_id}.jsonl`:
 
 ```jsonl
-{"logger":"flowlet","run_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","parent_span_id":null,"span_type":"flow","name":"hello-world","flow":"data_pipeline.hello-world","status":"starting","ts":"2025-12-23T06:41:55.123Z","message":"starting execution of hello-world flow","level":"INFO","extra":{}}
-{"logger":"flowlet","run_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f2-4e13-7c7b-8c13-2cf9356ecb4d","parent_span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","span_type":"task","name":"load_users","flow":"data_pipeline.load_users","status":"starting","ts":"2025-12-23T06:42:55.123Z","message":"loading users from db","level":"INFO","extra":{}}
-{"logger":"example.db","run_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f2-4e13-7c7b-8c13-2cf9356ecb4d","parent_span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","span_type":"task","name":"load_users","flow":"data_pipeline.load_users","status":"running","ts":"2025-12-23T06:42:58.123Z","message":"connection to db established","level":"INFO","extra":{}}
+{"logger":"flowlet","obligation_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","parent_span_id":null,"span_type":"flow","name":"hello-world","flow":"data_pipeline.hello-world","status":"starting","ts":"2025-12-23T06:41:55.123Z","message":"starting execution of hello-world flow","level":"INFO","extra":{}}
+{"logger":"flowlet","obligation_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f2-4e13-7c7b-8c13-2cf9356ecb4d","parent_span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","span_type":"task","name":"load_users","flow":"data_pipeline.load_users","status":"starting","ts":"2025-12-23T06:42:55.123Z","message":"loading users from db","level":"INFO","extra":{}}
+{"logger":"example.db","obligation_id":"019b49b8-f27e-73a5-97f4-ef37fd763918","span_id":"019b49f2-4e13-7c7b-8c13-2cf9356ecb4d","parent_span_id":"019b49f1-69c5-75f4-8c44-7d41c2a7179d","span_type":"task","name":"load_users","flow":"data_pipeline.load_users","status":"running","ts":"2025-12-23T06:42:58.123Z","message":"connection to db established","level":"INFO","extra":{}}
 ```
 
 **Key characteristics:**
@@ -206,11 +206,11 @@ Located in `logs/{run_id}.jsonl`:
 
 ### Run Summaries (JSON)
 
-Located in `runs/{run_id}.json`:
+Located in `runs/{obligation_id}.json`:
 
 ```json
 {
-    "run_id": "019b49b8-f27e-73a5-97f4-ef37fd763918",
+    "obligation_id": "019b49b8-f27e-73a5-97f4-ef37fd763918",
     "span": {
         "span_id": "019b49f1-69c5-75f4-8c44-7d41c2a7179d",
         "span_type": "flow",
@@ -248,7 +248,7 @@ Located in `runs/{run_id}.json`:
 
 ## UUID7 Benefits
 
-All `run_id` and `span_id` values use UUID7, which provides:
+All `obligation_id` and `span_id` values use UUID7, which provides:
 
 1. **Time-ordered** - Can be sorted chronologically
 2. **Datetime range queries** - First part encodes timestamp
@@ -266,7 +266,7 @@ one_hour_ago = datetime.utcnow() - timedelta(hours=1)
 min_uuid = uuid.uuid7(one_hour_ago)
 
 # All UUIDs >= min_uuid are from the last hour
-recent_runs = [r for r in runs if r.run_id >= min_uuid]
+recent_runs = [r for r in runs if r.obligation_id >= min_uuid]
 ```
 
 ## Integration Points
@@ -359,7 +359,7 @@ After emitting summaries, clear buffers to free memory:
 
 ```python
 manager = get_logging_manager()
-summary = manager.emit_run_summary(run_id, clear_buffer=True)
+summary = manager.emit_run_summary(obligation_id, clear_buffer=True)
 ```
 
 ### 5. Handle Long-Running Flows
@@ -373,7 +373,7 @@ For long-running flows, consider:
 
 ### Logs Missing Context
 
-**Problem**: Logs don't have `run_id`, `span_id`, etc.
+**Problem**: Logs don't have `obligation_id`, `span_id`, etc.
 
 **Solution**: Ensure you're logging from within an execution context:
 
@@ -407,7 +407,7 @@ logger.propagate = False  # Don't propagate to parent
 ```python
 # After flow completes
 manager = get_logging_manager()
-manager.emit_run_summary(run_id)
+manager.emit_run_summary(obligation_id)
 ```
 
 ### Large Log Files
@@ -435,10 +435,10 @@ Main class for managing logging configuration.
 #### Methods
 
 - `setup()` - Initialize logging system
-- `start_run_logging(run_id)` - Start file logging for a run
-- `stop_run_logging(run_id)` - Stop file logging for a run
-- `emit_run_summary(run_id, clear_buffer=True)` - Generate and write run summary
-- `get_run_logs(run_id)` - Get buffered logs without emitting summary
+- `start_run_logging(obligation_id)` - Start file logging for a run
+- `stop_run_logging(obligation_id)` - Stop file logging for a run
+- `emit_run_summary(obligation_id, clear_buffer=True)` - Generate and write run summary
+- `get_run_logs(obligation_id)` - Get buffered logs without emitting summary
 
 ### Functions
 
@@ -452,8 +452,8 @@ Main class for managing logging configuration.
 - `JSONFormatter` - Formatter for JSON output
 - `FlowletLogBuffer` - Handler that buffers Flowlet logs
 - `JSONLFileHandler` - File handler for JSONL output
-- `compact_logs_to_summary(logs, run_id)` - Compact logs to summary structure
-- `write_run_summary(summary, run_id, runs_dir)` - Write summary to file
+- `compact_logs_to_summary(logs, obligation_id)` - Compact logs to summary structure
+- `write_run_summary(summary, obligation_id, runs_dir)` - Write summary to file
 
 ## Examples
 

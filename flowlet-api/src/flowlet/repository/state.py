@@ -1,6 +1,6 @@
 """Run-state repository — cairndb lease documents on the object store.
 
-Per-run state lives at ``state/<flow_name>/<run_id>.json`` as a cairndb
+Per-run state lives at ``state/<flow_name>/<obligation_id>.json`` as a cairndb
 lease document ``{epoch, holder, deadline_at, state}`` whose state payload
 is the :class:`~flowlet.models.ObligationSummary` wire dict.  Ownership is the lease:
 acquiring (fresh, after a release, or by stealing an expired lease) bumps
@@ -150,8 +150,8 @@ class StateRepository:
     store: BlobStorage
 
     @staticmethod
-    def _key(flow_name: str, run_id: UUID) -> str:
-        return f"state/{flow_name}/{run_id}.json"
+    def _key(flow_name: str, obligation_id: UUID) -> str:
+        return f"state/{flow_name}/{obligation_id}.json"
 
     @staticmethod
     def _parse_view(data: bytes) -> StateView | None:
@@ -171,18 +171,18 @@ class StateRepository:
             epoch=doc.get("epoch", 0),
         )
 
-    def read(self, flow_name: str, run_id: UUID) -> StateView | None:
+    def read(self, flow_name: str, obligation_id: UUID) -> StateView | None:
         """Read one run's lease document without touching ownership.
 
         Args:
             flow_name: Name of the flow.
-            run_id: UUID identifying the run.
+            obligation_id: UUID identifying the run.
 
         Returns:
             The parsed StateView, or None when the document does not exist
             or carries no payload yet.
         """
-        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        obj = self.store.get_object_sync(self._key(flow_name, obligation_id))
         if obj is None:
             return None
         try:
@@ -190,12 +190,12 @@ class StateRepository:
         except Exception:
             logger.exception(
                 "state_read_parse_error",
-                extra={"flow_name": flow_name, "run_id": str(run_id)},
+                extra={"flow_name": flow_name, "obligation_id": str(obligation_id)},
             )
             return None
 
     def create(
-        self, flow_name: str, run_id: UUID, record: ObligationRecord
+        self, flow_name: str, obligation_id: UUID, record: ObligationRecord
     ) -> bool:
         """Record a new obligation unheld — the account as the submission.
 
@@ -207,7 +207,7 @@ class StateRepository:
 
         Args:
             flow_name: Name of the flow.
-            run_id: The obligation's id.
+            obligation_id: The obligation's id.
             record: The fresh account (open obligation, no attempts).
 
         Returns:
@@ -217,7 +217,7 @@ class StateRepository:
         """
         result = claim_sync(
             self.store,
-            self._key(flow_name, run_id),
+            self._key(flow_name, obligation_id),
             {
                 "epoch": 0,
                 "holder": None,
@@ -230,7 +230,7 @@ class StateRepository:
     def acquire(
         self,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         *,
         ttl: float,
         holder: str,
@@ -247,7 +247,7 @@ class StateRepository:
 
         Args:
             flow_name: Name of the flow.
-            run_id: UUID identifying the run.
+            obligation_id: UUID identifying the run.
             ttl: Lease duration in seconds; heartbeats renew it.
             holder: Identifier of the acquiring actor (worker id, "api",
                 "sweeper").
@@ -268,7 +268,7 @@ class StateRepository:
 
         lease = acquire_sync(
             self.store,
-            self._key(flow_name, run_id),
+            self._key(flow_name, obligation_id),
             ttl=ttl,
             holder=holder,
             steal_if_expired=True,
@@ -283,7 +283,7 @@ class StateRepository:
     def resume(
         self,
         flow_name: str,
-        run_id: UUID,
+        obligation_id: UUID,
         *,
         holder: str,
         epoch: int,
@@ -299,7 +299,7 @@ class StateRepository:
 
         Args:
             flow_name: Name of the flow.
-            run_id: UUID identifying the obligation.
+            obligation_id: UUID identifying the obligation.
             holder: The executor claiming to hold the lease.
             epoch: The fence token returned at acquisition.
             ttl: Lease duration for subsequent renewals.
@@ -309,14 +309,14 @@ class StateRepository:
             document is missing, released, or held under a different
             (holder, epoch) — i.e. the caller was fenced.
         """
-        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        obj = self.store.get_object_sync(self._key(flow_name, obligation_id))
         if obj is None:
             return None
         try:
             doc = json.loads(obj.data)
         except Exception:
             logger.exception(
-                "state_resume_parse_error", extra={"run_id": str(run_id)}
+                "state_resume_parse_error", extra={"obligation_id": str(obligation_id)}
             )
             return None
         if doc.get("holder") != holder or doc.get("epoch") != epoch:
@@ -326,7 +326,7 @@ class StateRepository:
             return None
         lease = Lease(
             self.store,
-            self._key(flow_name, run_id),
+            self._key(flow_name, obligation_id),
             ttl=ttl,
             epoch=epoch,
             holder=holder,
@@ -338,52 +338,52 @@ class StateRepository:
             record=from_payload(ObligationRecord)(payload), lease=lease
         )
 
-    def delete(self, flow_name: str, run_id: UUID) -> None:
+    def delete(self, flow_name: str, obligation_id: UUID) -> None:
         """Remove the lease document for a run.
 
         Args:
             flow_name: Name of the flow.
-            run_id: UUID identifying the run.
+            obligation_id: UUID identifying the run.
         """
         try:
-            self.store.delete_object_sync(self._key(flow_name, run_id))
+            self.store.delete_object_sync(self._key(flow_name, obligation_id))
         except Exception:
             logger.exception(
                 "state_delete_error",
-                extra={"flow_name": flow_name, "run_id": str(run_id)},
+                extra={"flow_name": flow_name, "obligation_id": str(obligation_id)},
             )
 
-    def archive(self, flow_name: str, run_id: UUID) -> None:
+    def archive(self, flow_name: str, obligation_id: UUID) -> None:
         """Move a closed run's record into its run folder.
 
         The account payload is written in the ``to_json`` wire format to
-        ``runs/<flow_name>/<date>/<run_id>/state.json`` — colocated with the
+        ``runs/<flow_name>/<date>/<obligation_id>/state.json`` — colocated with the
         run's span files so the run folder is the complete, self-contained
         durable record — and the lease document is removed.  Keeps the
         active ``state/`` listing O(active runs).
 
         Args:
             flow_name: Name of the flow.
-            run_id: UUID identifying the run.
+            obligation_id: UUID identifying the run.
         """
-        obj = self.store.get_object_sync(self._key(flow_name, run_id))
+        obj = self.store.get_object_sync(self._key(flow_name, obligation_id))
         if obj is None:
             return
         try:
             payload = json.loads(obj.data).get("state")
         except Exception:
-            logger.exception("state_archive_parse_error", extra={"run_id": str(run_id)})
+            logger.exception("state_archive_parse_error", extra={"obligation_id": str(obligation_id)})
             return
         if payload is None:
-            self.delete(flow_name, run_id)
+            self.delete(flow_name, obligation_id)
             return
-        target = f"{run_prefix(flow_name, run_id)}/state.json"
+        target = f"{run_prefix(flow_name, obligation_id)}/state.json"
         try:
             self.store.put_object_sync(target, json.dumps(payload).encode())
         except Exception:
             logger.exception("state_archive_write_error", extra={"key": target})
             return
-        self.delete(flow_name, run_id)
+        self.delete(flow_name, obligation_id)
 
     def list_views(self, flow_name: str | None = None) -> list[StateView]:
         """List all active lease documents, optionally filtered by flow.
@@ -401,10 +401,10 @@ class StateRepository:
             if len(parts) != 3 or not parts[2].endswith(".json"):
                 continue
             try:
-                run_id = UUID(parts[2].removesuffix(".json"))
+                obligation_id = UUID(parts[2].removesuffix(".json"))
             except ValueError:
                 continue
-            view = self.read(parts[1], run_id)
+            view = self.read(parts[1], obligation_id)
             if view is not None:
                 results.append(view)
         return results

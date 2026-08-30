@@ -77,12 +77,12 @@ Implemented within `snapshot.py`:
 ### Phase 4: Query API
 
 Implemented in `client.py`:
-- `get_run(run_id)` - Fetch specific run
+- `get_run(obligation_id)` - Fetch specific run
 - `list_runs(flow_name, status, limit, offset)` - List with filtering
-- `get_run_summary(run_id)` - Hierarchical tree reconstruction
+- `get_run_summary(obligation_id)` - Hierarchical tree reconstruction
 - `count_runs(flow_name, status)` - Count matching runs
-- `get_run_children(run_id)` - Get child tasks
-- `get_run_parent(run_id)` - Get parent flow
+- `get_run_children(obligation_id)` - Get child tasks
+- `get_run_parent(obligation_id)` - Get parent flow
 - `sync_now()` - Manual sync trigger
 - `refresh()` - Force snapshot re-download
 

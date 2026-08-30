@@ -50,7 +50,7 @@ class TestDestructure:
         record = make_span_record()
         d = destructure(record)
 
-        assert d["run_id"] == str(record.run_id)
+        assert d["obligation_id"] == str(record.obligation_id)
         assert isinstance(d["span_id"], str)      # OTel hex span id
         assert d["start_ts"] == record.start_ts.to_iso()
         assert d["span_type"] == str(record.span_type)
@@ -102,7 +102,7 @@ class TestStructure:
         d = destructure(original)
         restored = structure(SpanRecord)(d)
 
-        assert restored.run_id == original.run_id
+        assert restored.obligation_id == original.obligation_id
         assert restored.span_id == original.span_id
         assert restored.start_ts == original.start_ts
         assert restored.status == original.status
@@ -113,7 +113,7 @@ class TestStructure:
         d = destructure(original)
         restored = structure(ObligationSummary)(d)
 
-        assert restored.run_id == original.run_id
+        assert restored.obligation_id == original.obligation_id
         assert restored.flow_name == original.flow_name
         assert restored.status == original.status
         assert restored.started_at == original.started_at
@@ -135,8 +135,8 @@ class TestStructure:
 
         assert len(restored) == 2
         assert all(isinstance(r, SpanRecord) for r in restored)
-        assert restored[0].run_id == records[0].run_id
-        assert restored[1].run_id == records[1].run_id
+        assert restored[0].obligation_id == records[0].obligation_id
+        assert restored[1].obligation_id == records[1].obligation_id
 
     def test_unregistered_type_passthrough(self):
         assert structure(int)(42) == 42
@@ -165,7 +165,7 @@ class TestToJson:
         record = make_span_record()
         parsed = json.loads(to_json(record))
 
-        UUID(parsed["run_id"])   # must not raise
+        UUID(parsed["obligation_id"])   # must not raise
         assert isinstance(parsed["span_id"], str)
 
     def test_span_record_timestamp_serialised_as_iso_str(self, make_span_record):
@@ -194,8 +194,8 @@ class TestFromJson:
         restored = from_json(SpanRecord)(to_json(original))
 
         assert isinstance(restored, SpanRecord)
-        assert restored.run_id == original.run_id
-        assert isinstance(restored.run_id, UUID)
+        assert restored.obligation_id == original.obligation_id
+        assert isinstance(restored.obligation_id, UUID)
         assert restored.span_id == original.span_id
         assert restored.start_ts == original.start_ts
         assert restored.span_type == original.span_type
@@ -219,8 +219,8 @@ class TestFromJson:
         restored = from_json(ObligationSummary)(to_json(original))
 
         assert isinstance(restored, ObligationSummary)
-        assert restored.run_id == original.run_id
-        assert isinstance(restored.run_id, UUID)
+        assert restored.obligation_id == original.obligation_id
+        assert isinstance(restored.obligation_id, UUID)
         assert restored.status == original.status
         assert isinstance(restored.status, ReportedStatus)
         assert restored.started_at == original.started_at
@@ -250,7 +250,7 @@ class TestFromJson:
         assert isinstance(restored, FlowJob)
         assert restored.job_id == original.job_id
         assert isinstance(restored.job_id, UUID)
-        assert restored.run_id == original.run_id
+        assert restored.obligation_id == original.obligation_id
         assert restored.flow_name == original.flow_name
         assert restored.kwargs == {"x": 1}
         assert restored.submitted_at == original.submitted_at

@@ -5,7 +5,7 @@ Replaces the pubsub → subscriber → snapshot pipeline: the API never receives
 events.  On each (TTL-throttled) refresh it scans
 
 - ``state/`` — the small active-runs directory, always re-read fully, and
-- ``runs/<flow>/<date>/<run_id>/state.json`` — archived terminal states,
+- ``runs/<flow>/<date>/<obligation_id>/state.json`` — archived terminal states,
   immutable, read once per run and remembered,
 
 and upserts both into a local in-memory SQLite the query layer reads.  The
@@ -16,7 +16,7 @@ Why scan storage instead of reading a CairnDB projection?  CairnDB
 projections read a *log* and can always catch up to its tail (``refresh``/
 ``wait_for`` — snapshot lag only affects bootstrap cost, never read
 freshness), but *active* run state is deliberately not in any log: it lives
-in the lease document at ``state/{run_id}.json``, mutated in place under
+in the lease document at ``state/{obligation_id}.json``, mutated in place under
 CAS, because the lease is the correctness mechanism (ownership, fencing,
 takeover).  Logging every transition would serialize runs through one log
 sequencer or need a log per run, and would duplicate the source of truth.
@@ -69,8 +69,8 @@ class ObligationRow(Base):
     stored here — query logs instead.
 
     Attributes:
-        run_id: Unique identifier (UUIDv7 — chronologically ordered, the
-            largest run_id is the most recent run).
+        obligation_id: Unique identifier (UUIDv7 — chronologically ordered, the
+            largest obligation_id is the most recent run).
         flow_name: Name of the flow being executed.
         status: Current execution status string.
         worker_id: Identifier of the owning worker.
@@ -81,7 +81,9 @@ class ObligationRow(Base):
     """
     __tablename__ = "runs"
 
-    run_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
+    obligation_id: Mapped[UUID] = mapped_column(
+        "run_id", Uuid, primary_key=True, index=True
+    )
     flow_name: Mapped[str] = mapped_column(String, index=True)
     status: Mapped[str] = mapped_column(String, index=True)
     worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -101,11 +103,11 @@ async def ensure_snapshot_schema(engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def upsert_run_state(session: AsyncSession, state: ObligationSummary) -> None:
+async def upsert_obligation_summary(session: AsyncSession, state: ObligationSummary) -> None:
     """Upsert a single ObligationSummary into the flat runs table.
 
     Uses SQLite's ``ON CONFLICT DO UPDATE`` so re-processing an existing
-    run_id updates the row instead of raising.
+    obligation_id updates the row instead of raising.
 
     Args:
         session: Active async SQLAlchemy session for the cache engine.
@@ -116,7 +118,7 @@ async def upsert_run_state(session: AsyncSession, state: ObligationSummary) -> N
 
     await session.execute(
         sqlite_insert(ObligationRow).values(
-            run_id=state.run_id,
+            obligation_id=state.obligation_id,
             flow_name=state.flow_name,
             status=state.status.value,
             worker_id=state.worker_id,
@@ -125,7 +127,7 @@ async def upsert_run_state(session: AsyncSession, state: ObligationSummary) -> N
             attempt=state.attempt,
             max_retries=state.max_retries,
         ).on_conflict_do_update(
-            index_elements=[ObligationRow.run_id],
+            index_elements=[ObligationRow.obligation_id],
             set_=dict(
                 flow_name=state.flow_name,
                 status=state.status.value,
@@ -145,7 +147,7 @@ class CacheRepository:
         state_repo: Repository for the active ``state/`` directory.
         store: CairnDB blob store containing the ``runs/`` tree.
         history: Optional RunHistory consulted to seed newly-seen archived
-            run_ids without a blob GET per run; None falls back to reading
+            obligation_ids without a blob GET per run; None falls back to reading
             every archived run's state.json directly (unchanged behavior).
         ttl: Minimum seconds between two storage scans.
         engine: Async in-memory SQLite engine the query layer reads from.
@@ -200,10 +202,10 @@ class CacheRepository:
 
         async with self.session_factory()() as session:
             for state in active:
-                await upsert_run_state(session, state)
+                await upsert_obligation_summary(session, state)
             for state in archived:
-                await upsert_run_state(session, state)
-                self._seen_archived.add(state.run_id)
+                await upsert_obligation_summary(session, state)
+                self._seen_archived.add(state.obligation_id)
             await session.commit()
 
         logger.debug(
@@ -216,25 +218,25 @@ class CacheRepository:
 
         Archived states are immutable, so each is read exactly once per
         process lifetime (tracked in ``_seen_archived``).  When ``history``
-        is configured, newly-seen run_ids are looked up there first — a
+        is configured, newly-seen obligation_ids are looked up there first — a
         handful of local SQLite reads instead of one blob GET per run; any
-        run_id history doesn't have falls back to reading state.json
+        obligation_id history doesn't have falls back to reading state.json
         directly, so coverage never depends on history being enabled or
         caught up.
         """
         new_keys: dict[UUID, str] = {}
         for key in self.store.list_objects_sync("runs/"):
-            # runs/<flow>/<date>/<run_id>/state.json
+            # runs/<flow>/<date>/<obligation_id>/state.json
             parts = key.split("/")
             if len(parts) != 5 or parts[4] != "state.json":
                 continue
             try:
-                run_id = UUID(parts[3])
+                obligation_id = UUID(parts[3])
             except ValueError:
                 continue
-            if run_id in self._seen_archived:
+            if obligation_id in self._seen_archived:
                 continue
-            new_keys[run_id] = key
+            new_keys[obligation_id] = key
         if not new_keys:
             return []
 
@@ -243,8 +245,8 @@ class CacheRepository:
             from_history = await self.history.get_states(new_keys.keys())
 
         states: list[ObligationSummary] = list(from_history.values())
-        for run_id, key in new_keys.items():
-            if run_id in from_history:
+        for obligation_id, key in new_keys.items():
+            if obligation_id in from_history:
                 continue
             obj = self.store.get_object_sync(key)
             if obj is None:

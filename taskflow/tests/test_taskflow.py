@@ -142,14 +142,14 @@ class TestWorkerLoop:
             results.append(x * 2)
 
         resp = http.post("/submit/pipeline", json={"kwargs": {"x": 21}})
-        run_id = resp.json()["run_id"]
+        obligation_id = resp.json()["obligation_id"]
 
         assert _work_once(tf) == 0
         assert results == [42]
         state = http.post(
             "/runs/query", json={"flow_name": "pipeline", "limit": 10}
         ).json()
-        assert state[0]["run_id"] == run_id
+        assert state[0]["obligation_id"] == obligation_id
         assert state[0]["status"] == "completed"
 
     def test_gated_flow_suspends_and_gate_policy_guards(self, tf, http):
@@ -162,16 +162,16 @@ class TestWorkerLoop:
 
         view = tf.state_repo.list_views("risky")[0]
         assert view.record.obligation.status == ObligationStatus.awaiting_review
-        run_id = str(view.record.obligation.id)
+        obligation_id = str(view.record.obligation.id)
 
         refused = http.post(
-            f"/runs/{run_id}/review",
+            f"/runs/{obligation_id}/review",
             json={"decision": "approved", "actor": "intern"},
         )
         assert refused.status_code == 403
 
         approved = http.post(
-            f"/runs/{run_id}/review",
+            f"/runs/{obligation_id}/review",
             json={"decision": "approved", "actor": "lead"},
         )
         assert approved.status_code == 200

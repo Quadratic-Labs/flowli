@@ -5,14 +5,14 @@ Flowlet spans are ordinary OTel spans produced by the OTel SDK; what makes
 them Flowlet's is the sink: ``BlobSpanExporter`` writes finished spans as
 JSON lines into the run folder
 
-    ``runs/<flow_name>/<yyyy-mm-dd>/<run_id>/spans-<attempt>.jsonl``
+    ``runs/<flow_name>/<yyyy-mm-dd>/<obligation_id>/spans-<attempt>.jsonl``
 
 which is the product's durable record (the API reads it back — see
 ``flowlet.repository.log``).  Standard OTLP/vendor exporters can be attached
 *in addition* for observability backends; they are never the source of truth.
 
 Identity model:
-    - ``run_id`` (uuid7) **is** the OTel trace_id — both are 128 bits.  The
+    - ``obligation_id`` (uuid7) **is** the OTel trace_id — both are 128 bits.  The
       run folder's date partition is derived from the uuid7 timestamp, so a
       retry executed days later still lands in the same folder.
     - span ids are native OTel 64-bit ids, serialised as 16-char hex.
@@ -54,7 +54,7 @@ ATTEMPT_KEY = "flowlet.attempt"
 SPAN_TYPE_KEY = "flowlet.span_type"
 
 
-# Trace id to use for the next root span (worker/controller sets the run_id
+# Trace id to use for the next root span (worker/controller sets the obligation_id
 # here); consumed once by FlowletIdGenerator.
 _pending_trace_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "flowlet_pending_trace_id", default=None
@@ -71,9 +71,9 @@ _provider_lock = threading.Lock()
 class FlowletIdGenerator(RandomIdGenerator):
     """Id generator whose trace ids are always uuid7 values.
 
-    When a run identity is pending (``run_root`` was entered), the run_id is
+    When a run identity is pending (``run_root`` was entered), the obligation_id is
     used verbatim; otherwise a fresh uuid7 is generated.  Either way every
-    trace_id doubles as a valid run_id with an embedded timestamp, so the
+    trace_id doubles as a valid obligation_id with an embedded timestamp, so the
     exporter can always derive the date partition.
     """
 
@@ -116,20 +116,20 @@ class BlobSpanExporter(SpanExporter):
         for span in spans:
             try:
                 record = _span_to_record(span)
-                key = (record["flow_name"], UUID(record["run_id"]), record["attempt"])
+                key = (record["flow_name"], UUID(record["obligation_id"]), record["attempt"])
                 groups.setdefault(key, []).append(_dumps(record))
             except Exception:
                 logger.exception("span_serialization_failed", extra={"span": span.name})
 
         ok = True
         with self._lock:
-            for (flow_name, run_id, attempt), lines in groups.items():
-                key = f"{run_prefix(flow_name, run_id)}/spans-{attempt}.jsonl"
+            for (flow_name, obligation_id, attempt), lines in groups.items():
+                key = f"{run_prefix(flow_name, obligation_id)}/spans-{attempt}.jsonl"
                 if not append_lines(self.store, key, "\n".join(lines) + "\n"):
                     ok = False
                     logger.error(
                         "span_export_failed",
-                        extra={"flow_name": flow_name, "run_id": str(run_id)},
+                        extra={"flow_name": flow_name, "obligation_id": str(obligation_id)},
                     )
         return SpanExportResult.SUCCESS if ok else SpanExportResult.FAILURE
 
@@ -185,19 +185,19 @@ def _get_tracer() -> trace.Tracer:
 
 
 @contextlib.contextmanager
-def run_root(run_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[None]:
+def run_root(obligation_id: UUID, flow_name: str, attempt: int = 1) -> typing.Iterator[None]:
     """Bind a run's identity for the duration of its root execution.
 
     The next root span created inside (by the instrumented flow function)
-    adopts ``run_id`` as its trace_id, and every span in the context carries
+    adopts ``obligation_id`` as its trace_id, and every span in the context carries
     the flow name and attempt as attributes.
 
     Args:
-        run_id: The run's UUID (uuid7) — becomes the trace_id.
+        obligation_id: The run's UUID (uuid7) — becomes the trace_id.
         flow_name: Root flow name, used for the storage path.
         attempt: Execution attempt number (1-based).
     """
-    id_token = _pending_trace_id.set(int(run_id))
+    id_token = _pending_trace_id.set(int(obligation_id))
     meta_token = _run_meta.set((flow_name, attempt))
     try:
         yield
@@ -302,7 +302,7 @@ def _span_to_record(span: ReadableSpan) -> dict:
         status = "completed"
 
     return {
-        "run_id": str(UUID(int=ctx.trace_id)),
+        "obligation_id": str(UUID(int=ctx.trace_id)),
         "span_id": format(ctx.span_id, "016x"),
         "parent_span_id": (
             format(span.parent.span_id, "016x") if span.parent is not None else None

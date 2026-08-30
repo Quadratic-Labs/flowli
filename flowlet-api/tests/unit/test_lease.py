@@ -184,7 +184,7 @@ class TestWorkerCancellation:
         rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.canceled
         assert view.state.cancel_requested is True
         assert view.state.ended_at is not None
@@ -197,10 +197,10 @@ class TestWorkerCancellation:
         job = make_flow_job()
         # A released pending run whose cancel arrived while off-lease.
         state = make_run_state(
-            run_id=job.run_id, flow_name=job.flow_name, status=ReportedStatus.pending
+            obligation_id=job.obligation_id, flow_name=job.flow_name, status=ReportedStatus.pending
         )
         seed_lease(store, state)
-        signals.send(job.flow_name, job.run_id, CANCEL, actor="api")
+        signals.send(job.flow_name, job.obligation_id, CANCEL, actor="api")
 
         executed = []
         queue = FakeQueue([job])
@@ -209,7 +209,7 @@ class TestWorkerCancellation:
 
         assert rc == 0
         assert executed == []
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.canceled
         assert view.state.cancel_requested is True
 
@@ -228,7 +228,7 @@ class TestWorkerCancellation:
         rc = execute_job(queue, executor, state_repo, signals, "w1")
 
         assert rc == 0
-        view = state_repo.read(job.flow_name, job.run_id)
+        view = state_repo.read(job.flow_name, job.obligation_id)
         assert view.state.status == ReportedStatus.completed
 
 
@@ -290,11 +290,11 @@ class TestCancelRun:
         state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)  # released — nobody owns it
 
-        resp = controller.cancel_run(state.run_id)
+        resp = controller.cancel_run(state.obligation_id)
 
         assert resp.status == ReportedStatus.canceled
         assert resp.cancel_requested is True
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.canceled
         assert view.state.ended_at is not None
         assert view.holder is None
@@ -308,14 +308,14 @@ class TestCancelRun:
             deadline=datetime.now(UTC) + timedelta(seconds=300),
         )
 
-        resp = controller.cancel_run(state.run_id)
+        resp = controller.cancel_run(state.obligation_id)
 
         assert resp.status == ReportedStatus.running
         assert resp.cancel_requested is True
         # The lease document is untouched; the signal carries the request.
-        view = state_repo.read(state.flow_name, state.run_id)
+        view = state_repo.read(state.flow_name, state.obligation_id)
         assert view.state.status == ReportedStatus.running
-        assert signals.get(state.flow_name, state.run_id, CANCEL) is not None
+        assert signals.get(state.flow_name, state.obligation_id, CANCEL) is not None
 
     def test_closed_run_is_reported_unchanged(
         self, controller, state_repo, make_run_state, seed_lease, store
@@ -323,7 +323,7 @@ class TestCancelRun:
         state = make_run_state(status=ReportedStatus.completed)
         seed_lease(store, state)
 
-        resp = controller.cancel_run(state.run_id)
+        resp = controller.cancel_run(state.obligation_id)
 
         assert resp.status == ReportedStatus.completed
         assert resp.cancel_requested is False

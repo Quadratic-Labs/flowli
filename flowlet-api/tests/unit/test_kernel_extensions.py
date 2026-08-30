@@ -87,7 +87,7 @@ class TestPauseAdmission:
 
         assert rc == 2
         assert executed == []
-        assert state_repo.read(job.flow_name, job.run_id) is None  # nothing claimed
+        assert state_repo.read(job.flow_name, job.obligation_id) is None  # nothing claimed
 
     def test_revoked_pause_reopens_admission(
         self, state_repo, signals, make_flow_job
@@ -100,7 +100,7 @@ class TestPauseAdmission:
 
         signals.revoke_scoped("flow:test_flow", PAUSE)
         assert execute_job(FakeQueue([job]), executor, state_repo, signals, "w1") == 0
-        assert state_repo.read(job.flow_name, job.run_id).state.status == ReportedStatus.completed
+        assert state_repo.read(job.flow_name, job.obligation_id).state.status == ReportedStatus.completed
 
     def test_ancestor_pause_covers_children(
         self, state_repo, signals, make_flow_job
@@ -118,13 +118,13 @@ class TestPauseAdmission:
     ):
         state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state, deadline=datetime.now(UTC) - timedelta(seconds=700))
-        signals.send_scoped(f"run:{state.run_id}", PAUSE, actor="operator")
+        signals.send_scoped(f"run:{state.obligation_id}", PAUSE, actor="operator")
 
         queue = FakeQueue([])
         stats = sweep(state_repo, queue, signals=signals, pending_grace=0)
         assert stats.requeued == 0
 
-        signals.revoke_scoped(f"run:{state.run_id}", PAUSE)
+        signals.revoke_scoped(f"run:{state.obligation_id}", PAUSE)
         stats = sweep(state_repo, queue, signals=signals, pending_grace=0)
         assert stats.requeued == 1
 
@@ -145,7 +145,7 @@ class TestHeartbeatSignals:
         def flow(**kw):
             lease = flowlet_pkg.lease.current_lease()
             lease.min_interval = 0.0
-            signals.send(job.flow_name, job.run_id, "interrupt", actor="ui",
+            signals.send(job.flow_name, job.obligation_id, "interrupt", actor="ui",
                          details={"reason": "steer"})
             observed.append(flowlet_pkg.heartbeat())
 
@@ -212,7 +212,7 @@ class TestTimers:
         state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
-            state.flow_name, state.run_id, "gate_timeout",
+            state.flow_name, state.obligation_id, "gate_timeout",
             due_at=Timestamp(datetime.now(UTC) - timedelta(seconds=1)),
             signal="interrupt", wakeup=True, details={"grace": "expired"},
         )
@@ -224,11 +224,11 @@ class TestTimers:
         )
 
         assert stats.timers_fired == 1
-        sent = signals.get(state.flow_name, state.run_id, "interrupt")
+        sent = signals.get(state.flow_name, state.obligation_id, "interrupt")
         assert sent is not None
         assert sent["details"]["timer"] == "gate_timeout"
         wake, _ = queue.enqueued[0]
-        assert wake.run_id == state.run_id
+        assert wake.obligation_id == state.obligation_id
         assert wake.caused_by == "timer:gate_timeout"
         assert timers.due(Timestamp(datetime.now(UTC) + timedelta(days=1))) == []
 
@@ -238,7 +238,7 @@ class TestTimers:
         state = make_run_state(status=ReportedStatus.pending)
         seed_lease(store, state)
         timers.set(
-            state.flow_name, state.run_id, "later",
+            state.flow_name, state.obligation_id, "later",
             due_at=Timestamp(datetime.now(UTC) + timedelta(hours=1)),
             wakeup=True,
         )
@@ -256,7 +256,7 @@ class TestTimers:
         state = make_run_state(status=ReportedStatus.completed, ended_at=Timestamp.now())
         seed_lease(store, state)
         timers.set(
-            state.flow_name, state.run_id, "stale",
+            state.flow_name, state.obligation_id, "stale",
             due_at=Timestamp(datetime.now(UTC) - timedelta(seconds=1)),
             signal="interrupt",
         )
@@ -265,7 +265,7 @@ class TestTimers:
         stats = sweep(state_repo, queue, signals=signals, timers=timers)
 
         assert stats.timers_fired == 0
-        assert signals.get(state.flow_name, state.run_id, "interrupt") is None
+        assert signals.get(state.flow_name, state.obligation_id, "interrupt") is None
         assert timers.due(Timestamp(datetime.now(UTC) + timedelta(days=1))) == []
 
 
@@ -288,7 +288,7 @@ class TestExternalExecutor:
         controller = _controller(state_repo, signals)
 
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1"
             ),
@@ -298,7 +298,7 @@ class TestExternalExecutor:
         epoch = claim.epoch
 
         renewed = controller.renew_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorRenewRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
                 epoch=epoch,
@@ -307,7 +307,7 @@ class TestExternalExecutor:
         assert renewed.signals == {}
 
         effect = controller.record_run_effect(
-            state.run_id,
+            state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
                 epoch=epoch, name="implement", occurrence="spec-abc",
@@ -318,7 +318,7 @@ class TestExternalExecutor:
         assert effect.result == "commit:a1b2c3"
 
         outcome = controller.record_run_outcome(
-            state.run_id,
+            state.obligation_id,
             ExecutorOutcomeRequest(
                 flow_name=state.flow_name, executor="omnigent-session-1",
                 epoch=epoch, outcome="returned",
@@ -326,7 +326,7 @@ class TestExternalExecutor:
         )
         assert outcome.status == "completed"
 
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert record.obligation.status == ObligationStatus.discharged
         last = record.last_attempt
         assert last.executor == "omnigent-session-1"
@@ -343,14 +343,14 @@ class TestExternalExecutor:
         controller = _controller(state_repo, signals)
 
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(
                 flow_name=state.flow_name, executor="s2", resumed_from=1
             ),
         )
 
         assert claim.attempt == 2
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert record.last_attempt.resumed_from == 1
         assert record.attempts[0].resumed_from is None
 
@@ -362,7 +362,7 @@ class TestExternalExecutor:
 
         with pytest.raises(HTTPException) as exc:
             controller.claim_run(
-                state.run_id,
+                state.obligation_id,
                 ExecutorClaimRequest(
                     flow_name=state.flow_name, executor="s2", resumed_from=5
                 ),
@@ -370,7 +370,7 @@ class TestExternalExecutor:
 
         assert exc.value.status_code == 409
         # The transition aborted atomically — no attempt was appended.
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert len(record.attempts) == 1
 
     def test_duplicate_effect_report_converges(
@@ -379,19 +379,19 @@ class TestExternalExecutor:
         state = self._seed_ready(make_run_state, seed_lease, store)
         controller = _controller(state_repo, signals)
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
         first = controller.record_run_effect(
-            state.run_id,
+            state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 name="send", result="v1",
             ),
         )
         second = controller.record_run_effect(
-            state.run_id,
+            state.obligation_id,
             ExecutorEffectRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 name="send", result="v2-should-be-ignored",
@@ -400,7 +400,7 @@ class TestExternalExecutor:
         assert first.produced is True
         assert second.produced is False
         assert second.result == "v1"
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert len(record.effects) == 1
 
     def test_claim_unknown_run_is_404(self, state_repo, signals):
@@ -423,7 +423,7 @@ class TestExternalExecutor:
         controller = _controller(state_repo, signals)
         with pytest.raises(HTTPException) as exc:
             controller.claim_run(
-                state.run_id,
+                state.obligation_id,
                 ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
             )
         assert exc.value.status_code == 409
@@ -434,12 +434,12 @@ class TestExternalExecutor:
         state = self._seed_ready(make_run_state, seed_lease, store)
         controller = _controller(state_repo, signals)
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
         with pytest.raises(HTTPException) as exc:
             controller.renew_run(
-                state.run_id,
+                state.obligation_id,
                 ExecutorRenewRequest(
                     flow_name=state.flow_name, executor="s1",
                     epoch=claim.epoch + 1,
@@ -454,12 +454,12 @@ class TestExternalExecutor:
         queue = FakeQueue([])
         controller = _controller(state_repo, signals, queue=queue)
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s1"),
         )
 
         outcome = controller.record_run_outcome(
-            state.run_id,
+            state.obligation_id,
             ExecutorOutcomeRequest(
                 flow_name=state.flow_name, executor="s1", epoch=claim.epoch,
                 outcome="raised", error="ToolFailure",
@@ -467,10 +467,10 @@ class TestExternalExecutor:
         )
 
         assert outcome.status == "pending"
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert record.last_attempt.error == "ToolFailure"
         wake, _ = queue.enqueued[0]
-        assert wake.run_id == state.run_id
+        assert wake.obligation_id == state.obligation_id
 
     def test_gated_flow_suspends_then_reviews(
         self, state_repo, signals, make_record, seed_lease, store
@@ -517,11 +517,11 @@ class TestExternalExecutor:
         controller = _controller(state_repo, signals)
 
         claim = controller.claim_run(
-            state.run_id,
+            state.obligation_id,
             ExecutorClaimRequest(flow_name=state.flow_name, executor="s2"),
         )
         assert claim.attempt == 2
-        record = state_repo.read(state.flow_name, state.run_id).record
+        record = state_repo.read(state.flow_name, state.obligation_id).record
         assert record.attempts[0].outcome == AttemptOutcome.crashed
         assert record.attempts[0].executor == "dead-session"
         assert record.open_attempt.executor == "s2"

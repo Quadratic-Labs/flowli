@@ -28,7 +28,7 @@ class RunLogFactory(factory.Factory):
         model = RunLog
 
     flow_name       = factory.Sequence(lambda n: f"flow_{n}")
-    run_id          = factory.LazyFunction(uuid7)
+    obligation_id          = factory.LazyFunction(uuid7)
     span_type       = "flow"
     span_name       = factory.SelfAttribute("flow_name")
     span_id         = factory.LazyFunction(uuid7)
@@ -45,7 +45,7 @@ class ObligationSummaryFactory(factory.Factory):
     class Meta:
         model = ObligationSummary
 
-    run_id        = factory.LazyFunction(uuid7)
+    obligation_id        = factory.LazyFunction(uuid7)
     flow_name     = factory.Sequence(lambda n: f"flow_{n}")
     status        = ReportedStatus.running
     worker_id     = "worker-1"

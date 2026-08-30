@@ -59,7 +59,7 @@ class SpanRecord:
     One finished span read back from a run's spans-<attempt>.jsonl file.
 
     Attributes:
-        run_id: The run's UUID — equal to the OTel trace_id.
+        obligation_id: The run's UUID — equal to the OTel trace_id.
         span_id: OTel span id, 16-char hex string.
         parent_span_id: Parent span id, or None for the root span.
         name: Span (flow/task) name.
@@ -74,7 +74,7 @@ class SpanRecord:
         events: Log events recorded inside the span.
         attributes: Remaining span attributes.
     """
-    run_id: UUID
+    obligation_id: UUID
     span_id: str
     parent_span_id: str | None = field(default=None)
     name: str
@@ -160,7 +160,7 @@ class ObligationSummary:
     account.
 
     Attributes:
-        run_id: The obligation's id.
+        obligation_id: The obligation's id.
         flow_name: Name of the flow.
         status: Derived projection status (see ReportedStatus).
         worker_id: Executor of the most recent attempt ("" if none).
@@ -172,7 +172,7 @@ class ObligationSummary:
         kwargs: Flow keyword arguments.
         cancel_requested: Whether cancellation was requested.
     """
-    run_id: UUID
+    obligation_id: UUID
     flow_name: str
     status: ReportedStatus
     worker_id: str
@@ -293,7 +293,7 @@ class Obligation:
     """The unit of intent: what was promised, durable and adjudicable.
 
     Attributes:
-        id: The obligation's stable identity (uuid7; doubles as run_id and
+        id: The obligation's stable identity (uuid7; doubles as obligation_id and
             OTel trace id on the read surface).
         flow_name: Name of the flow that discharges the obligation.
         kwargs: Validated flow arguments — the contract's inputs.
@@ -315,7 +315,7 @@ class Obligation:
             on a completion event.
         caused_by: Provenance of this obligation — what event or decision
             spawned it (e.g. ``dispatch:<key>``, ``plan:<delta>``,
-            ``review:<run_id>`` for an reviewer obligation); account
+            ``review:<obligation_id>`` for an reviewer obligation); account
             data, never scheduling data.
         reviewer_id: While ``awaiting_review``, the obligation
             minted to record this one's review — the parked account
@@ -653,7 +653,7 @@ class ObligationRecord:
             status = ReportedStatus.pending
         last = self.last_attempt
         return ObligationSummary(
-            run_id=obligation.id,
+            obligation_id=obligation.id,
             flow_name=obligation.flow_name,
             status=status,
             worker_id=last.executor if last is not None else "",
@@ -678,7 +678,7 @@ class FlowJob:
 
     Attributes:
         job_id: Unique job identifier in the queue (one per message).
-        run_id: Pre-generated obligation id for tracking execution.
+        obligation_id: Pre-generated obligation id for tracking execution.
         flow_name: Name of the flow to execute.
         flow_version: Version of the flow's code/config, stamped on the
             obligation at creation (provenance; see Obligation).
@@ -700,10 +700,10 @@ class FlowJob:
         >>> queue.enqueue(job)
     """
     # Standard UUIDv7 — the single ID convention across spans, log paths,
-    # PeriodUUID range checks, and snapshot run_id ordering. run_id doubles
+    # PeriodUUID range checks, and snapshot obligation_id ordering. obligation_id doubles
     # as the OTel trace_id (both are 128-bit).
     job_id: UUID = Factory(uuid7)
-    run_id: UUID = Factory(uuid7)
+    obligation_id: UUID = Factory(uuid7)
     flow_name: str
     flow_version: str | None = field(default=None)
     kwargs: dict[str, Any] = Factory(dict)

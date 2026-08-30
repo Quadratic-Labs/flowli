@@ -59,12 +59,12 @@ The system uses a layered approach with two types of snapshots:
 **Implemented in:** `client.py`
 
 **Key Methods:**
-- `get_run(run_id)` - Fetch specific run
+- `get_run(obligation_id)` - Fetch specific run
 - `list_runs(flow_name, status, limit, offset)` - List runs with filtering
-- `get_run_summary(run_id)` - Get hierarchical run tree
+- `get_run_summary(obligation_id)` - Get hierarchical run tree
 - `count_runs(flow_name, status)` - Count matching runs
-- `get_run_children(run_id)` - Get child tasks
-- `get_run_parent(run_id)` - Get parent flow
+- `get_run_children(obligation_id)` - Get child tasks
+- `get_run_parent(obligation_id)` - Get parent flow
 
 ## Usage Examples
 
@@ -137,8 +137,8 @@ async def query_runs():
 
         # Get specific run with full hierarchy
         if runs:
-            run_id = runs[0].run_id
-            summary = client.get_run_summary(run_id)
+            obligation_id = runs[0].obligation_id
+            summary = client.get_run_summary(obligation_id)
             print(f"\nRun {summary.span_name}:")
             print(f"  Status: {summary.status}")
             print(f"  Duration: {summary.duration}")
@@ -259,7 +259,7 @@ storage/
 ### runs table
 ```sql
 CREATE TABLE runs (
-    run_id TEXT PRIMARY KEY,
+    obligation_id TEXT PRIMARY KEY,
     run_type TEXT NOT NULL,      -- "flow" or "task"
     name TEXT NOT NULL,
     start_ts TIMESTAMP,
@@ -275,12 +275,12 @@ CREATE TABLE runs (
 ```sql
 CREATE TABLE run_links (
     link_id TEXT PRIMARY KEY,
-    parent_run_id TEXT NOT NULL,
+    parent_obligation_id TEXT NOT NULL,
     child_run_id TEXT NOT NULL,
     depth INTEGER,
-    FOREIGN KEY (parent_run_id) REFERENCES runs(run_id),
+    FOREIGN KEY (parent_obligation_id) REFERENCES runs(run_id),
     FOREIGN KEY (child_run_id) REFERENCES runs(run_id),
-    INDEX idx_links_parent ON parent_run_id,
+    INDEX idx_links_parent ON parent_obligation_id,
     INDEX idx_links_child ON child_run_id
 );
 ```

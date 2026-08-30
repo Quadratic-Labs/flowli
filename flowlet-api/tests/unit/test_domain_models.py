@@ -105,12 +105,12 @@ class TestRunState:
 
     def test_run_id_is_uuid(self, make_run_state):
         state = make_run_state()
-        assert isinstance(state.run_id, UUID)
+        assert isinstance(state.obligation_id, UUID)
 
 
 @pytest.mark.unit
 class TestFlowJob:
-    """FlowJob defaults are sensible and job_id / run_id are auto-generated."""
+    """FlowJob defaults are sensible and job_id / obligation_id are auto-generated."""
 
     def test_defaults(self):
         job = FlowJob(flow_name="my_flow")
@@ -119,11 +119,11 @@ class TestFlowJob:
         assert job.max_retries == 3
         assert job.timeout_seconds is None
         assert job.job_id is not None
-        assert job.run_id is not None
+        assert job.obligation_id is not None
 
     def test_job_id_differs_from_run_id(self):
         job = FlowJob(flow_name="my_flow")
-        assert job.job_id != job.run_id
+        assert job.job_id != job.obligation_id
 
     def test_kwargs_passed_through(self):
         job = FlowJob(flow_name="my_flow", kwargs={"x": 1, "y": 2})

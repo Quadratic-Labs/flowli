@@ -70,12 +70,12 @@ curl -s http://localhost:8001/flows/hello_world/schema | python3 -m json.tool
 
 # Execute synchronously (blocks until the flow returns).
 # Response body is empty (run_flow -> None by design) -- check /runs/query
-# or /runs/{run_id} below to see the recorded state/result.
+# or /runs/{obligation_id} below to see the recorded state/result.
 curl -s -X POST http://localhost:8001/execute/hello_world \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"name": "Taskflow"}}'
 
-# Submit asynchronously (returns immediately with a run_id to track)
+# Submit asynchronously (returns immediately with a obligation_id to track)
 curl -s -X POST http://localhost:8001/submit/simple_etl \
   -H "Content-Type: application/json" \
   -d '{"kwargs": {"source": "api"}}'
@@ -85,14 +85,14 @@ curl -s -X POST http://localhost:8001/runs/query \
   -H "Content-Type: application/json" -d '{"last_n": 10}' | python3 -m json.tool
 
 # Fetch one run (with logs) and its lifecycle event timeline
-curl -s http://localhost:8001/runs/<run_id> | python3 -m json.tool
-curl -s http://localhost:8001/runs/<run_id>/events | python3 -m json.tool
+curl -s http://localhost:8001/runs/<obligation_id> | python3 -m json.tool
+curl -s http://localhost:8001/runs/<obligation_id>/events | python3 -m json.tool
 
 # Cooperatively cancel a running run
-curl -s -X POST http://localhost:8001/runs/<run_id>/cancel
+curl -s -X POST http://localhost:8001/runs/<obligation_id>/cancel
 
 # Resolve a gated obligation (see deploy_to_prod below)
-curl -s -X POST http://localhost:8001/runs/<run_id>/review \
+curl -s -X POST http://localhost:8001/runs/<obligation_id>/review \
   -H "Content-Type: application/json" -d '{"decision": "approved", "actor": "lead"}'
 ```
 
@@ -104,7 +104,7 @@ Flows worth trying:
 | `simple_etl`, `data_pipeline` | `fetch_data` sleeps 15s — submit via `/submit` and watch the run sit in `running` on the dashboard/`/runs/query`. |
 | `error_handling_demo` | `risky_operation` fails ~50% of the time; `max_retries=2` — watch the run retry then land on `completed` or `failed`. |
 | `parallel_tasks` | Several sequential task calls in one flow. |
-| `deploy_to_prod` | `gated=True` with a `gate` policy restricting review to actor `"lead"`. Submit it, watch it land on `gated` in `/runs/query`, then `POST /runs/{run_id}/review` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
+| `deploy_to_prod` | `gated=True` with a `gate` policy restricting review to actor `"lead"`. Submit it, watch it land on `gated` in `/runs/query`, then `POST /runs/{obligation_id}/review` — `"actor": "intern"` gets 403, `"actor": "lead"` discharges it. |
 
 ## 3. Run the dashboard
 
