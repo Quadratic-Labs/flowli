@@ -1,381 +1,350 @@
-# Flowlet Architecture
+Flowlet Architecture
+====================
 
-## Overview
+Overview
+--------
 
-Flowlet is a pure python lightweight embeddable task/workflow orchestration framework.
-It aims at having minimal deployment requirements compatible with serverless cloud services.
-This makes flowlet highly cost effective for small to medium workloads.
+Flowlet is a pure-Python, lightweight, embeddable orchestration kernel.
+It has minimal deployment requirements, and it fits serverless cloud services.
+Every component scales to zero.
+Storage costs dominate the monthly bill for small and medium workloads.
 
-### What flowlet is *NOT*
-Flowlet does not aim at being a highly scalable centralised entreprise-wide solution.
-For that case, use one of the many already existing feature-packed frameworks.
+Refer to [design.md](design.md) for the account model: obligations, attempts,
+reviews, effects, and consumptions.
+This document describes the components, the storage layout, the concurrency
+rules, and the deployments.
 
-## Components
+### What Flowlet is not
 
-### Flow
-- A flow registry contains all flow code and is embedded in the app.
-- The app exposes for each flow an HTTP endpoints to submit it to workers.
-- Jobs are submitted to the Job Queue.
-- Workers pick up a job and execute its flow.
-- During execution, workers emits logs to storage.
-- There are 2 logs channels: 1 for all logs (/logs) which are for storage purpose, and 1 for flow logs only (/pubsub) which serve as temporary pubsub persistence layer.
-- Flow logs are related to flow execution and the status (pending, running, retry, failed, completed, canceled) is derived.
-- On flow log event, publish update message to pubsub.
-- On schedule, put a special system flow called compaction.
-- Compaction aggregates flow logs for finished runs (completed, failed, canceled) into run stats stored in sqlite snapshots, and deletes the flow logs (they are read-only at that point and exist for archiving in all logs storage).
-- The app serves an API using FastAPI app.
-- The api server on startup loads the active snapshot locally, and updates it with flow logs.
-The api server subscribes to pubsub and fetches new flow logs when events are published.
+Flowlet is not a highly scalable, centralized, enterprise-wide solution.
+Use one of the many feature-packed frameworks for that case.
 
-### Memory management
-- Use custom id generator including timestamp similar to uuidv7, but ordered most recent first. This helps listing on blob storage, which is lexicographically ordered.
-- Snapshots are rolled-out according to a strategy, keeping a single active snapshot and possibly many archived older snapshots. For example, roll-out based on count and/or time thresholds (sort of like log-merge-trees).
+Storage layout
+--------------
 
-### Workers concurrency 
+One CairnDB blob store holds everything.
+Flowlet defines no storage backend of its own: the filesystem, S3, Azure, and
+GCS come from CairnDB verbatim.
 
-Workers orchestrate via the queue and state storage locks.
-If flows are idempotent (strongly recommended), then concurrency is safely handled.
-Queue is used for triggers and retry management (heartbeat, avoid premature duplicate runs).
-In storage, /state/{run\_id}.json stores the run's current state atomically using locks.
+| Prefix | Content |
+|---|---|
+| `state/<flow_name>/<obligation_id>.json` | The account of one obligation, carried as a lease document. Active obligations only. |
+| `obligations/<flow_name>/<yyyy-mm-dd>/<obligation_id>/` | The durable record of one obligation: `spans-<attempt>.jsonl` and the final `state.json`. |
+| `signals/<flow_name>/<obligation_id>/<name>.json` | Signal latches. `cancel` is the first signal. |
+| `messages/<flow_name>/<obligation_id>/<topic>/<uuid7>.json` | Ordered message channels, one object per message. |
+| `effects/<flow_name>/<obligation_id>/<sha256>.json` | Effect claims — the exactly-once guarantee. |
+| `dispatch/<flow_name>/<sha256(key)>.json` | Dispatch-key mapping for idempotent submissions. |
+| `timers/<flow_name>/<obligation_id>/<name>.json` | Durable timer documents. |
+| `resources/<sha256(name)>.json` | Generic resource leases. |
+| `logs/transitions/` | The account-transition feed (a CairnDB named log). |
+| `logs/history/` | The obligation-history log (optional, a CairnDB named log). |
 
-Example queue message:
-{
-  "job\_id": "123",
-  "run\_id": null,
-  "submitted\_at: "2026-02-12T10:12:23Z"
-  "payload": { ... }
-}
+Two rules shape this layout:
 
-Example state content:
+- The active state directory stays small.
+  The sweeper archives closed obligations into their obligation folder.
+  Sweep cost and cache cost thus never grow with history.
+- One obligation folder is self-contained.
+  The `uuid7` timestamp of the obligation id gives the date partition, so a late
+  retry lands in the same folder.
 
-{
-  "run\_id": "feabd123-adc",
-  "status": "Running",
-  "worker\_id": "revision+container-id",
-  "started\_at": "2026-02-27T09:58:00Z",
-  "heartbeat\_at": "2026-02-27T10:00:00Z"
-  "attempt": 1,
-  "max\_retries": 3
-}
+Components
+----------
 
-1. Jobs are submitted to the queue and modify state to pending.
-2. Worker dequeues the message, checks status:
+### API
 
-     - if state does not exist -> create it with running, attempt = 1, ...
-     - if status is finished (completed/failed/canceled) -> delete message from queue.
-     - if status is running, and lively heartbeat -> skip.
-     - if status is running, and stale heartbeat and attempt >= max_retries -> mark as failed and delete job from queue.
-     - if status is running, and stale heartbeat and attempt < max_retries -> increment attempt and takeover execution.
+The API is a FastAPI router mounted by the host application.
+It serves the kernel's account surface:
 
-   This guarantees effective at-most-once execution even with crashes or slow jobs.
-3. Worker sets short visibility timeout on queue (e.g., 5 minutes). While processing,
-   periodically extend visibility and update heartbeat\_at in state.
-   Liveliness prevents another worker from picking up the job prematurely.
-4. Job completes: if successful, update status to completed and delete job from queue.
-   If fails and attempt < max\_retries, update status to pending and put job back on queue.
-   If fails and attempt >= max\_retries, update status to failed and delete job from queue.
-5. Worker crashes: visibility timeout expires, job picked up by another worker (goto 2)
+- `POST /submit/{flow_name}` — validate the arguments, record the obligation,
+  and send a wake-up.
+- `POST /obligations/{obligation_id}/cancel` — set the cancel signal.
+- `POST /obligations/{obligation_id}/review` — record an authorized review, with an
+  optional budget extension.
+- `POST /obligations/{obligation_id}/admit` — release a held obligation (fenced).
+- `POST /obligations/{obligation_id}/claim`, `/renew`, `/outcome`, `/effects`, `/recv` —
+  the fenced claim surface for external executors.
+- `POST /obligations/{obligation_id}/messages/{topic}` — send a message to an obligation.
+- `POST /obligations/query`, `/logs/query`, `GET /obligations/{obligation_id}`,
+  `GET /obligations/{obligation_id}/events` — read projections.
+- `GET /transitions` — the ordered transition feed, with a cursor.
 
+Authoring endpoints (synchronous execution, schema introspection) belong to
+layer-2 controllers, which mount their routes beside this router.
 
-### Concurrency Control Summary
+### Queue
 
-- Optimistic concurrent writes to state prevent two workers from simultaneously marking the blob Running.
-- Heartbeat timestamps detect stale executions → allow safe takeover.
-- Queue visibility timeout prevents premature duplicate processing.
-- Idempotent job flows ensure safe reprocessing if takeover occurs.
-- Storage logs are timestamped events, so append-only -> support concurrent read and write.
-- PubSub is used for real-time syncing only and does not need to preserve order. No data is passed by pubsub, data always is stored in storage.
+The queue is a wake-up channel only.
+It holds no retry state, no ownership, and no payload of record.
+A worker acknowledges each message as soon as the obligation's state is resolved.
+Duplicate deliveries are harmless: the worker state machine drops them.
 
-## Diagrams
+The queue is optional.
+With `queue: {"type": "account"}`, submissions are recorded directly as
+obligations, and workers poll the active state directory.
+The trade is dispatch latency for one less service.
+
+### Worker
+
+A worker turns one wake-up message into at most one attempt.
+It classifies the obligation from its lease document:
+
+| State | Condition | Action |
+|---|---|---|
+| `new` | No document exists | Acquire, append attempt 1, execute |
+| `closed` | Obligation discharged or abandoned | Acknowledge, done |
+| `busy` | Lease held and not expired | Acknowledge — another worker owns it |
+| `expired` | In-flight attempt, lease expired, budget left | Acquire, record `crashed`, append a new attempt, execute |
+| `failed` | In-flight attempt, lease expired, budget spent | Acquire, record `crashed`, abandon (or park when gated) |
+| `ready` | Open obligation, released after a failure | Acquire, append a new attempt, execute |
+| `gated` | Awaiting review | Acknowledge — a review must arrive first |
+| `held` | Admission not released | Acknowledge — an admission must arrive first |
+
+The classification is advisory.
+The acquisition re-derives the transition under compare-and-swap, so races
+resolve correctly.
+
+On a failure with budget left, the worker releases the lease and enqueues a
+fresh wake-up with exponential backoff.
+The backoff comes from the account, so every wake-up channel applies the same
+window.
+
+### Executor
+
+The executor is the seam between the kernel and the work:
+
+- Taskflow's executor invokes a decorated Python callable in process.
+- CodeFlow's harness fills the same role over the HTTP claim surface.
+
+The kernel interprets the end of the work:
+
+- A normal return gives the outcome `returned`.
+- A `ObligationCancelled` exception gives the outcome `interrupted`.
+- A `LeaseLost` exception discards the outcome — the lease was fenced.
+- Any other exception gives the outcome `raised`.
+
+### Sweeper
+
+The sweeper runs on a cron cadence and needs no long-lived process.
+Each sweep lists the active state directory and:
+
+1. Steals expired leases and records the dead attempt as `crashed`.
+2. Re-enqueues stuck open obligations whose wake-up message was lost.
+3. Fires due timers.
+4. Archives closed obligations into their obligation folder, and clears their
+   signals.
+
+Sweeps are idempotent and overlap-safe.
+Ownership moves only through the fenced lease acquisition, never through the
+act of sweeping.
+Failure-detection latency is the lease deadline plus the sweep interval.
+Shorten the attempt's lease duration for faster takeover, not the sweep cadence.
+
+### Tracer
+
+Flowlet spans are ordinary OpenTelemetry spans.
+The `BlobSpanExporter` writes finished spans as JSON lines into the obligation
+folder; this file is the durable record the API reads back.
+Standard OTLP exporters can be attached in addition; they are never the
+source of truth.
+
+The obligation id (uuid7) is the OpenTelemetry trace id — both are 128 bits.
+Spans export on completion, so they give no in-flight visibility.
+The lease document is the source of truth for liveness.
+
+### Kernel primitives
+
+The kernel offers a small set of durable primitives, all built on CairnDB
+claims (put-if-absent) and leases:
+
+- **Signals** are single-shot latches, out-of-band from the lease document.
+  Duplicate senders converge on the first payload.
+- **Messages** are ordered streams per topic.
+  The uuid7 object name gives send order with no index.
+  The consumption cursor lives in the account, under the lease fence, so a
+  retried attempt replays its consumptions deterministically.
+- **Effects** are exactly-once side-effect claims.
+  Execution is at-least-once; recording is exactly-once.
+  A loser reads back the winner's result and continues on the identical path.
+- **Dispatch keys** collapse duplicate submissions.
+  Exactly one submission wins the claim; later submissions converge on the
+  same obligation id.
+- **Timers** are swept documents.
+  Nothing in the engine fires at time T; the sweeper fires due timers, and
+  firing is idempotent.
+- **Resource leases** give fenced ownership over arbitrary names — a write
+  scope, a merge-queue lock, a shared fixture.
+
+### Read cache
+
+The API refreshes a local SQLite cache from storage on demand, with a short
+TTL (default 5 s).
+Per refresh it re-reads the small active directory in full, and it folds in
+newly archived obligations exactly once.
+The cache has no correctness role: drop it, and it rebuilds from storage.
+This property makes the API scale-to-zero safe.
+
+Concurrency control
+-------------------
+
+All conditional writes go through CairnDB's compare-and-swap
+(`put_object_sync(..., if_match=etag)`).
+CairnDB implements it uniformly for the local filesystem, Azure, S3, and GCS,
+so local and cloud deployments share one protocol:
+
+1. Read the current document; receive its ETag.
+2. Write the update with `If-Match: <etag>`.
+3. On mismatch, the store rejects the write (HTTP 412).
+4. The loser re-reads and decides: retry or yield.
+
+On top of compare-and-swap, the lease adds fencing:
+
+- The lease document has exactly one writer — its holder.
+  Cancellation travels out-of-band as a signal object.
+- Every write after a claim is epoch-fenced.
+  A worker whose lease was stolen gets `LeaseLost` and discards its outcome.
+- The claim transition is atomic: crash accounting for a dead predecessor and
+  the new attempt land in one write.
+
+The remaining guarantees are idempotence by construction:
+
+- Duplicate wake-up messages are dropped by the worker state machine.
+- Duplicate signal sends, effect executions, and submissions converge on the
+  first claim.
+- Span files are append-only, one file per attempt, so takeover never gives
+  two writers on one file.
+
+Diagrams
+--------
 
 ### Components
 
-TODO : components graphic is terribly bad.
 ```mermaid
 graph TD
-    subgraph Client
-        HTTP[HTTP Client]
+    Client[HTTP Client]
+
+    subgraph App["App (FastAPI, scale to zero)"]
+        API[Kernel router]
+        Cache["Read cache (SQLite, TTL)"]
     end
 
-    subgraph App["App (FastAPI)"]
-        API[API Endpoints]
-        Registry["Flow Registry\n@registry.registry"]
-        SnapshotRepo["Snapshot Repository\n@snapshot.repository"]
-        LogRepo["Log Repository\n@log_repository"]
-        Analysis["Analysis\n@analysis"]
+    subgraph Jobs["Jobs (scale from zero)"]
+        Worker["Worker (layer-2 loop over execute_job)"]
+        Sweeper["Sweeper (flowlet sweep, cron)"]
     end
 
-    subgraph Workers["Workers"]
-        Worker["Worker\n@worker"]
-        Instrumentation["Instrumentation\n@instrumentation"]
+    Queue[("Queue (wake-up only, optional)")]
+
+    subgraph Store["CairnDB blob store"]
+        State["state/ — accounts (lease documents)"]
+        Runs["obligations/ — span files + final state"]
+        Prim["signals/ messages/ effects/ dispatch/ timers/ resources/"]
+        Logs["logs/transitions logs/history"]
     end
 
-    subgraph SystemFlows["System Flows"]
-        Compaction[Compaction Flow]
-    end
-
-    subgraph Storage["Storage (filesystem / Azure Blob)"]
-        Logs["/runs/&lt;name&gt;/&lt;uuid&gt;.jsonl\nper-span log files"]
-        State["/state/&lt;run_id&gt;.json\nrun ownership + heartbeat"]
-        Snapshots["/snapshots/&lt;start&gt;--&lt;end&gt;.sqlite\nmaterialised run history"]
-        PubSubStorage["/pubsub/ channel\ntemporary real-time events"]
-    end
-
-    Queue[(Job Queue)]
-
-    HTTP -->|"POST /flows/{name}"| API
-    API --> Registry
-    API -->|enqueue job| Queue
-    API -->|subscribe events| PubSubStorage
-    API --> SnapshotRepo
-    API --> LogRepo
-    LogRepo --> Logs
-    SnapshotRepo --> Snapshots
-    Analysis -->|"derive RunSummary\nfrom RunLogs"| LogRepo
-
+    Client -->|"submit / cancel / admit / decide"| API
+    API -->|"CAS write"| State
+    API -->|wake-up| Queue
+    API --> Cache
+    Cache -->|"pull refresh"| State
+    Cache -->|"fold archived obligations"| Runs
     Queue --> Worker
-    Worker -->|"conditional write\n(ETag / lock)"| State
-    Worker --> Instrumentation
-    Instrumentation -->|append log entries| Logs
-    Instrumentation -->|publish update| PubSubStorage
-    Worker -->|heartbeat + ack/nack| Queue
-
-    Compaction -->|read logs| LogRepo
-    Compaction -->|update snapshot + rollout| SnapshotRepo
-    Compaction -->|delete archived logs| Logs
+    Worker -->|"fenced lease claim + outcome"| State
+    Worker -->|"OTel spans"| Runs
+    Worker --> Prim
+    Sweeper -->|"steal expired, archive closed"| State
+    Sweeper -->|re-enqueue| Queue
+    State -->|"transition events"| Logs
 ```
 
-### Task / Flow Execution
+### Execution
 
 ```mermaid
 flowchart TD
-    A["Client: POST /flows/{name}"] --> B["App: validate params\nvia registry schema\n@registry.parameters"]
-    B --> C["App: enqueue job\nset state = pending"]
-    C --> D["Worker dequeues message\n@worker"]
+    A["Client: POST /submit/{flow_name}"] --> B["API: validate arguments\nrecord obligation (CAS)"]
+    B --> C["Wake-up message\n(queue, or account poll)"]
+    C --> D["Worker: classify from lease document"]
 
-    D --> E{"Check /state/{run_id}.json"}
-    E -->|"state absent"| G["Create state\nstatus=running, attempt=1"]
-    E -->|"status=finished\n(completed/failed/canceled)"| F["Delete message from queue\n— done —"]
-    E -->|"status=running\nlively heartbeat"| H["Skip — another worker is active"]
-    E -->|"status=running\nstale heartbeat\nattempt < max_retries"| I["Increment attempt\ntakeover execution"]
-    E -->|"status=running\nstale heartbeat\nattempt ≥ max_retries"| J["Mark failed\ndelete from queue\n— done —"]
+    D -->|"closed / busy / gated / held"| E["Acknowledge — no work"]
+    D -->|"new / ready"| F["Acquire lease\nappend attempt"]
+    D -->|expired| G["Acquire lease\nrecord crashed\nappend attempt"]
+    D -->|failed| H["Acquire lease\nrecord crashed\nabandon, or park when gated"]
 
-    G --> K["Acquire ownership\nconditional write on state\n(ETag / lock)"]
-    I --> K
-    K -->|"race lost\n(ETag mismatch / lock busy)"| H
-    K -->|"ownership acquired"| L["Execute flow\n@instrumentation wraps callable"]
-
-    L --> M["Emit start log → /runs/…\nPublish event → /pubsub/"]
-    M --> N["Periodic: extend queue visibility\nupdate heartbeat_at in state"]
-    N --> O{"Flow result"}
-
-    O -->|success| P["Emit success log\nstate = completed\ndelete from queue"]
-    O -->|"failure\nattempt < max_retries"| Q["Emit error log\nstate = pending\nre-enqueue job"]
-    O -->|"failure\nattempt ≥ max_retries"| R["Emit error log\nstate = failed\ndelete from queue"]
+    F --> I["Executor runs the attempt\nheartbeat renews the lease\nspans export to the obligation folder"]
+    G --> I
+    I --> J{Outcome}
+    J -->|returned + approved| K["Discharge\nacknowledge"]
+    J -->|"raised / rejected, budget left"| L["Release open\nenqueue wake-up with backoff"]
+    J -->|"raised / rejected, budget spent"| M["Abandon, or park\nawaiting review"]
+    J -->|interrupted| N["Close as canceled"]
+    J -->|LeaseLost| O["Discard outcome\n(fenced)"]
 ```
 
-## Cloud Deployments
+Deployments
+-----------
 
-### Storage
-One CairnDB blob store holds everything: span/event streams are appended
-via etag compare-and-swap, and runs' state lives in blobs guarded by ETags.
-ETags give optimistic concurrency: no long-held locks, and any number of
-readers can proceed without blocking.
+### Cloud
 
-Every state write response includes an `ETag` (an opaque version tag).
-All conditional writes are delegated to the
-[CairnDB](https://github.com/Quadratic-Labs/cairndb) conditional object store
-(`cairndb.storage.base.BlobStorage.put_object_sync(..., if_match=etag)`),
-which implements the `If-Match` compare-and-swap uniformly for the local
-filesystem, Azure, S3, and GCS — `StateRepository` receives the store via
-its `store` attribute, wired by `FlowletConfig.store`. The protocol:
+- The app and the sweeper run from one container image:
+  `flowlet api` and `flowlet sweep`.
+- The layer-2 surface starts the workers: it supplies the executor and drives
+  `execute_job` per wake-up.
+- The sweeper is a cron job (for example, a Container Apps job).
+- The queue is a storage queue, or absent (`queue: {"type": "account"}`).
+- There is no pub/sub component in the data path.
 
-1. Worker reads the current state blob → receives the blob's current ETag.
-2. Worker prepares the updated state and issues a `PUT` with
-   `If-Match: <current-etag>`.
-3. Azure atomically checks: if the blob's ETag still matches, it applies the
-   write and returns a new ETag; otherwise it rejects the request with
-   `HTTP 412 Precondition Failed`.
-4. The losing worker catches the 412, re-reads the blob, and decides whether
-   to retry or yield (goto step 2 of the worker concurrency protocol).
+### Local
 
-### Queue and PubSub
-Use storage queue for the Job Queue: it includes visibility timeouts to
-handle retries nicely.
-Use PubSub for PubSub as is. We require only QoS 0 (quality of service), i.e.
-fire and forget.
+A local deployment is one directory of filesystem storage.
+CairnDB gives the same compare-and-swap semantics on the local filesystem as
+in the cloud, so the protocol does not change.
+This fits development and testing.
 
-The queue is a latency optimization, never a correctness component: every
-guarantee (ownership, retry accounting, dedup, exactly-once effects) lives
-in the account store. Deployments that can accept poll-interval dispatch
-latency may drop the queue entirely with `queue: {"type": "account"}` — the
-account-backed job source records submissions directly as obligations and
-workers poll the active state directory for claimable work. Trade-offs are
-documented in `flowlet/queue/account.py` and the deployment guide.
+The two storage planes
+----------------------
 
-### Run History (optional)
+CairnDB has log projections — why does the read cache scan `state/` itself?
+Because run state lives on two different planes, and only one is projectable.
 
-Archived runs are immutable facts, so long-horizon run queries are served by
-an event-sourced projection instead of rescanning state files. With
-`history: true` in `FlowletConfig`:
+- **The log plane** holds immutable events.
+  Projections replay a log to its tail on demand, so freshness is solved.
+  Archived obligations are immutable facts, and Flowlet records them in the
+  `history` log (see below).
+- **The object plane** holds mutable, CAS-guarded documents.
+  Active obligation state is deliberately not in a log: the lease document is the
+  correctness mechanism itself (ownership, fencing, takeover).
+  A log of every renewal would serialize all obligations through one sequencer, and
+  it would create a second source of truth beside the lease.
 
-- The sweeper durably appends one `run.archived` event per archive candidate
-  to the CairnDB named log `history` (keys under `logs/history/` on the same
-  store) — *before* removing any state file. If the append fails, archiving
-  is skipped for the pass and retried on the next sweep.
-- Readers call `flowlet.history.refresh_history_db(store, db_path)` to
-  incrementally project the log into a durable SQLite `runs` table
-  (idempotent `INSERT OR REPLACE` by `run_id`, so re-recorded runs are
-  harmless). The projection file is a disposable cache, fully rebuildable
-  from the log.
+The read cache bridges the planes on the read side: it re-reads the mutable
+active set per TTL, and it folds in immutable archived obligations exactly once.
+Staleness is explicit and bounded to one TTL.
 
-The live control plane is untouched: leases, the worker state machine, and
-the pull-based cache never depend on the history log.
+Run history (optional)
+----------------------
 
-### Why the pull cache scans storage (the two storage planes)
+With `history: true`, the sweeper appends one `obligation.archived` event to the
+`history` log before it removes a state document.
+If the append fails, the sweeper skips that archive and retries on the next
+sweep.
+Readers project the log incrementally into a durable SQLite table.
+The projection is idempotent by obligation id, so a re-recorded obligation is harmless.
+The projection file is a disposable cache, fully rebuildable from the log.
 
-A natural question: CairnDB has SQLite projections — why does Flowlet's
-`CacheRepository` scan `state/` and `runs/` itself instead of reading a
-CairnDB projection that is always fresh? The answer is that run state lives
-on two different CairnDB planes, and only one of them is projectable.
+The live control plane never depends on the history log.
 
-**The log plane (immutable events).** CairnDB projections read a *log*, not
-snapshots: `proj.refresh()` replays to the current tail on demand, and
-`wait_for(seq)` gives read-your-writes. Snapshots only bound the cost of a
-cold bootstrap — snapshot lag never causes stale reads. So for anything that
-is in a log, CairnDB freshness is a solved problem, and Flowlet uses it:
-archived runs are immutable facts, recorded as `run.archived` events in the
-`history` named log and projected into durable SQLite (see Run History
-above).
+Design philosophy
+-----------------
 
-**The object plane (mutable, CAS-guarded documents).** *Active* run state is
-deliberately **not** in any log. It lives in the lease document at
-`state/{run_id}.json`, mutated in place under ETag compare-and-swap —
-because the lease *is* the correctness mechanism (ownership, fencing,
-heartbeats, takeover). Appending every heartbeat and transition to a log
-instead would either serialize all runs through one log's sequencer
-(CairnDB logs are totally ordered per log, with a corresponding append-rate
-ceiling) or require a log per run, and it would create a second source of
-truth beside the lease. There is therefore no log for a projection to tail:
-the freshness gap is a domain-modeling choice, not a missing CairnDB
-feature.
-
-`CacheRepository` bridges the two planes on the read side: per TTL it
-re-reads the small active-runs directory in full (mutable, so always
-re-read) and folds in newly archived `state.json` objects exactly once
-(immutable, so read once, with the history log as an optional fast path for
-cold seeds). This is cheap because the active set is small by construction —
-runs leave `state/` when the sweeper archives them.
-
-Two invariants make this design sound:
-
-- **The cache has no correctness role.** It can be dropped and rebuilt from
-  storage at any moment, which is what makes the API scale-to-zero safe.
-  Storage is the arbiter; the cache is a disposable read optimization. A
-  server-maintained "always fresh" view would invert this: the view would
-  become a correctness-bearing component that must be kept alive.
-- **Bounded staleness is explicit.** Reads are at most one TTL (default 5 s)
-  behind storage, and `refresh(force=True)` closes the gap on demand.
-
-If a second client (CodeFlow, Taskflow) ends up hand-rolling the same
-"fold a storage prefix into local SQLite" pattern, the *mechanism* (prefix
-scanning, mutable-vs-immutable handling, TTL throttling) is generic and
-could move down into CairnDB as an object-plane sibling of `projection`;
-the *policy* (schema, parsing, which prefixes) stays domain-owned either
-way.
-
-## Local Deployments
-Local deployments are simple, and are a good fit for development and testing.
-
-### Storage
-TODO : locks discussion is too low-level. Will need to document this better.
-
-Use dedicated directories for logs and runs' state. Concerning locks:
-
-State files (`/state/<run_id>.json`) must be written atomically so that exactly
-one worker can acquire ownership of a run at a time.  The mechanism differs by
-backend.
-
-#### Local Filesystem — Atomic Lock Files
-
-POSIX filesystems have no ETag equivalent, but offer two complementary
-primitives:
-
-**1. Atomic exclusive file creation (`O_CREAT | O_EXCL`)**
-
-```python
-import os
-
-lock_path = state_path.with_suffix(".lock")
-try:
-    fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    os.close(fd)
-    # — lock acquired: read-modify-write state file —
-    lock_path.unlink()           # release
-except FileExistsError:
-    pass                         # lock held by another worker — skip
-```
-
-`O_CREAT | O_EXCL` is guaranteed atomic on any local POSIX filesystem: at most
-one process will succeed in creating the file.  This closely mirrors the ETag
-"first writer wins" semantic.
-
-**2. `fcntl.flock` — advisory exclusive lock**
-
-```python
-import fcntl
-
-with open(state_path, "r+") as fh:
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # — modify state —
-        fh.seek(0); fh.write(json.dumps(state)); fh.truncate()
-    except BlockingIOError:
-        pass                     # lock held — skip
-    finally:
-        fcntl.flock(fh, fcntl.LOCK_UN)
-```
-
-`LOCK_NB` makes the call non-blocking (mirrors the "fail-fast" behaviour of a
-412).  Note that `flock` is advisory and does **not** work across NFS mounts,
-which makes it unsuitable for shared network filesystems.
-
-#### Summary
-
-| Property               | Azure Blob (ETag)         | Local FS (lock file / flock)     |
-|------------------------|---------------------------|----------------------------------|
-| Atomicity guarantee    | Server-side CAS           | Kernel-level (`O_EXCL` / flock)  |
-| Works across machines  | Yes (shared storage)      | No — single-host only            |
-| NFS safe               | N/A                       | `flock`: no; `O_EXCL`: yes       |
-| Stale-lock risk        | None (no persistent lock) | `O_EXCL`: yes if process crashes — add TTL check; `flock`: auto-released on process exit |
-| Semantic match to ETag | High — both optimistic    | `O_EXCL` ≈ ETag; `flock` ≈ mutex |
-
-For local development, the **atomic lock-file approach (`O_CREAT | O_EXCL`)**
-is preferred: it is the closest functional equivalent to Azure's ETag
-conditional writes, and it degrades safely across all local POSIX filesystems.
-A crashed worker's stale lock file can be detected by embedding a TTL or PID in
-the file and reclaiming it after the heartbeat deadline passes — exactly the
-same logic used for state takeover.
-
-## Design Philosophy
-
-Flowlet follows these principles:
-
-1. **Simplicity**: Minimal orchestration focused on logging and observability
-2. **Separation of Concerns**: Each component has one responsibility
-3. **Flexibility**: Pluggable storage backends via handlers
-4. **Standard Python**: Built on Python logging for compatibility
-5. **No Magic**: Explicit dependency injection, clear data flow
-6. **Thread-Safe**: Safe for concurrent and async execution
-
-## Future Enhancements
-
-Potential future additions (not currently implemented):
-
-1. **Async Executor**: `ExecutorAsync` for native async support
-2. **Remote Executors**: Execute flows on remote workers (Azure Jobs, etc.)
-3. **Memoization**: Cache task results
-4. **Retries**: Automatic retry on failure
-5. **Webhooks**: Trigger flows via webhooks
-6. **Real-time Dashboard**: Live execution monitoring
-7. **Access Policies**: Fine-grained permissions
+1. **The account is the only authority.** Every read path is a disposable
+   projection of it.
+2. **Correctness lives in storage.** Compare-and-swap, claims, and fenced
+   leases — never in a queue, a cache, or a process.
+3. **No long-lived processes.** No heartbeat threads, no subscribers; the
+   sweeper is a cron job, and recovery is a sweep.
+4. **Idempotence by construction.** Duplicates converge instead of being
+   suppressed.
+5. **Standard building blocks.** OpenTelemetry for spans, CairnDB for
+   storage, attrs/cattrs models as the wire format.
+6. **Explicit wiring.** `Flowlet.configure()` builds a sequential dependency
+   map; no magic.
