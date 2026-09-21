@@ -1,7 +1,5 @@
 # 00 — Overview
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 ## 1. Purpose
 
 Flowlet is a workflow engine. It runs a workflow as a coroutine execution

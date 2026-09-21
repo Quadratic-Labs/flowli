@@ -1,7 +1,5 @@
 # 10 — Agent runner
 
-*Status: draft, 2026-09-09.*
-
 ## 1. Purpose
 
 A `DELEGATE` task leaves the engine. Someone outside must take it, do the

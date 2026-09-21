@@ -1,7 +1,5 @@
 # 05 — Protocols
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 This document describes the runtime procedures. Each procedure is a numbered
 list. A worker follows the steps in order.
 

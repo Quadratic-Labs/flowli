@@ -1,7 +1,5 @@
 # 08 — Projection
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 ## 1. Purpose
 
 The projection is a local, read-only SQLite view of the control log. It

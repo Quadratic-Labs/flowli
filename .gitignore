@@ -9,3 +9,5 @@ __pycache__/
 build/
 mutants/
 .claude/
+docs/_build/
+.coverage

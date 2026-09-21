@@ -1,7 +1,16 @@
 # flowlet
 
 A workflow engine that runs a workflow as a coroutine execution stack and
-journals every frame to CairnDB. Specifications: `docs/specs/`.
+journals every frame to CairnDB.
+
+**Documentation: <https://quadratic-labs.github.io/flowlet/>** — the quickstart,
+the concepts, the architecture, every setting, the hosting guide, and the API
+reference from the docstrings. The specifications stay in `docs/specs/`.
+
+```bash
+uv sync --extra docs
+uv run sphinx-build -b html -W docs docs/_build/html    # or: make -C docs livehtml
+```
 
 Layout:
 
@@ -43,7 +52,7 @@ flowlet migrate EID 2 --by ops@example.com
 
 `--by` names the actor recorded in provenance: an email, or `kind:id` with kind
 `human`, `system`, `schedule` or `worker`. It defaults to the local user, or to
-`FLOWLET2_BY`. Commands exit with code 1 on an unknown execution or a refused
+`FLOWLET_BY`. Commands exit with code 1 on an unknown execution or a refused
 action, such as cancelling a finished execution.
 
 ## What the commands print

@@ -1,7 +1,5 @@
 # 07 — Walkthroughs
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 Each walkthrough lists the journal of one execution. Provenance is shown as
 `actor@site/epoch` for brevity. Sequence numbers are the CairnDB sequence
 numbers of the journal.

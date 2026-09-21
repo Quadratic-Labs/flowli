@@ -1,7 +1,5 @@
 # 01 — Domain model
 
-*Status: draft, 2026-09-07.*
-
 All objects are immutable values. A change of state is a new journal entry,
 not a mutation of an object. Types below use Python dataclass syntax.
 

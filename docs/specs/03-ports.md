@@ -1,7 +1,5 @@
 # 03 — Ports and CairnDB mapping
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 ## 1. Principle
 
 The domain defines each primitive as a Python `Protocol`. One adapter module,

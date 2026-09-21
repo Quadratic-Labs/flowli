@@ -1,7 +1,5 @@
 # 02 — Journal
 
-*Status: draft, 2026-09-07.*
-
 ## 1. Definition
 
 The journal of execution `eid` is the CairnDB named log `wf.exec.{eid}`. It

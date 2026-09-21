@@ -1,7 +1,5 @@
 # 11 — CodeFlow
 
-*Status: draft, 2026-09-11. Writing style: ASD-STE100 Strict.*
-
 ## 1. Purpose
 
 CodeFlow is durable orchestration of coding agents. `10-agent-runner.md`

@@ -1,7 +1,5 @@
 # 09 — HTTP API
 
-*Status: draft, 2026-09-09. Writing style: ASD-STE100 Strict.*
-
 ## 1. Purpose
 
 The engine is a library. This document specifies the service that puts the

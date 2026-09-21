@@ -1,7 +1,5 @@
 # 06 — Patterns
 
-*Status: draft, 2026-09-07. Writing style: ASD-STE100 Strict.*
-
 A pattern is a function written against the `Context` API only. The engine
 does not know the pattern. Patterns live in `flowlet/patterns/`.
 
