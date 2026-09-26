@@ -83,7 +83,8 @@ def world():
             report = reply.payload
             gates = await ctx.step(
                 lambda: {"passed": gate_results.pop(0) if gate_results else True},
-                name="gates", key=key,
+                name="gates",
+                key=key,
             )
             judgment = None
             if gates["passed"]:
@@ -94,8 +95,7 @@ def world():
             if route == "approved":
                 # A second delegate in one frame needs its own name: the frame
                 # id is `{name}-enqueue:{key}`, and two of them would collide.
-                await delegate(ctx, "merge", {"branch": report["branch"]},
-                               name="merge", key=key)
+                await delegate(ctx, "merge", {"branch": report["branch"]}, name="merge", key=key)
                 merged.append(report["branch"])
                 return {"outcome": "completed", "attempts": attempt}
             if route == "escalated":
@@ -135,11 +135,20 @@ def world():
                     plan.extend(message.payload["features"])
         return {"outcome": "completed", "done": done}
 
-    return type("World", (), {
-        "engine": engine, "backend": backend, "clock": clock,
-        "task": task, "feature": feature, "milestone": milestone,
-        "merged": merged, "gates": gate_results,
-    })
+    return type(
+        "World",
+        (),
+        {
+            "engine": engine,
+            "backend": backend,
+            "clock": clock,
+            "task": task,
+            "feature": feature,
+            "milestone": milestone,
+            "merged": merged,
+            "gates": gate_results,
+        },
+    )
 
 
 async def run(world, *, agent_says=None, verdict="accept", limit=400):
@@ -227,9 +236,7 @@ async def test_a_stage_runs_together_and_the_next_one_waits(world):
     await run(world)
 
     # The children of the feature are one execution per task, keyed by task id.
-    (feature_row,) = [
-        e for e in await _children(world, eid)
-    ]
+    (feature_row,) = [e for e in await _children(world, eid)]
     tasks = await _children(world, feature_row)
     assert len(tasks) == 3
 
@@ -249,7 +256,9 @@ async def test_a_failed_gate_reworks_with_a_fresh_attempt(world):
     two agent sessions, one merge."""
     world.gates.extend([False, True])
     eid = await world.engine.start(
-        world.task, {"intent": "fix the thing"}, by=HUMAN,
+        world.task,
+        {"intent": "fix the thing"},
+        by=HUMAN,
     )
     await run(world)
 
@@ -260,7 +269,9 @@ async def test_a_failed_gate_reworks_with_a_fresh_attempt(world):
 
 async def test_a_rejected_review_escalates_the_feature(world):
     eid = await world.engine.start(
-        world.feature, {"stages": [["T-1"]]}, by=HUMAN,
+        world.feature,
+        {"stages": [["T-1"]]},
+        by=HUMAN,
     )
     await run(world, verdict="reject")
 
@@ -286,4 +297,3 @@ async def test_a_plan_delta_is_a_message_not_a_turn(world):
 
     result = (await world.engine.journal(eid))[-1].item.payload["value"]
     assert result["done"] == [{"F-1": "completed"}, {"F-2": "completed"}]
-

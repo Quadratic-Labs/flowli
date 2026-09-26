@@ -52,9 +52,7 @@ def _parent(fid: str) -> str | None:
     return head if sep else None
 
 
-def build(
-    entries: list[Sequenced[Entry]], with_evidence: Collection[str] = ()
-) -> FrameNode | None:
+def build(entries: list[Sequenced[Entry]], with_evidence: Collection[str] = ()) -> FrameNode | None:
     """Fold a journal into the tree of its frames, in journal order.
 
     `with_evidence` names the frames that wrote evidence, so the interface can

@@ -97,8 +97,7 @@ async def test_migrate_unblocks_nondeterministic_execution(backend, engine):
     enqueued = [
         s.item
         for s in backend.control.entries
-        if s.item.type == "task.enqueued"
-        and s.item.payload["task_id"] == f"resume:{eid}:migrate:2"
+        if s.item.type == "task.enqueued" and s.item.payload["task_id"] == f"resume:{eid}:migrate:2"
     ]
     assert enqueued[-1].payload["reason"] == "migrate:2"
 

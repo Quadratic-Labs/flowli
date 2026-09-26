@@ -145,7 +145,9 @@ def json_block(value: Any, *, indent: int = 2) -> str:
     Console(file=buf, force_terminal=True, soft_wrap=True, width=10_000).print(
         Syntax(text, "json", theme="ansi_dark", background_color="default")
     )
-    return "\n".join(line.rstrip() for line in buf.getvalue().rstrip("\n").split("\n"))  # pragma: no mutate
+    return "\n".join(
+        line.rstrip() for line in buf.getvalue().rstrip("\n").split("\n")
+    )  # pragma: no mutate
 
 
 # --- reports and errors ---------------------------------------------------------------

@@ -34,8 +34,11 @@ class Gotcha:
 
 
 def _meets(one: str, other: str) -> bool:
-    return fnmatch(one, other) or fnmatch(other, one) or _root(one).startswith(_root(other)) or (
-        _root(other).startswith(_root(one))
+    return (
+        fnmatch(one, other)
+        or fnmatch(other, one)
+        or _root(one).startswith(_root(other))
+        or (_root(other).startswith(_root(one)))
     )
 
 
@@ -61,9 +64,7 @@ class Registry:
     def for_scope(self, write_scope: list[str], *, limit: int = 10) -> list[dict[str, Any]]:
         """The gotchas to inject, most specific and most recent first."""
         live = [g for g in self.entries if g.id not in self.retired and g.covers(write_scope)]
-        ordered = sorted(
-            enumerate(live), key=lambda pair: (-pair[1].specificity(), -pair[0])
-        )
+        ordered = sorted(enumerate(live), key=lambda pair: (-pair[1].specificity(), -pair[0]))
         return [{"id": g.id, "text": g.text, "scope": g.scope} for _, g in ordered[:limit]]
 
 

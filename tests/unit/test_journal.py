@@ -79,9 +79,7 @@ def test_entry_frame_failed_payload(prov):
 
 def test_entry_frame_suspended_payload(prov):
     fid = "root/a#0"
-    e = Entry.frame_suspended(
-        prov, fid, 1, Condition.timer("t1"), deadline="2026-09-08T00:00:00Z"
-    )
+    e = Entry.frame_suspended(prov, fid, 1, Condition.timer("t1"), deadline="2026-09-08T00:00:00Z")
     assert e.type == EntryType.FRAME_SUSPENDED
     assert e.payload == {
         "attempt": 1,

@@ -109,9 +109,7 @@ async def dequeue(
             "Not a delegate task",
             f"{claimed.task.task_id} is a {claimed.task.kind.value} task",
         )
-    return JSONResponse(
-        {"task": delegate_task(claimed.task), **_lease_body(claimed, holder)}
-    )
+    return JSONResponse({"task": delegate_task(claimed.task), **_lease_body(claimed, holder)})
 
 
 @router.post("/queues/{queue}/tasks/{task_id}/renew")
@@ -158,9 +156,7 @@ async def nack(
 
 
 @router.post("/queues/{queue}/tasks/{task_id}/cancel")
-async def cancel_task(
-    queue: str, task_id: str, engine: Engine, who: Consumer
-) -> Response:
+async def cancel_task(queue: str, task_id: str, engine: Engine, who: Consumer) -> Response:
     """Ask the holder of a task to stop. It fences nobody (spec 10, section 5)."""
     who.require(TASKS_CONSUME, queue)
     prov = engine.provenance(who.actor, frame_name="cancel")

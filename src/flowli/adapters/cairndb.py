@@ -277,7 +277,9 @@ class CairnOwnership:
         if await self._db.cooperative_write(key, fn) is not None:
             return
         # No lease document yet: the execution never ran. Create one, released, with the flag.
-        lease = await self._db.lease(key, ttl=1, holder=f"cancel:{by.actor.id}", state_fn=fn)  # pragma: no mutate
+        lease = await self._db.lease(
+            key, ttl=1, holder=f"cancel:{by.actor.id}", state_fn=fn
+        )  # pragma: no mutate
         if lease is not None:
             await lease.release()
         else:
@@ -464,9 +466,7 @@ class CairnQueue:
         obj = await self._db.objects.get(key)
         return None if obj is None else structure(_loads(obj.data), Task)
 
-    async def attach(
-        self, queue: str, task_id: str, holder: str, ttl: float
-    ) -> ClaimedTask | None:
+    async def attach(self, queue: str, task_id: str, holder: str, ttl: float) -> ClaimedTask | None:
         key = await self._key_of(queue, task_id)
         if key is None:
             return None
@@ -519,7 +519,9 @@ class CairnEvidence:
         # `if_absent` only ever matters for the FIRST writer: meta_bytes(ref) is a
         # pure function of ref, so a second writer's put-if-absent and an
         # unconditional put would land byte-identical content either way.
-        await self._db.objects.put(keys.meta_key(ref), keys.meta_bytes(ref), if_absent=True)  # pragma: no mutate
+        await self._db.objects.put(
+            keys.meta_key(ref), keys.meta_bytes(ref), if_absent=True
+        )  # pragma: no mutate
 
     async def append_log(self, ref: EvidenceRef, part: bytes) -> None:
         await self._ensure_meta(ref)
@@ -527,9 +529,10 @@ class CairnEvidence:
         n = len(await self._db.objects.list(prefix))
         # A part key is put-if-absent, so two flushes never overwrite one another.
         for candidate in range(n, n + 8):
-            if await self._db.objects.put(
-                keys.log_key(ref, candidate), part, if_absent=True
-            ) is not None:
+            if (
+                await self._db.objects.put(keys.log_key(ref, candidate), part, if_absent=True)
+                is not None
+            ):
                 return
         raise RuntimeError(f"evidence log of {ref.eid} {ref.fid} could not settle")
 
@@ -567,9 +570,7 @@ class CairnEvidence:
             ref = keys.ref_from_meta(eid, obj.data)
             frame_base = meta_key.rsplit("/", 1)[0]
             size = 0
-            for key in [
-                k for k in all_keys if k.startswith(f"{frame_base}/{keys.LOG_NAME}.")
-            ]:
+            for key in [k for k in all_keys if k.startswith(f"{frame_base}/{keys.LOG_NAME}.")]:
                 part = await self._db.objects.get(key)
                 size += 0 if part is None else len(part.data)
             if size:

@@ -423,7 +423,8 @@ async def test_second_message_sent_during_suspension_is_not_lost(backend, engine
     enqueued = [
         s.item
         for s in backend.control.entries
-        if s.item.type == "task.enqueued" and s.item.payload["task_id"] == f"resume:{eid}:message:{full}:2"
+        if s.item.type == "task.enqueued"
+        and s.item.payload["task_id"] == f"resume:{eid}:message:{full}:2"
     ]
     assert enqueued and enqueued[-1].provenance.actor == Actor.worker("w-1")
 
@@ -507,7 +508,8 @@ async def test_suspend_recheck_handles_terminal_and_missing_children(backend, en
     enqueued = [
         s.item
         for s in backend.control.entries
-        if s.item.type == "task.enqueued" and s.item.payload["task_id"] == f"resume:{eid}:child:{real_child}"
+        if s.item.type == "task.enqueued"
+        and s.item.payload["task_id"] == f"resume:{eid}:child:{real_child}"
     ]
     assert enqueued and enqueued[-1].provenance.actor == Actor.worker("w-1")
 
@@ -521,7 +523,9 @@ async def test_lease_fencing_blocks_recording_execution_suspended(backend, engin
         await ctx.receive("x")
 
     eid = await engine.start(w, by=HUMAN)
-    _fence_ownership_after(backend, calls_before_fencing=1)  # let "started" through, fence "suspended"
+    _fence_ownership_after(
+        backend, calls_before_fencing=1
+    )  # let "started" through, fence "suspended"
     assert await worker.run_once()  # dropped: fenced before the suspended entry could be written
 
     entries = await engine.journal(eid)

@@ -128,9 +128,7 @@ async def cancel_execution(
     )
 
 
-async def _cancel_delegates(
-    engine: Any, projection: Any, eid: Eid, who: Principal
-) -> list[str]:
+async def _cancel_delegates(engine: Any, projection: Any, eid: Eid, who: Principal) -> list[str]:
     """Ask the consumer of every delegate task of this execution to stop.
 
     A consumer outside the engine does not watch the execution lease, so a
@@ -141,7 +139,9 @@ async def _cancel_delegates(
     """
     prov = engine.provenance(who.actor, frame_name="cancel")
     asked = []
-    for row in projection.tasks(eid=eid, kind=TaskKind.DELEGATE.value, limit=100):  # pragma: no mutate
+    for row in projection.tasks(
+        eid=eid, kind=TaskKind.DELEGATE.value, limit=100
+    ):  # pragma: no mutate
         # A task that was answered and acked is gone already; the adapters
         # treat a request for it as a no-op.
         await engine.ports.queue.request_cancel(row.queue, row.task_id, prov)

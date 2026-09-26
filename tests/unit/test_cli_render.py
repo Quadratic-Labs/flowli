@@ -89,9 +89,7 @@ def test_journal_row_keeps_its_columns(plain):
 
 def test_journal_header_labels_and_widths(plain):
     """The header's labels and column widths must match `journal_row`'s exactly."""
-    assert render.journal_header() == (
-        f"{'seq':>14}  {'type':<22} {'fid':<32} {'at':<24} actor"
-    )
+    assert render.journal_header() == (f"{'seq':>14}  {'type':<22} {'fid':<32} {'at':<24} actor")
 
 
 # --- colour choices ---------------------------------------------------------------------
@@ -140,9 +138,7 @@ def test_status_value_colors_by_the_word_before_any_trailing_detail(colored):
 
 def test_workflow_value_pins_the_exact_styling(colored):
     """The name is cyan *and* bold; the version is dim -- both must hold together."""
-    assert render.workflow_value("greet", "1") == (
-        "\x1b[36m\x1b[1mgreet\x1b[0m \x1b[2mv1\x1b[0m"
-    )
+    assert render.workflow_value("greet", "1") == ("\x1b[36m\x1b[1mgreet\x1b[0m \x1b[2mv1\x1b[0m")
 
 
 def test_counters_dim_the_zeroes_and_bold_the_rest(colored):
@@ -155,9 +151,7 @@ def test_counters_pins_the_exact_styling_for_zero_and_nonzero(colored):
     """Zero is dim only; a nonzero count is green *and* bold; the name is always dim."""
     out = render.counters([("archived", 1), ("cleaned", 0)])
     assert out == (
-        "\x1b[2marchived\x1b[0m=\x1b[32m\x1b[1m1\x1b[0m"
-        " "
-        "\x1b[2mcleaned\x1b[0m=\x1b[2m0\x1b[0m"
+        "\x1b[2marchived\x1b[0m=\x1b[32m\x1b[1m1\x1b[0m \x1b[2mcleaned\x1b[0m=\x1b[2m0\x1b[0m"
     )
 
 

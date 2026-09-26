@@ -6,7 +6,14 @@ import pytest
 from fastapi import Request
 
 from flowli.api.deps import ApiConfig
-from flowli.api.reads import STALE_HEADER, decode_cursor, encode_cursor, etag, freshness, json_response
+from flowli.api.reads import (
+    STALE_HEADER,
+    decode_cursor,
+    encode_cursor,
+    etag,
+    freshness,
+    json_response,
+)
 from flowli.api.routes.executions import _written
 
 from .conftest import READER, auth, drain
@@ -248,9 +255,7 @@ async def test_journal_and_frames(client, engine, projection):
 
 async def test_signal_resumes_a_waiting_execution(client, engine, projection):
     eid = (
-        await client.post(
-            "/executions", json={"workflow": "waits", "version": "1"}, headers=auth()
-        )
+        await client.post("/executions", json={"workflow": "waits", "version": "1"}, headers=auth())
     ).json()["eid"]
     await drain(engine)
     await projection.refresh()
@@ -269,9 +274,7 @@ async def test_signal_resumes_a_waiting_execution(client, engine, projection):
 
 async def test_cancel_then_cancel_again_is_409(client, engine, projection):
     eid = (
-        await client.post(
-            "/executions", json={"workflow": "waits", "version": "1"}, headers=auth()
-        )
+        await client.post("/executions", json={"workflow": "waits", "version": "1"}, headers=auth())
     ).json()["eid"]
     await drain(engine)
 
@@ -287,9 +290,7 @@ async def test_cancel_then_cancel_again_is_409(client, engine, projection):
 
 async def test_migrate_moves_the_version(client, engine, projection):
     eid = (
-        await client.post(
-            "/executions", json={"workflow": "waits", "version": "1"}, headers=auth()
-        )
+        await client.post("/executions", json={"workflow": "waits", "version": "1"}, headers=auth())
     ).json()["eid"]
     await drain(engine)
 

@@ -45,7 +45,8 @@ def _scope(report: dict[str, Any], envelope: dict[str, Any]) -> list[str]:
     if not scope:
         return []
     outside = [
-        path for path in report.get("changed_paths") or []
+        path
+        for path in report.get("changed_paths") or []
         if not any(fnmatch(path, glob) for glob in scope)
     ]
     if not outside:

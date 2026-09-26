@@ -107,6 +107,7 @@ ProjectionOpt = Annotated[
 
 # region ----- app loading -----
 
+
 def load_ref(ref: str) -> Any:
     """Import 'module.path:attribute'."""
     module_path, sep, attribute = ref.partition(":")
@@ -270,9 +271,11 @@ def operator_main(app_ref: str, storage_path: str | None, fn: Callable[[Engine],
 
     run(main())
 
+
 # endregion
 
 # region ----- commands -----
+
 
 @app.command()
 def worker(
@@ -280,9 +283,7 @@ def worker(
     queue: Annotated[
         list[str] | None, typer.Option("--queue", "-q", help="Queue to poll. Repeatable.")
     ] = None,
-    worker_id: Annotated[
-        str | None, typer.Option("--worker-id", envvar="FLOWLI_WORKER_ID")
-    ] = None,
+    worker_id: Annotated[str | None, typer.Option("--worker-id", envvar="FLOWLI_WORKER_ID")] = None,
     exec_ttl: Annotated[float, typer.Option(help="Execution lease TTL, seconds.")] = 120.0,
     task_ttl: Annotated[float, typer.Option(help="Task lease TTL, seconds.")] = 60.0,
     poll_interval: Annotated[float, typer.Option(help="Idle sleep between polls, seconds.")] = 1.0,
@@ -407,9 +408,11 @@ def retention(
 
     run(main())
 
+
 # endregion
 
 # region ----- operator commands -----
+
 
 @app.command()
 def status(
@@ -584,6 +587,7 @@ def migrate(
         )
 
     operator_main(app_ref, storage_path, do)
+
 
 # endregion
 

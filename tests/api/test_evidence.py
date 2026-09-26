@@ -53,9 +53,7 @@ async def test_listing_an_execution_and_one_attempt(client, engine):
         "size": 21,  # len(b"the agent said things")
     }
 
-    one = await client.get(
-        f"/evidence/{eid}/attempts/1?fid={quote(FID)}", headers=auth(OPERATOR)
-    )
+    one = await client.get(f"/evidence/{eid}/attempts/1?fid={quote(FID)}", headers=auth(OPERATOR))
     assert {i["name"] for i in one.json()["items"]} == {"transcript.txt", "diff.patch"}
 
 

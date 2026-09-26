@@ -53,7 +53,9 @@ def engine(backend):
 
 def reconciler(engine, rows, board=None) -> Reconciler:
     return Reconciler(
-        engine=engine, projection=FakeProjection(rows), board=board or MemoryBoard(),
+        engine=engine,
+        projection=FakeProjection(rows),
+        board=board or MemoryBoard(),
         workflows=("codeflow.task",),
     )
 
@@ -89,7 +91,10 @@ async def test_the_account_decides_what_the_item_says(engine):
 
     # Someone edited the item on the tracker; the account wins.
     board.items[external_id] = board.items[external_id].__class__(
-        key="e1", title="edited by a person", status="anything", workflow="x",
+        key="e1",
+        title="edited by a person",
+        status="anything",
+        workflow="x",
     )
     rows[0] = Row(eid="e1", status=ExecutionStatus.COMPLETED, result={"ok": True})
 
@@ -100,8 +105,14 @@ async def test_the_account_decides_what_the_item_says(engine):
 
 async def test_a_failure_shows_on_the_board(engine):
     board = MemoryBoard()
-    rows = [Row(eid="e1", status=ExecutionStatus.FAILED,
-                error_type="StepFailed", error_message="the gate failed")]
+    rows = [
+        Row(
+            eid="e1",
+            status=ExecutionStatus.FAILED,
+            error_type="StepFailed",
+            error_message="the gate failed",
+        )
+    ]
     await reconciler(engine, rows, board).run_once()
 
     (item,) = board.items.values()

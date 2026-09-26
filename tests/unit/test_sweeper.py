@@ -58,7 +58,7 @@ def test_lease_info_is_expired_when_released_even_with_a_future_deadline():
 
 
 def test_lease_info_is_expired_exactly_at_its_deadline():
-    """"Not after now" includes the boundary: deadline_at == now is expired."""
+    """ "Not after now" includes the boundary: deadline_at == now is expired."""
     info = LeaseInfo(epoch=1, holder="w-1", deadline_at=T0, released=False, state=None)
     assert info.is_expired(T0)
     assert not info.is_expired(T0 - timedelta(seconds=1))
@@ -104,14 +104,18 @@ async def test_control_view_apply_queue_carries_forward_and_defaults(engine):
     view = ControlView()
     prov = engine.provenance(HUMAN)
     eid = parse_eid("00000000-0000-0000-0000-0000000000e1")
-    view.apply(1, Entry(EntryType.EXECUTION_CREATED, "root", {"eid": str(eid), "queue": "custom"}, prov))
+    view.apply(
+        1, Entry(EntryType.EXECUTION_CREATED, "root", {"eid": str(eid), "queue": "custom"}, prov)
+    )
     assert view.executions[eid].queue == "custom"
 
     view.apply(2, Entry(EntryType.EXECUTION_STARTED, "root", {"eid": str(eid), "args": {}}, prov))
     assert view.executions[eid].queue == "custom"  # carried forward: this entry has no "queue"
 
     other = parse_eid("00000000-0000-0000-0000-0000000000e2")
-    view.apply(3, Entry(EntryType.EXECUTION_SUSPENDED, "root", {"eid": str(other), "on": ["x"]}, prov))
+    view.apply(
+        3, Entry(EntryType.EXECUTION_SUSPENDED, "root", {"eid": str(other), "on": ["x"]}, prov)
+    )
     assert view.executions[other].queue == "default"  # never seen before, no "queue" in payload
 
 
@@ -119,7 +123,7 @@ async def test_control_view_apply_queue_carries_forward_and_defaults(engine):
 
 
 async def test_control_view_terminal_before_excludes_the_boundary_instant(engine):
-    """"Older than `before`", not "at or older than" (matches the cairndb projection's
+    """ "Older than `before`", not "at or older than" (matches the cairndb projection's
     own `updated_at < ?`, and the same strict boundary the repair-window checks use): an
     entry exactly at `before` is not yet old enough to retain."""
     from flowli.domain import Entry, EntryType, parse_eid
@@ -345,7 +349,7 @@ async def test_sweeper_reenqueues_lost_start_after_window(backend, engine):
 
 
 async def test_sweeper_restarts_exactly_at_the_window_boundary(backend, engine):
-    """"Not after now" includes the boundary here too (as for recovery and repair): a
+    """ "Not after now" includes the boundary here too (as for recovery and repair): a
     PENDING execution whose `execution.created` entry is exactly `repair_window` old is
     old enough to restart, not one instant more."""
 
@@ -370,7 +374,9 @@ async def test_sweeper_restart_does_not_break_on_an_early_continue(backend, engi
 
     sweeper = engine.sweeper()
     eid_a = parse_eid("00000000-0000-0000-0000-00000000000a")  # not PENDING: hits the status guard
-    eid_b = parse_eid("00000000-0000-0000-0000-00000000000b")  # PENDING, but fresh: hits the window guard
+    eid_b = parse_eid(
+        "00000000-0000-0000-0000-00000000000b"
+    )  # PENDING, but fresh: hits the window guard
     eid_c = parse_eid("00000000-0000-0000-0000-00000000000c")  # PENDING and stale: needs restarting
 
     sweeper._known = {
@@ -409,7 +415,7 @@ async def test_sweeper_repairs_missing_terminal_announcement(backend, engine):
 
 
 async def test_sweeper_repairs_exactly_at_the_window_boundary(backend, engine):
-    """"Not after now" includes the boundary here too: an entry exactly `repair_window`
+    """ "Not after now" includes the boundary here too: an entry exactly `repair_window`
     old is old enough to repair, whether the staleness is judged from the known control
     status or from the unannounced journal entry itself (both land on T0 in this test)."""
 
@@ -462,7 +468,9 @@ async def test_sweeper_repair_does_not_break_on_an_early_continue(backend, engin
     from flowli.domain import Entry, EntryType
 
     prov = engine.provenance(HUMAN)
-    await backend.journal.append(eid3, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov))
+    await backend.journal.append(
+        eid3, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov)
+    )
 
     report = await sweeper.run_once()
     assert report.repaired == [eid4]
@@ -487,7 +495,9 @@ async def test_sweeper_does_not_repair_a_fresh_entry_when_known_is_stale(backend
     from flowli.domain import Entry, EntryType
 
     prov = engine.provenance(HUMAN)  # fresh: provenance.at == now
-    await backend.journal.append(eid, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov))
+    await backend.journal.append(
+        eid, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov)
+    )
 
     report = await sweeper.run_once()
     assert report.repaired == []  # must not race the entry that was *just* written

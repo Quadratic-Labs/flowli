@@ -71,9 +71,7 @@ def install(app: Any) -> None:
         return unknown_execution(exc.eid).response()
 
     async def _unknown_workflow(_: Request, exc: Exception) -> JSONResponse:
-        return Problem(
-            404, "unknown_workflow", "Unknown workflow", str(exc)
-        ).response()
+        return Problem(404, "unknown_workflow", "Unknown workflow", str(exc)).response()
 
     async def _invalid_name(_: Request, exc: Exception) -> JSONResponse:
         return Problem(400, "invalid_name", "Invalid name", str(exc)).response()
