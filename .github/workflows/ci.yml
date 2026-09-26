@@ -48,10 +48,12 @@ jobs:
         run: uv run --no-sync mypy src
       - name: mypy flowli-runner
         working-directory: runner
-        run: uv run --no-sync mypy src
+        # the root environment: uv would make a new one for this subproject
+        run: ../.venv/bin/mypy src
       - name: mypy flowli-codeflow
         working-directory: codeflow
-        run: uv run --no-sync mypy src
+        # the root environment: uv would make a new one for this subproject
+        run: ../.venv/bin/mypy src
 
   tests:
     runs-on: ubuntu-latest
