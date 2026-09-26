@@ -9,9 +9,9 @@ from cairndb import Timestamp
 from flowli.api import ApiConfig, StaticAuthenticator, create_app
 from flowli.api.dto import task_row
 from flowli.domain import FrameRef, Task, TaskKind
+from tests.ids import E_ABC
 
 from .conftest import OPERATOR, READER, auth, drain
-from tests.ids import E_ABC
 
 START = {"workflow": "invoice_approval", "version": "3", "args": {"invoice_id": "i-1"}}
 

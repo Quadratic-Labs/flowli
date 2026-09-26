@@ -161,7 +161,8 @@ async def test_review_approve_end_to_end(backend, engine):
     assert req["deadline"] == "2026-09-10T09:00:00.000000Z"
     (task,) = await backend.queue.pending("finance")
     assert task.task_id == Task.id_for(TaskKind.DELEGATE, eid, review_task_key(rid))
-    # the delegate payload keeps rid, payload and deadline exactly as given (06-patterns.md #2 step 3)
+    # the delegate payload keeps rid, payload and deadline exactly as given
+    # (06-patterns.md #2 step 3)
     assert task.payload["payload"] == {
         "rid": rid,
         "payload": {"amount": 100},

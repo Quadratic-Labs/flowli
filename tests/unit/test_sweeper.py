@@ -272,7 +272,7 @@ async def test_sweeper_recovery_does_not_break_on_an_early_continue(backend, eng
 
     worker, sweeper = engine.worker(), engine.sweeper()
 
-    eidA = await engine.start(nap, by=HUMAN)  # not RUNNING: hits the status guard
+    await engine.start(nap, by=HUMAN)  # not RUNNING: hits the status guard
     await drain(worker)
 
     eidB = await engine.start(w, by=HUMAN)  # RUNNING, but its lease is live
@@ -448,10 +448,10 @@ async def test_sweeper_repair_does_not_break_on_an_early_continue(backend, engin
 
     worker, sweeper = engine.worker(), engine.sweeper()
 
-    eid1 = await engine.start(done, by=HUMAN)  # terminal: hits the is_terminal guard
+    await engine.start(done, by=HUMAN)  # terminal: hits the is_terminal guard
     await drain(worker)
 
-    eid2 = await engine.start(nap, by=HUMAN)  # non-terminal, but its log stays consistent
+    await engine.start(nap, by=HUMAN)  # non-terminal, but its log stays consistent
     await drain(worker)
 
     eid3 = await engine.start(nap, by=HUMAN)  # desynced below, but only once known is stale
