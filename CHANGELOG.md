@@ -8,35 +8,32 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-26
+
+First release, published to PyPI (`pip install flowli`). The project was
+developed as Flowlet before this release.
+
 ### Added
 
-- `LICENSE` file with the MIT license text, shipped in the sdist and
-  wheel.
+- The engine: a workflow runs as a coroutine execution stack, and every
+  frame is journaled to CairnDB. Replay from the journal resumes an
+  execution, and leases give each execution exactly one owner.
+- Patterns built on the `Context` API: delegate, fanout, review, saga
+  and schedule.
+- The `flowli` command (the `cli` extra): the worker, sweeper and
+  retention jobs, and the operator commands `status`, `signal`, `cancel`
+  and `migrate`.
+- The HTTP service (the `api` extra): the catalog, the control plane,
+  the worker plane and evidence.
+- Backends: CairnDB (`cairndb>=0.4.1,<0.5`, from PyPI) and in-memory.
+- A `py.typed` marker, and the MIT `LICENSE` in the sdist and wheel.
 - Publishing: pushing a `vX.Y.Z` tag on `release/X.Y` publishes the
   release to PyPI (Trusted Publishing) and creates the GitHub Release.
-- The documentation is built on every push to `main`, and published to
-  GitHub Pages from the latest `release/X.Y` branch.
+- The documentation, published to GitHub Pages from the latest
+  `release/X.Y` branch, with a Project section: roadmap, changelog,
+  contributing guide and code of conduct.
 - A CI workflow: `ruff check`, `ruff format --check`, `mypy` and the
-  tests of the three packages, on every pull request and on pushes to
-  `main` and the release branches.
-- A Project section in the documentation: roadmap, changelog,
-  contributing guide (with the release process), and code of conduct.
+  tests of the three packages.
 
-### Fixed
-
-- The `execution.created` entry on the control log has the frame id
-  `root`, like every other `execution.*` entry, instead of none.
-
-### Changed
-
-- **Breaking:** the project is renamed from Flowlet to Flowli: the
-  `flowli` package and command, the `flowli-runner` and
-  `flowli-codeflow` packages, and the `FLOWLI_*` environment variables.
-- CairnDB is installed from PyPI (`cairndb>=0.4.1,<0.5`).
-- `uvicorn` moves from the core dependencies to the `api` and `cli`
-  extras.
-- The specifications move from `docs/specs/` to `specs/`, and are no
-  longer part of the documentation site.
-- The code is formatted with `ruff format`.
-
-[Unreleased]: https://github.com/Quadratic-Labs/flowli/commits/main
+[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.1.0
