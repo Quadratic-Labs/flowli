@@ -180,7 +180,7 @@ class Engine:
             await self.ports.control.announce(
                 Entry(
                     EntryType.EXECUTION_CREATED,
-                    None,
+                    ROOT_FID,
                     {
                         "eid": str(execution.eid),
                         "workflow": execution.workflow,
@@ -294,7 +294,7 @@ class Engine:
         channel = execution.parent.child_channel
         await self.ports.channel.send(Message(channel, 0, body, by))  # pragma: no mutate
         await self.enqueue_resume(
-            parent_eid, None, f"child:{execution.eid}", by
+            parent_eid, "", f"child:{execution.eid}", by
         )
 
     # --- cancel ------------------------------------------------------------------------

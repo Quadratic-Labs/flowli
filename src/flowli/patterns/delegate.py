@@ -12,6 +12,7 @@ from typing import Any
 from flowli.codec import unstructure
 from flowli.domain import DelegateTask, FrameRef, Message, Task, TaskKind
 from flowli.runtime import Context
+from flowli.runtime.context import Scope
 
 
 def delegate_frame(name: str, key: str | None) -> str:
@@ -58,7 +59,7 @@ async def delegate(
     # only special-cases "execution", so any other value behaves the same -- the
     # literal itself is not observable and is pinned here, not spread over the
     # multi-line call below where a per-argument pragma cannot reach it.
-    scope = "global"  # pragma: no mutate
+    scope: Scope = "global"  # pragma: no mutate
     reply = await ctx.receive(
         channel, scope=scope, timeout=timeout, name=f"{name}-receive", key=key
     )
