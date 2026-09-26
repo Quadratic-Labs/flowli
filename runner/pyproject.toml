@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowli-runner"
+version = "0.1.0"
+description = "Runs coding agents as the consumer of flowli delegate tasks"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+dependencies = ["flowli"]
+
+[project.optional-dependencies]
+service = ["httpx>=0.27.0"]   # the adapter for a hosted agent runtime
+cli = ["flowli[cli]", "typer>=0.9.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.2.0", "mypy>=1.8.0", "httpx>=0.27.0"]
+
+[project.scripts]
+flowli-runner = "flowli_runner.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"flowli_runner" = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+
+[[tool.mypy.overrides]]
+module = ["httpx"]
+ignore_missing_imports = true
+follow_untyped_imports = true

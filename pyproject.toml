@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=77.0"]  # >=77: SPDX license expressions (PEP 639)
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowli"
+version = "0.1.0"
+description = "Workflow engine: a journaled coroutine execution stack on CairnDB"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Thomas Zamojski"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = [
+    "cairndb>=0.4.1,<0.5",
+    "cattrs>=24.1.0",
+    "structlog>=24.1.0",
+]
+
+[project.urls]
+Documentation = "https://quadratic-labs.github.io/flowli/"
+Repository = "https://github.com/Quadratic-Labs/flowli"
+Changelog = "https://github.com/Quadratic-Labs/flowli/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+cli = ["typer>=0.9.0", "rich>=13.8.0", "uvicorn>=0.52.4"]
+api = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.7.0",
+    "pyjwt[crypto]>=2.9.0",
+    "uvicorn>=0.52.4",
+]
+docs = [
+    "sphinx>=8.1.0",
+    "myst-parser>=4.0.0",
+    "furo>=2024.8.6",
+    "sphinx-design>=0.6.0",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-mermaid>=1.0.0",
+    "sphinx-autobuild>=2024.10.3",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "hypothesis>=6.98.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "pyjwt[crypto]>=2.9.0",
+    "asgi-lifespan>=2.1.0",
+    "uvicorn>=0.52.4",
+]
+
+[project.scripts]
+flowli = "flowli.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"flowli" = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+
+[[tool.mypy.overrides]]
+module = ["msgpack"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+[dependency-groups]
+dev = [
+    "mutmut>=3.8.0",
+]

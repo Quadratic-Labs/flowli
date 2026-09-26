@@ -1,0 +1,102 @@
+# Publish a release: push a vX.Y.Z tag on the release/X.Y branch.
+#
+# 1. build:   check the tag matches the package version and sits on the
+#             release/X.Y branch, build the sdist and wheel, and validate
+#             them (twine check --strict).
+# 2. pypi:    upload to PyPI with Trusted Publishing (OIDC, no API token).
+# 3. release: create the GitHub Release for the tag, with the matching
+#             CHANGELOG.md section as notes and the distributions attached.
+#
+# Only the release manager can push v* tags (repository ruleset), so only
+# the release manager can publish. Only the flowli package is published;
+# runner/ and codeflow/ are not.
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.2.0  # no floating major tag
+
+      - name: Tag matches the package version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          module=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/flowli/__init__.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ] || [ "$module" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, pyproject.toml ($version) and flowli.__version__ ($module) must agree"
+            exit 1
+          fi
+
+      - name: Tag is on its release branch
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          branch="release/${v%.*}"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch" 2>/dev/null; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on $branch"
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          uv build --no-sources --out-dir dist
+          uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/flowli/${{ github.ref_name }}/
+    permissions:
+      id-token: write  # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f && !/^\[[^]]*\]: /' \
+            CHANGELOG.md > notes.md
+          printf '\n---\n\nDocumentation: https://quadratic-labs.github.io/flowli/\n' >> notes.md
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Flowli $v" \
+              --notes-file notes.md dist/*
+          fi
