@@ -104,7 +104,6 @@ intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 html_theme = "furo"
 html_title = "Flowli"
 html_baseurl = "https://quadratic-labs.github.io/flowli/"  # published by .github/workflows/docs.yml
-html_static_path = ["_static"]
 html_copy_source = False
 html_show_sphinx = False
 html_last_updated_fmt = "%Y-%m-%d"
