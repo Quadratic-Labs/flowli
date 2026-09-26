@@ -601,7 +601,7 @@ async def test_on_migrated_field_mapping_and_defensive_default(backend, engine, 
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowli.domain import Code, EntryType, Provenance, new_eid
+    from flowli.domain import Code, EntryType, Provenance
 
     @engine.workflow("mig", "1")
     async def mig(ctx):

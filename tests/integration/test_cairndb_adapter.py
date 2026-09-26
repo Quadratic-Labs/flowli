@@ -1128,7 +1128,7 @@ async def test_list_sums_every_log_part_and_skips_one_gone_missing(backend, prov
     await ev.append_log(ref, b"b" * 7)  # this part will read back as gone
     await ev.append_log(ref, b"c" * 11)
 
-    prefix = "wf/evidence/{}/".format(E_ABC)
+    prefix = f"wf/evidence/{E_ABC}/"
     part_keys = sorted(k for k in await backend.db.objects.list(prefix) if "/log." in k)
     vanished = part_keys[1]
     real_get = backend.db.objects.get
@@ -1154,7 +1154,7 @@ async def test_list_continues_past_one_missing_meta_object(backend, prov, monkey
     for ref in refs:
         await ev.append_log(ref, b"x")
 
-    prefix = "wf/evidence/{}/".format(E_ABC)
+    prefix = f"wf/evidence/{E_ABC}/"
     all_keys = sorted(await backend.db.objects.list(prefix))
     first_meta = next(k for k in all_keys if k.endswith("/meta"))
     real_get = backend.db.objects.get

@@ -630,7 +630,7 @@ async def test_sweep_done_reports_the_waits_cleared_count(engine):
         return 1
 
     worker, sweeper = engine.worker(), engine.sweeper()
-    a = await engine.start(w, by=HUMAN)
+    await engine.start(w, by=HUMAN)
     b = await engine.start(w, by=HUMAN)
     await drain(worker)
     # a stale marker for b on a channel it does not wait on

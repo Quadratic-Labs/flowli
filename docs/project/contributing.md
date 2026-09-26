@@ -34,13 +34,29 @@ tests of the HTTP service run too.
 |---|---|
 | `uv run pytest` | the tests of `flowli` (`tests/`) |
 | `uv run pytest runner/tests` / `uv run pytest codeflow/tests` | the tests of the runner and of CodeFlow |
-| `uv run ruff check .` | lint |
+| `uv run ruff format .` | format the code |
+| `uv run ruff check .` / `uv run ruff format --check .` | lint / check the format |
 | `uv run mypy src` | type-check (strict) |
 | `uv run mutmut run` | mutation testing |
 | `make -C docs html` / `make -C docs livehtml` | build this documentation / live-reload it |
 
 `uv run` syncs the environment first. Pass `--all-extras` to it, or call
 the tools from `.venv/bin/`, so the sync keeps the extras installed.
+
+## Continuous integration
+
+The `CI` workflow (`.github/workflows/ci.yml`) runs on every pull request
+and every push to `main` and the release branches: `ruff check`,
+`ruff format --check`, `mypy` on the three packages, and the three test
+suites. Run the same commands before you push.
+
+`ruff format` skips Markdown, because the code blocks of the docs and the
+specifications are aligned by hand. Commits that only reformat code are
+listed in `.git-blame-ignore-revs`. To make `git blame` skip them too:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
 
 ## Test design
 
