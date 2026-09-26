@@ -17,7 +17,9 @@ from .conftest import HUMAN, Agents, drive
 
 def task(tid="T-1", **kwargs) -> TaskSpec:
     return TaskSpec(
-        id=tid, intent=f"do {tid}", feature="F-1",
+        id=tid,
+        intent=f"do {tid}",
+        feature="F-1",
         write_scope=kwargs.pop("scope", ["src/a/**"]),
         verification=kwargs.pop("verification", ["just test"]),
         acceptance_criteria=kwargs.pop("criteria", ["AC-1"]),
@@ -41,17 +43,25 @@ async def test_a_clean_attempt_is_reviewed_and_merged(engine, backend):
 
     assert await engine.status(eid) is ExecutionStatus.COMPLETED
     assert await result_of(engine, eid) == {
-        "outcome": "completed", "attempts": 1, "commit": "deadbee"
+        "outcome": "completed",
+        "attempts": 1,
+        "commit": "deadbee",
     }
 
 
 async def test_a_failed_gate_reworks_with_the_prior_attempt_in_the_envelope(engine, backend):
     """A rework gets a fresh agent, seeded with what failed."""
-    agents = Agents([
-        {"outcome": "completed", "branch": "b1", "changed_paths": ["src/a/x.py", "docs/y.md"],
-         "verification": [{"command": "just test", "exit_code": 0}],
-         "claims": [{"criteria_satisfied": ["AC-1"]}]},
-    ])
+    agents = Agents(
+        [
+            {
+                "outcome": "completed",
+                "branch": "b1",
+                "changed_paths": ["src/a/x.py", "docs/y.md"],
+                "verification": [{"command": "just test", "exit_code": 0}],
+                "claims": [{"criteria_satisfied": ["AC-1"]}],
+            },
+        ]
+    )
     eid = await engine.start(engine.workflows["task"], task().to_payload(), by=HUMAN)
     await drive(engine, backend, agents=agents)
 
@@ -78,7 +88,9 @@ async def test_a_conflict_from_the_merge_queue_is_a_rework(engine, backend):
     agents = Agents()
     eid = await engine.start(engine.workflows["task"], task().to_payload(), by=HUMAN)
     await drive(
-        engine, backend, agents=agents,
+        engine,
+        backend,
+        agents=agents,
         merges=[{"merged": False, "reason": "conflict", "conflicts": ["src/a/x.py"]}],
     )
 
@@ -118,8 +130,13 @@ async def test_a_feature_runs_a_stage_together_and_the_next_one_after(engine, ba
     spec = feature_of(
         task("T-1", scope=["src/a/**"]),
         task("T-2", scope=["src/b/**"]),
-        TaskSpec(id="T-3", intent="last", feature="F-1", depends_on=["T-1", "T-2"],
-                 write_scope=["src/c/**"]),
+        TaskSpec(
+            id="T-3",
+            intent="last",
+            feature="F-1",
+            depends_on=["T-1", "T-2"],
+            write_scope=["src/c/**"],
+        ),
     )
     eid = await engine.start(engine.workflows["feature"], spec, by=HUMAN)
     await drive(engine, backend, agents=Agents())
@@ -132,8 +149,9 @@ async def test_a_feature_runs_a_stage_together_and_the_next_one_after(engine, ba
 async def test_one_escalated_task_stops_the_feature_after_its_stage(engine, backend):
     spec = feature_of(
         task("T-1"),
-        TaskSpec(id="T-2", intent="next", feature="F-1", depends_on=["T-1"],
-                 write_scope=["src/b/**"]),
+        TaskSpec(
+            id="T-2", intent="next", feature="F-1", depends_on=["T-1"], write_scope=["src/b/**"]
+        ),
     )
     eid = await engine.start(engine.workflows["feature"], spec, by=HUMAN)
     await drive(engine, backend, agents=Agents(), verdicts={"code-review": "reject"})
@@ -167,20 +185,27 @@ async def test_a_milestone_runs_its_features_in_order(engine, backend):
 async def test_a_plan_delta_is_a_message_and_a_gated_operation_is_a_review(engine, backend):
     """Spec 11 sections 3.3 and 8: whoever plans sends a message, and an
     operation a gate covers waits for a person."""
-    spec = milestone_of(
-        FeatureSpec(id="F-1", title="one", tasks=[task("T-1")]), await_plan=True
-    )
+    spec = milestone_of(FeatureSpec(id="F-1", title="one", tasks=[task("T-1")]), await_plan=True)
     eid = await engine.start(engine.workflows["milestone"], spec, by=HUMAN)
     await drive(engine, backend, agents=Agents())
     assert await engine.status(eid) is ExecutionStatus.SUSPENDED
 
-    added = FeatureSpec(id="F-2", title="added", tasks=[
-        TaskSpec(id="T-9", intent="added task", feature="F-2", write_scope=["src/z/**"]),
-    ])
-    await engine.signal(eid, "plan", {
-        "final": True,
-        "operations": [{"op": "create_feature", "feature": added.to_payload()}],
-    }, by=HUMAN)
+    added = FeatureSpec(
+        id="F-2",
+        title="added",
+        tasks=[
+            TaskSpec(id="T-9", intent="added task", feature="F-2", write_scope=["src/z/**"]),
+        ],
+    )
+    await engine.signal(
+        eid,
+        "plan",
+        {
+            "final": True,
+            "operations": [{"op": "create_feature", "feature": added.to_payload()}],
+        },
+        by=HUMAN,
+    )
     await drive(engine, backend, agents=Agents())
 
     result = await result_of(engine, eid)
@@ -193,13 +218,20 @@ async def test_a_refused_operation_comes_back_with_its_reason(engine, backend):
     await drive(engine, backend, agents=Agents())
 
     stray = TaskSpec(id="T-9", intent="x", feature="F-404")
-    await engine.signal(eid, "plan", {
-        "final": True, "operations": [{"op": "create_task", "task": stray.to_payload()}],
-    }, by=HUMAN)
+    await engine.signal(
+        eid,
+        "plan",
+        {
+            "final": True,
+            "operations": [{"op": "create_task", "task": stray.to_payload()}],
+        },
+        by=HUMAN,
+    )
     await drive(engine, backend, agents=Agents())
 
     announced = [
-        s.item.payload for s in await backend.control.read()
+        s.item.payload
+        for s in await backend.control.read()
         if s.item.type == "announce.codeflow.delta_refused"
     ]
     assert announced and announced[0]["refused"][0]["reason"] == "unknown_feature"

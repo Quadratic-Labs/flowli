@@ -114,9 +114,7 @@ def principals() -> dict[str, Principal]:
         RUNNER: Principal(
             Actor.worker("runner-a"), frozenset({"tasks:consume:agents", EVIDENCE_READ})
         ),
-        STRAY: Principal(
-            Actor.worker("runner-b"), frozenset({"tasks:consume:default"})
-        ),
+        STRAY: Principal(Actor.worker("runner-b"), frozenset({"tasks:consume:default"})),
     }
 
 
@@ -126,9 +124,7 @@ def app(engine: Engine, projection, principals: dict[str, Principal]):
         engine,
         authenticator=StaticAuthenticator(principals),
         projection=projection,
-        config=ApiConfig(
-            queues=("default", "finance", "agents"), wait_ms=200, task_ttl=60.0
-        ),
+        config=ApiConfig(queues=("default", "finance", "agents"), wait_ms=200, task_ttl=60.0),
     )
 
 

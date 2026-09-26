@@ -63,9 +63,7 @@ log = get_logger("flowli.context")
 Now = Callable[[], Timestamp]
 
 _current_fid: contextvars.ContextVar[str] = contextvars.ContextVar("flowli_fid", default=ROOT_FID)
-_current_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "flowli_attempt", default=1
-)
+_current_attempt: contextvars.ContextVar[int] = contextvars.ContextVar("flowli_attempt", default=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,9 +249,15 @@ class Context:
             # `seq=0` here is a placeholder: every Channel port overwrites it with the
             # log-assigned sequence number before the message is durable (03-ports.md
             # section 8), so no caller ever observes this literal.
-            return await self._ports.channel.send(Message(full, 0, payload, prov, correlation))  # pragma: no mutate
+            return await self._ports.channel.send(
+                Message(full, 0, payload, prov, correlation)
+            )  # pragma: no mutate
 
-        digest_input = {"channel": full, "payload": payload, "correlation": correlation}  # pragma: no mutate
+        digest_input = {
+            "channel": full,
+            "payload": payload,
+            "correlation": correlation,
+        }  # pragma: no mutate
         return self._run_step(fid, FrameKind.STEP, name, RetryPolicy(), do, digest_input)
 
     def announce(
@@ -301,7 +305,12 @@ class Context:
                 await self._ports.control.announce(Entry.task_enqueued(task))
             return task.task_id
 
-        digest_input = {"queue": queue, "key": task_key, "kind": kind.value, "payload": payload}  # pragma: no mutate
+        digest_input = {
+            "queue": queue,
+            "key": task_key,
+            "kind": kind.value,
+            "payload": payload,
+        }  # pragma: no mutate
         return self._run_step(
             fid, FrameKind.STEP, name, RetryPolicy(max_attempts=3), do, digest_input
         )

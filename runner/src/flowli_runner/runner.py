@@ -76,8 +76,10 @@ class AgentRunner:
 
         if envelope.write_scope and self._db is not None:
             scopes = await acquire(
-                self._db, envelope.write_scope,
-                holder=held.task_id, ttl=self.config.scope_ttl,
+                self._db,
+                envelope.write_scope,
+                holder=held.task_id,
+                ttl=self.config.scope_ttl,
             )
             if scopes is None:
                 # Another attempt writes those paths. The task goes back on the
@@ -178,16 +180,20 @@ class AgentRunner:
                 break
             started = asyncio.get_running_loop().time()
             process = await asyncio.create_subprocess_shell(
-                command, cwd=tree.path,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                command,
+                cwd=tree.path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
             out, _ = await process.communicate()
-            results.append({
-                "command": command,
-                "exit_code": process.returncode,
-                "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
-                "output": out.decode(errors="replace")[-4000:],
-            })
+            results.append(
+                {
+                    "command": command,
+                    "exit_code": process.returncode,
+                    "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
+                    "output": out.decode(errors="replace")[-4000:],
+                }
+            )
         return results
 
     async def _write_evidence(

@@ -86,9 +86,18 @@ class MergeHandler:
 
         try:
             try:
-                wt.git(path, "-c", f"user.name={self.config.committer.split(' <')[0]}",
-                       "-c", f"user.email={self.config.committer.split('<')[1].rstrip('>')}",
-                       "merge", "--no-ff", "-m", f"merge {branch}", branch)
+                wt.git(
+                    path,
+                    "-c",
+                    f"user.name={self.config.committer.split(' <')[0]}",
+                    "-c",
+                    f"user.email={self.config.committer.split('<')[1].rstrip('>')}",
+                    "merge",
+                    "--no-ff",
+                    "-m",
+                    f"merge {branch}",
+                    branch,
+                )
             except subprocess.CalledProcessError as exc:
                 conflicts = _conflicts(path)
                 wt.git(path, "merge", "--abort")
@@ -128,9 +137,7 @@ def _conflicts(path: str) -> list[str]:
 
 def _run_all(path: str, commands: tuple[str, ...]) -> dict[str, Any] | None:
     for command in commands:
-        result = subprocess.run(
-            command, cwd=path, shell=True, capture_output=True, text=True
-        )
+        result = subprocess.run(command, cwd=path, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             return {
                 "command": command,
@@ -140,8 +147,14 @@ def _run_all(path: str, commands: tuple[str, ...]) -> dict[str, Any] | None:
     return None
 
 
-def build_consumer(engine: Any, config: MergeConfig, *, holder: str = "merge-queue",
-                   queue: str = "merge", ttl: float = 600.0) -> Consumer:
+def build_consumer(
+    engine: Any,
+    config: MergeConfig,
+    *,
+    holder: str = "merge-queue",
+    queue: str = "merge",
+    ttl: float = 600.0,
+) -> Consumer:
     """The merge queue as a process. One consumer, so one writer."""
     return Consumer(
         engine,

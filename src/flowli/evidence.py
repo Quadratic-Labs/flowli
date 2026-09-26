@@ -129,9 +129,7 @@ class EvidenceWriter:
         """Capture what this attempt logs, and flush it when the attempt ends."""
         buffer = AttemptBuffer(ref, limit=self.limit)
         token = _current.set(buffer)
-        ticker = (
-            asyncio.create_task(self._tick(buffer)) if self.flush_interval > 0 else None
-        )
+        ticker = asyncio.create_task(self._tick(buffer)) if self.flush_interval > 0 else None
         try:
             yield buffer
         finally:

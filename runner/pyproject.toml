@@ -34,6 +34,10 @@ pythonpath = ["."]
 line-length = 100
 target-version = "py314"
 
+[tool.ruff.format]
+# Code blocks in the docs and specs are aligned by hand.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 

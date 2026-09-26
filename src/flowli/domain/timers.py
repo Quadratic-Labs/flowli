@@ -25,6 +25,6 @@ class Timer:
     def timer_id(self) -> str:
         return f"{self.due_at.to_iso()}-{self.target.eid}-{digest_text(self.target.fid)[:16]}"
 
-    def is_due(self, now: Timestamp | None=None) -> bool:
+    def is_due(self, now: Timestamp | None = None) -> bool:
         now = now or Timestamp.now()
         return self.due_at <= now

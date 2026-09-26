@@ -24,9 +24,7 @@ async def list_queues(
 ) -> Response:
     # Depth is live state, so it is read from the queue. The control log stays
     # coarse: an ack leaves no entry (specs/00-overview.md, principle 7).
-    items = [
-        queue_depth(queue, await engine.ports.queue.depth(queue)) for queue in config.queues
-    ]
+    items = [queue_depth(queue, await engine.ports.queue.depth(queue)) for queue in config.queues]
     tag = etag("queues", *(f"{i['queue']}:{i['total']}:{i['claimed']}" for i in items))
     return json_response(request, {"items": items}, tag)
 

@@ -154,8 +154,11 @@ async def _decide(engine, backend, verdicts: dict[str, str]) -> bool:
         target = DelegateTask.from_task_payload(task.payload)
         rid = task.payload["payload"]["rid"]
         await engine.reviews.decide(
-            rid, eid=target.eid, queue=queue,
-            verdict=verdicts.get(queue, "accept"), by=REVIEWER,
+            rid,
+            eid=target.eid,
+            queue=queue,
+            verdict=verdicts.get(queue, "accept"),
+            by=REVIEWER,
         )
         return True
     return False

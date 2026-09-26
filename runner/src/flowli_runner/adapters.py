@@ -90,14 +90,21 @@ class SubprocessAgent:
             raise ValueError("envelope.agent.command is required for SubprocessAgent")
         cwd = envelope.worktree.path if envelope.worktree else None
         process = subprocess.Popen(  # noqa: S603 - the command is the envelope's
-            command, cwd=cwd, start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            command,
+            cwd=cwd,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         log.info("agent_started", pid=process.pid, cwd=cwd)
         # The host is part of the handle: a runner elsewhere must not believe
         # it can reattach to a pid (section 6).
-        return {"kind": "subprocess", "pid": process.pid, "host": self.host,
-                "started_at": time.time()}
+        return {
+            "kind": "subprocess",
+            "pid": process.pid,
+            "host": self.host,
+            "started_at": time.time(),
+        }
 
     async def reattach(self, handle: Handle) -> Handle | None:
         if handle.get("host") != self.host:
@@ -166,7 +173,7 @@ def _alive(pid: int) -> bool:
 def _signal_group(pid: int, signum: int) -> None:
     try:
         os.killpg(os.getpgid(pid), signum)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError, PermissionError:
         pass
 
 

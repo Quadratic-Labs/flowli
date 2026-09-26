@@ -83,7 +83,11 @@ async def get_evidence(
     else:
         items = await engine.ports.evidence.list(ref.eid)
         found = next(
-            (i for i in items if i.ref.fid == ref.fid and i.ref.attempt == ref.attempt and i.name == name),
+            (
+                i
+                for i in items
+                if i.ref.fid == ref.fid and i.ref.attempt == ref.attempt and i.name == name
+            ),
             None,
         )
         media = "application/octet-stream" if found is None else found.media_type

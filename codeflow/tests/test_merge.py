@@ -32,9 +32,7 @@ class FakeHeld:
     """Just enough of `Held` for the handler: it reads the task payload only."""
 
     def __init__(self, branch: str) -> None:
-        self.task = DelegateTask(
-            eid="e", fid="root", reply_channel="c", payload={"branch": branch}
-        )
+        self.task = DelegateTask(eid="e", fid="root", reply_channel="c", payload={"branch": branch})
         self.task_id = f"merge:{branch}"
 
 

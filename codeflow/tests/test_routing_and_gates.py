@@ -72,9 +72,7 @@ def test_a_verification_that_did_not_run_fails():
 
 
 def test_a_verification_that_failed_fails():
-    result = run_gates(
-        report(verification=[{"command": "just test", "exit_code": 1}]), ENVELOPE
-    )
+    result = run_gates(report(verification=[{"command": "just test", "exit_code": 1}]), ENVELOPE)
     assert "exited 1" in result["failures"][0]
 
 

@@ -13,6 +13,7 @@ SCHEMA_VERSION = "1.0.0"
 
 # region ----- EntryType -----
 
+
 class EntryType(StrEnum):
     # journal and control log
     EXECUTION_STARTED = "execution.started"
@@ -48,6 +49,7 @@ TERMINAL_TYPES = frozenset(
 
 # region ----- conditions -----
 
+
 class Condition:
     """The `on` field of frame.suspended / frame.fulfilled. A prefixed string."""
 
@@ -77,9 +79,11 @@ class Condition:
         kind, sep, rest = on.partition(":")
         return kind, (rest if sep else None)
 
+
 # endregion
 
 # region ----- entries -----
+
 
 @dataclass(frozen=True, slots=True)
 class Entry:
@@ -190,14 +194,17 @@ class Entry:
         }
         return cls(EntryType.TASK_ENQUEUED, task.target.fid, payload, task.enqueued_by)
 
+
 # endregion
 
 # region ----- memo table -----
+
 
 @dataclass(frozen=True, slots=True)
 class Sequenced[T]:
     seq: int
     item: T
+
 
 @dataclass
 class MemoTable:
@@ -280,5 +287,6 @@ class MemoTable:
         if recorded is not None and recorded != computed:
             return recorded
         return None
+
 
 # endregion

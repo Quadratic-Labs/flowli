@@ -197,8 +197,10 @@ def apply_delta(
             result.gated.append(operation)
             continue
         try:
-            result = replace(result, milestone=_apply(result.milestone, op, operation,
-                                                     max_open_tasks=max_open_tasks))
+            result = replace(
+                result,
+                milestone=_apply(result.milestone, op, operation, max_open_tasks=max_open_tasks),
+            )
         except PlanError as refusal:
             result.refused.append({"op": op, "reason": refusal.code, "detail": refusal.detail})
         else:
@@ -219,8 +221,9 @@ def _apply(
             if all(f.id != task.feature for f in milestone.features):
                 raise PlanError("unknown_feature", f"no feature {task.feature}")
             updated = replace(milestone, features=features)
-            check_feature(next(f for f in features if f.id == task.feature),
-                          max_open_tasks=max_open_tasks)
+            check_feature(
+                next(f for f in features if f.id == task.feature), max_open_tasks=max_open_tasks
+            )
             return updated
         case "split_task":
             parts = [structure(t, TaskSpec) for t in operation["into"]]
