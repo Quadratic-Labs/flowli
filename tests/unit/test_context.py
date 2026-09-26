@@ -166,8 +166,7 @@ async def test_step_failure_without_retry_raises_step_failed_on_every_replay(bac
     assert out.error.failed.error_type == "ValueError"
     assert out.error.fid == "root/boom#0"
     assert str(out.error) == (
-        f"step {out.error.fid} failed: "
-        f"{out.error.failed.error_type}: {out.error.failed.message}"
+        f"step {out.error.fid} failed: {out.error.failed.error_type}: {out.error.failed.message}"
     )
     out2 = await h.run()
     assert isinstance(out2, Raised) and isinstance(out2.error, StepFailed)
@@ -193,7 +192,9 @@ async def test_immediate_retries_then_success(backend):
     assert types.count(EntryType.FRAME_STARTED) == 3
     started = [s.item for s in await backend.journal.read(EID) if s.item.type == "frame.started"]
     assert [e.payload["attempt"] for e in started] == [1, 2, 3]
-    completed = [s.item for s in await backend.journal.read(EID) if s.item.type == "frame.completed"]
+    completed = [
+        s.item for s in await backend.journal.read(EID) if s.item.type == "frame.completed"
+    ]
     assert [e.payload["attempt"] for e in completed] == [3]  # recorded against the winning attempt
 
 
@@ -1139,7 +1140,11 @@ async def test_child_starts_once_then_waits_then_returns_value(backend):
     assert ex.created_by.code.frame_kind == "step"
     assert ex.created_by.code.frame_name == "start"
 
-    started = {s.item.fid: s.item for s in await backend.journal.read(EID) if s.item.type == EntryType.FRAME_STARTED}
+    started = {
+        s.item.fid: s.item
+        for s in await backend.journal.read(EID)
+        if s.item.type == EntryType.FRAME_STARTED
+    }
     assert started["root/child_wf:c/start#0"].payload["name"] == "start"
     assert started["root/child_wf:c"].payload["kind"] == "child"
     assert started["root/child_wf:c"].payload["name"] == "child_wf"
@@ -1290,7 +1295,9 @@ async def test_child_receive_frame_digest_reflects_args(backend):
     h = Harness(backend, wf, registry={child_wf: WorkflowRef("child_wf", "1", child_wf)})
     out = await h.run()
     assert isinstance(out, Suspended) and len(out.waits) == 2
-    started = [s.item for s in await backend.journal.read(EID) if s.item.type == EntryType.FRAME_STARTED]
+    started = [
+        s.item for s in await backend.journal.read(EID) if s.item.type == EntryType.FRAME_STARTED
+    ]
     digests = {e.fid: e.payload["args_digest"] for e in started if e.payload["kind"] == "child"}
     assert digests.keys() == {"root/child_wf#0", "root/child_wf#1"}
     assert digests["root/child_wf#0"] != digests["root/child_wf#1"]
@@ -1331,9 +1338,7 @@ async def test_child_default_name_uses_the_function_name_not_the_workflow_name(b
     async def wf(ctx):
         return await ctx.child(actual_fn)
 
-    h = Harness(
-        backend, wf, registry={actual_fn: WorkflowRef("registered.name", "1", actual_fn)}
-    )
+    h = Harness(backend, wf, registry={actual_fn: WorkflowRef("registered.name", "1", actual_fn)})
     out = await h.run()
     assert isinstance(out, Suspended)
     fids = {fid for _, fid in await h.types()}

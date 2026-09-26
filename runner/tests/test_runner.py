@@ -225,7 +225,9 @@ async def test_an_envelope_without_a_command_is_refused():
 
 def test_build_consumer_wires_the_runner(engine, repo):
     built = build_consumer(
-        engine, SubprocessAgent(), RunnerConfig(repo_path=str(repo)),
+        engine,
+        SubprocessAgent(),
+        RunnerConfig(repo_path=str(repo)),
         ConsumerConfig(queues=("agents",), holder="runner-a"),
     )
     assert isinstance(built, Consumer)

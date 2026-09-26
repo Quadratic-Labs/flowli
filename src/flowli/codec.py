@@ -81,7 +81,9 @@ def digest(value: Any) -> str:
     The frame argument digest of the memo rule (02-journal.md section 5). One rendering
     rule set, the codec's, decides how a Timestamp, a UUID or a dataclass looks here.
     """
-    return hashlib.sha256(canonical_json(unstructure(value)).encode("utf-8")).hexdigest()  # pragma: no mutate
+    return hashlib.sha256(
+        canonical_json(unstructure(value)).encode("utf-8")
+    ).hexdigest()  # pragma: no mutate
 
 
 __all__ = ["canonical_json", "converter", "digest", "structure", "unstructure"]

@@ -594,7 +594,9 @@ class WorkflowProjection:
         if not self.ready:
             return None
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM executions WHERE eid = ?", (str(eid),)).fetchone()  # pragma: no mutate
+            row = conn.execute(
+                "SELECT * FROM executions WHERE eid = ?", (str(eid),)
+            ).fetchone()  # pragma: no mutate
         return None if row is None else ExecutionRow.from_row(row)
 
     def executions(
@@ -638,7 +640,9 @@ class WorkflowProjection:
         if not self.ready:
             return {}
         with self.connect() as conn:
-            rows = conn.execute("SELECT status, COUNT(*) AS n FROM executions GROUP BY status").fetchall()  # pragma: no mutate
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM executions GROUP BY status"
+            ).fetchall()  # pragma: no mutate
         return {ExecutionStatus(r["status"]): r["n"] for r in rows}  # pragma: no mutate
 
     def tasks(
@@ -678,14 +682,18 @@ class WorkflowProjection:
             sql += " AND queue = ?"  # pragma: no mutate
             params = (queue,)
         with self.connect() as conn:
-            rows = conn.execute(sql + " ORDER BY requested_at, rid", params).fetchall()  # pragma: no mutate
+            rows = conn.execute(
+                sql + " ORDER BY requested_at, rid", params
+            ).fetchall()  # pragma: no mutate
         return [ReviewRow.from_row(r) for r in rows]
 
     def review(self, rid: str) -> ReviewRow | None:
         if not self.ready:
             return None
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM reviews WHERE rid = ?", (rid,)).fetchone()  # pragma: no mutate
+            row = conn.execute(
+                "SELECT * FROM reviews WHERE rid = ?", (rid,)
+            ).fetchone()  # pragma: no mutate
         return None if row is None else ReviewRow.from_row(row)
 
     def announcements(
@@ -713,8 +721,12 @@ class WorkflowProjection:
         """ControlSource for the Sweeper: refresh, then the non-terminal executions."""
         await self.refresh()
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM executions WHERE status NOT IN ('completed', 'failed', 'cancelled')").fetchall()  # pragma: no mutate
-        return {parse_eid(r["eid"]): _known(ExecutionRow.from_row(r)) for r in rows}  # pragma: no mutate
+            rows = conn.execute(
+                "SELECT * FROM executions WHERE status NOT IN ('completed', 'failed', 'cancelled')"
+            ).fetchall()  # pragma: no mutate
+        return {
+            parse_eid(r["eid"]): _known(ExecutionRow.from_row(r)) for r in rows
+        }  # pragma: no mutate
 
     async def terminal_before(self, before: Timestamp) -> dict[Eid, KnownExecution]:
         """ControlSource for Retention: terminal, not archived, last entry older than `before`."""
@@ -728,7 +740,9 @@ class WorkflowProjection:
                 """,
                 (before.to_iso(),),
             ).fetchall()
-        return {parse_eid(r["eid"]): _known(ExecutionRow.from_row(r)) for r in rows}  # pragma: no mutate
+        return {
+            parse_eid(r["eid"]): _known(ExecutionRow.from_row(r)) for r in rows
+        }  # pragma: no mutate
 
 
 def _known(row: ExecutionRow) -> KnownExecution:

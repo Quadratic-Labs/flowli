@@ -86,7 +86,7 @@ class LeaseInfo:
     released: bool
     state: Any
 
-    def is_expired(self, now: Timestamp | None=None) -> bool:
+    def is_expired(self, now: Timestamp | None = None) -> bool:
         """True when nobody holds the lease: released, or past its deadline."""
         now = now or Timestamp.now()
         return self.released or self.deadline_at is None or self.deadline_at <= now
@@ -175,9 +175,7 @@ class Queue(Protocol):
         """Read one task. A read takes no lease: ownership is for removal."""
         ...
 
-    async def attach(
-        self, queue: str, task_id: str, holder: str, ttl: float
-    ) -> ClaimedTask | None:
+    async def attach(self, queue: str, task_id: str, holder: str, ttl: float) -> ClaimedTask | None:
         """Re-attach to a task that `holder` holds now. Writes nothing.
 
         None when the task is gone, when the holder does not match, or when
@@ -285,9 +283,7 @@ class Evidence(Protocol):
 
     async def read_log(self, ref: EvidenceRef) -> bytes: ...
 
-    async def put(
-        self, ref: EvidenceRef, name: str, data: bytes, media_type: str
-    ) -> str: ...
+    async def put(self, ref: EvidenceRef, name: str, data: bytes, media_type: str) -> str: ...
 
     async def get(self, ref: EvidenceRef, name: str) -> bytes | None: ...
 

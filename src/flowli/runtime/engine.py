@@ -118,9 +118,7 @@ class Engine:
         **kwargs: Any,
     ) -> Eid:
         """Create an execution and enqueue its START task. Return the eid."""
-        result = await self.start_result(
-            workflow_fn, *args, key=key, queue=queue, by=by, **kwargs
-        )
+        result = await self.start_result(workflow_fn, *args, key=key, queue=queue, by=by, **kwargs)
         return result.eid
 
     async def start_result(
@@ -266,7 +264,9 @@ class Engine:
     ) -> int:
         """Send on a channel given by its full name, then enqueue a RESUME task for eid."""
         prov = self.provenance(by, frame_name="signal")
-        seq = await self.ports.channel.send(Message(channel, 0, payload, prov, correlation))  # pragma: no mutate
+        seq = await self.ports.channel.send(
+            Message(channel, 0, payload, prov, correlation)
+        )  # pragma: no mutate
         await self.enqueue_resume(
             eid, f"message:{channel}:{seq}", reason or f"message:{channel}", prov
         )
@@ -293,9 +293,7 @@ class Engine:
         parent_eid = execution.parent.eid
         channel = execution.parent.child_channel
         await self.ports.channel.send(Message(channel, 0, body, by))  # pragma: no mutate
-        await self.enqueue_resume(
-            parent_eid, "", f"child:{execution.eid}", by
-        )
+        await self.enqueue_resume(parent_eid, "", f"child:{execution.eid}", by)
 
     # --- cancel ------------------------------------------------------------------------
 

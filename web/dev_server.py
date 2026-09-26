@@ -105,11 +105,21 @@ async def agent_task(ctx: Any, intent: str) -> str:
 
 
 def principals() -> dict[str, Principal]:
-    everything = frozenset({
-        WORKFLOWS_READ, EXECUTIONS_READ, EXECUTIONS_START, EXECUTIONS_SIGNAL,
-        EXECUTIONS_CANCEL, EXECUTIONS_MIGRATE, REVIEWS_READ, QUEUES_READ, EVIDENCE_READ,
-        "reviews:decide:*", "tasks:consume:*",
-    })
+    everything = frozenset(
+        {
+            WORKFLOWS_READ,
+            EXECUTIONS_READ,
+            EXECUTIONS_START,
+            EXECUTIONS_SIGNAL,
+            EXECUTIONS_CANCEL,
+            EXECUTIONS_MIGRATE,
+            REVIEWS_READ,
+            QUEUES_READ,
+            EVIDENCE_READ,
+            "reviews:decide:*",
+            "tasks:consume:*",
+        }
+    )
     return {
         "dev-operator": Principal(Actor.human("operator@example.com"), everything),
         "dev-viewer": Principal(

@@ -117,9 +117,7 @@ async def test_lifespan_owns_the_projection_refresh_loop(engine, projection, pri
     )
     projection.refresh, projection.start, projection.stop = refresh, start, stop
 
-    app = create_app(
-        engine, authenticator=StaticAuthenticator(principals), projection=projection
-    )
+    app = create_app(engine, authenticator=StaticAuthenticator(principals), projection=projection)
     assert start.await_count == 0
     async with LifespanManager(app):
         assert refresh.await_count == 1

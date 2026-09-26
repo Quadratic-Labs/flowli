@@ -742,9 +742,7 @@ async def test_channel_send_read_waits(backend, prov):
     assert await ch.waiters("global.rates") == [FrameRef(E_AAA, "root/x#0")]
 
 
-async def test_channel_send_tags_the_event_with_message_type_and_schema_version(
-    backend, prov
-):
+async def test_channel_send_tags_the_event_with_message_type_and_schema_version(backend, prov):
     """`send`'s stored Event carries the same type and schema tags as every
     other write in this adapter (see `_entry_event`): not because `read` uses
     them today, but because the log holds one real Event per message."""
@@ -1041,9 +1039,7 @@ async def test_evidence_round_trip_and_retention(backend, prov):
     assert await ev.list(E_ABC) == []
 
 
-async def test_evidence_list_falls_back_to_octet_stream_without_a_media_type_sidecar(
-    backend, prov
-):
+async def test_evidence_list_falls_back_to_octet_stream_without_a_media_type_sidecar(backend, prov):
     """An attachment written before the media-type sidecar existed (or by any writer
     that only ever puts the content key) still lists with a media type, not a crash."""
     from flowli.adapters import evidence as keys
@@ -1133,9 +1129,7 @@ async def test_list_sums_every_log_part_and_skips_one_gone_missing(backend, prov
     await ev.append_log(ref, b"c" * 11)
 
     prefix = "wf/evidence/{}/".format(E_ABC)
-    part_keys = sorted(
-        k for k in await backend.db.objects.list(prefix) if "/log." in k
-    )
+    part_keys = sorted(k for k in await backend.db.objects.list(prefix) if "/log." in k)
     vanished = part_keys[1]
     real_get = backend.db.objects.get
 

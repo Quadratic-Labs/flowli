@@ -313,9 +313,7 @@ class MemoryQueue:
         qt = self.queues.get(queue, {}).get(task_id)
         return None if qt is None else qt.task
 
-    async def attach(
-        self, queue: str, task_id: str, holder: str, ttl: float
-    ) -> ClaimedTask | None:
+    async def attach(self, queue: str, task_id: str, holder: str, ttl: float) -> ClaimedTask | None:
         qt = self.queues.get(queue, {}).get(task_id)
         if qt is None:
             return None
@@ -351,8 +349,12 @@ class MemoryEvidence:
         self.objects: dict[str, tuple[bytes, str]] = {}
 
     async def append_log(self, ref: EvidenceRef, part: bytes) -> None:
-        self.objects.setdefault(keys.meta_key(ref), (keys.meta_bytes(ref), "application/json"))  # pragma: no mutate
-        n = sum(1 for k in self.objects if k.startswith(f"{keys.base(ref)}/{keys.LOG_NAME}."))  # pragma: no mutate
+        self.objects.setdefault(
+            keys.meta_key(ref), (keys.meta_bytes(ref), "application/json")
+        )  # pragma: no mutate
+        n = sum(
+            1 for k in self.objects if k.startswith(f"{keys.base(ref)}/{keys.LOG_NAME}.")
+        )  # pragma: no mutate
         self.objects[keys.log_key(ref, n)] = (part, keys.NDJSON)
 
     async def read_log(self, ref: EvidenceRef) -> bytes:
@@ -360,7 +362,9 @@ class MemoryEvidence:
         return b"".join(self.objects[k][0] for k in sorted(self.objects) if k.startswith(prefix))
 
     async def put(self, ref: EvidenceRef, name: str, data: bytes, media_type: str) -> str:
-        self.objects.setdefault(keys.meta_key(ref), (keys.meta_bytes(ref), "application/json"))  # pragma: no mutate
+        self.objects.setdefault(
+            keys.meta_key(ref), (keys.meta_bytes(ref), "application/json")
+        )  # pragma: no mutate
         key = keys.attachment_key(ref, name)
         self.objects[key] = (data, media_type)
         return key
@@ -428,7 +432,9 @@ class MemoryChannel:
 
     async def all_waits(self) -> list[tuple[str, FrameRef]]:
         def sorted_items(channel: str) -> list[tuple[Eid, str]]:
-            return sorted(self.waits[channel].items(), key=lambda kv: str(kv[0]))  # pragma: no mutate
+            return sorted(
+                self.waits[channel].items(), key=lambda kv: str(kv[0])
+            )  # pragma: no mutate
 
         return [
             (channel, FrameRef(eid, fid))

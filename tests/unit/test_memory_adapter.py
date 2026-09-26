@@ -247,7 +247,9 @@ async def test_ack_is_a_safe_no_op_for_a_queue_it_never_saw(backend, prov):
         async def release(self) -> None:
             return None
 
-    claimed = ClaimedTask(task=task(prov, queue="ghost"), key="wf/queues/ghost/x", lease=StubLease())
+    claimed = ClaimedTask(
+        task=task(prov, queue="ghost"), key="wf/queues/ghost/x", lease=StubLease()
+    )
     await backend.queue.ack(claimed)  # must not raise
 
 
@@ -321,7 +323,6 @@ async def test_queues_are_independent(backend, prov):
     assert await q.dequeue("finance", "w-1", ttl=60) is not None
 
 
-
 # --- attach, state and cancel of a task ------------------------------------
 
 
@@ -367,6 +368,7 @@ async def test_request_cancel_is_seen_on_the_next_renew(backend, prov):
     await q.request_cancel("default", claimed.task.task_id, prov)
     await claimed.lease.renew()
     assert claimed.lease.state["cancel_requested"]["actor"]["id"] == prov.actor.id
+
 
 # --- channel ---------------------------------------------------------------
 

@@ -256,9 +256,7 @@ async def test_executions_after_cursor_breaks_updated_at_ties_by_eid(backend, en
     page1 = projection.executions(limit=1)
     assert [r.eid for r in page1] == [first_eid]
 
-    page2 = projection.executions(
-        after=(page1[0].updated_at, str(page1[0].eid)), limit=10
-    )
+    page2 = projection.executions(after=(page1[0].updated_at, str(page1[0].eid)), limit=10)
     assert [r.eid for r in page2] == [second_eid]
 
 
@@ -323,9 +321,11 @@ async def test_lifecycle_entry_for_missing_row_creates_it(backend, engine, proje
     assert row_a.status == ExecutionStatus.COMPLETED
     assert row_a.result == {"n": 42}
     assert row_a.epoch == 11 and row_a.worker_id == "w-a" and row_a.host == "host-a"
-    raw_a = projection.connect().execute(
-        "SELECT last_seq FROM executions WHERE eid = ?", (str(eid_a),)
-    ).fetchone()
+    raw_a = (
+        projection.connect()
+        .execute("SELECT last_seq FROM executions WHERE eid = ?", (str(eid_a),))
+        .fetchone()
+    )
     assert raw_a["last_seq"] == str(seq_a.sequence)
 
     # Case B: a non-terminal orphan row, then a later entry updates it in place --
@@ -353,9 +353,11 @@ async def test_lifecycle_entry_for_missing_row_creates_it(backend, engine, proje
     assert row_b2.status == ExecutionStatus.SUSPENDED
     assert row_b2.suspended_on == ["x"]
     assert row_b2.result is None  # never completed: must stay NULL, not the text "null"
-    raw_b2 = projection.connect().execute(
-        "SELECT last_seq, result FROM executions WHERE eid = ?", (str(eid_b),)
-    ).fetchone()
+    raw_b2 = (
+        projection.connect()
+        .execute("SELECT last_seq, result FROM executions WHERE eid = ?", (str(eid_b),))
+        .fetchone()
+    )
     assert raw_b2["last_seq"] == str(seq_b2.sequence)
     assert raw_b2["result"] is None
 
@@ -366,9 +368,11 @@ async def test_lifecycle_entry_for_missing_row_creates_it(backend, engine, proje
         make_prov(epoch=2, worker_id="w-b", host="host-b"),
     )
     await apply(seq_b3)
-    raw_b3 = projection.connect().execute(
-        "SELECT suspended_on FROM executions WHERE eid = ?", (str(eid_b),)
-    ).fetchone()
+    raw_b3 = (
+        projection.connect()
+        .execute("SELECT suspended_on FROM executions WHERE eid = ?", (str(eid_b),))
+        .fetchone()
+    )
     assert raw_b3["suspended_on"] is None  # cleared on resume, not the text "null"
 
 
@@ -431,9 +435,11 @@ async def test_on_task_field_mapping_and_defensive_defaults(backend, engine, pro
         {"provenance": unstructure(prov_a), "fid": ROOT_FID},
     )
     await apply(seq_a)
-    row = projection.connect().execute(
-        "SELECT * FROM tasks WHERE task_id = ?", ("tid-full",)
-    ).fetchone()
+    row = (
+        projection.connect()
+        .execute("SELECT * FROM tasks WHERE task_id = ?", ("tid-full",))
+        .fetchone()
+    )
     assert row["eid"] == str(eid)
     assert row["fid"] == "root/child:k"
     assert row["reason"] == "start"
@@ -465,9 +471,11 @@ async def test_on_task_field_mapping_and_defensive_defaults(backend, engine, pro
         {"provenance": {}, "fid": ROOT_FID},
     )
     await apply(seq_b)
-    row_b = projection.connect().execute(
-        "SELECT * FROM tasks WHERE task_id = ?", ("tid-bare",)
-    ).fetchone()
+    row_b = (
+        projection.connect()
+        .execute("SELECT * FROM tasks WHERE task_id = ?", ("tid-bare",))
+        .fetchone()
+    )
     assert row_b["eid"] == ""
     assert row_b["fid"] == ""
     assert row_b["reason"] == ""
@@ -539,9 +547,11 @@ async def test_on_created_field_mapping_and_defensive_defaults(backend, engine, 
         {"provenance": unstructure(prov_a)},
     )
     await apply(seq_a)
-    row = projection.connect().execute(
-        "SELECT * FROM executions WHERE eid = ?", (str(eid),)
-    ).fetchone()
+    row = (
+        projection.connect()
+        .execute("SELECT * FROM executions WHERE eid = ?", (str(eid),))
+        .fetchone()
+    )
     assert row["workflow"] == "wf-full"
     assert row["version"] == "3"
     assert row["queue"] == "custom-q"
@@ -565,9 +575,11 @@ async def test_on_created_field_mapping_and_defensive_defaults(backend, engine, 
         {"provenance": {}},
     )
     await apply(seq_b)
-    row_b = projection.connect().execute(
-        "SELECT * FROM executions WHERE eid = ?", (str(eid_b),)
-    ).fetchone()
+    row_b = (
+        projection.connect()
+        .execute("SELECT * FROM executions WHERE eid = ?", (str(eid_b),))
+        .fetchone()
+    )
     assert row_b["queue"] == "default"
     assert row_b["parent_eid"] is None
     assert row_b["parent_fid"] is None
@@ -808,9 +820,11 @@ async def test_reviews_and_announcements(backend, engine, projection):
         "deadline": expected_deadline,
     }
     # `AnnouncementRow.from_row` must carry `seq` through untouched, not None.
-    raw = projection.connect().execute(
-        "SELECT seq FROM announcements WHERE fid = ?", ("root/announce#0",)
-    ).fetchone()
+    raw = (
+        projection.connect()
+        .execute("SELECT seq FROM announcements WHERE fid = ?", ("root/announce#0",))
+        .fetchone()
+    )
     assert requested[0].seq == raw["seq"]
 
     cfo = Actor.human("cfo@example.com")

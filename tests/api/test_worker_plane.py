@@ -37,7 +37,8 @@ async def start_and_delegate(client, engine) -> str:
 
 async def take_one(client, wait=0.0) -> dict:
     r = await client.post(
-        "/queues/agents/dequeue", json={"ttl_seconds": 60, "wait_seconds": wait},
+        "/queues/agents/dequeue",
+        json={"ttl_seconds": 60, "wait_seconds": wait},
         headers=auth(RUNNER),
     )
     assert r.status_code == 200, r.text
@@ -433,9 +434,7 @@ async def test_poll_never_widens_its_sleep_past_what_remains(monkeypatch):
     assert sleeps == [0.0]
 
 
-async def test_cancelling_an_execution_reaches_its_delegate_consumer(
-    client, engine, projection
-):
+async def test_cancelling_an_execution_reaches_its_delegate_consumer(client, engine, projection):
     """Spec 05 section 8: the service propagates, because the journal records
     the task id of an enqueue and not its queue."""
     eid = await start_and_delegate(client, engine)
@@ -480,9 +479,7 @@ async def test_cancelling_an_execution_does_not_touch_another_executions_delegat
     assert not (seen_b.json()["state"] or {}).get("cancel_requested")
 
 
-async def test_cancel_delegates_asks_projection_for_this_eids_delegates_capped(
-    engine, monkeypatch
-):
+async def test_cancel_delegates_asks_projection_for_this_eids_delegates_capped(engine, monkeypatch):
     """`_cancel_delegates` (05-protocols.md section 8) reads `projection.tasks`
     with the execution's own eid, delegate tasks only, and a bounded page --
     not the whole system's backlog."""

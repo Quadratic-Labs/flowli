@@ -426,7 +426,11 @@ async def test_saga_undo_default_retry_allows_exactly_five_attempts(backend, eng
     async def trip_flaky_undo(ctx):
         return await saga(
             ctx,
-            [(book_flight, cancel_flight), (book_hotel, cancel_hotel_flaky), (charge, lambda v: None)],
+            [
+                (book_flight, cancel_flight),
+                (book_hotel, cancel_hotel_flaky),
+                (charge, lambda v: None),
+            ],
         )
 
     worker = engine.worker()

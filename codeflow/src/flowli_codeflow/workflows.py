@@ -65,12 +65,20 @@ def register(
         for attempt in range(1, policy.max_attempts + 1):
             key = str(attempt)
             envelope = await ctx.step(
-                build_envelope, spec, attempt, prior, injected(gotchas, spec),
-                name="envelope", key=key,
+                build_envelope,
+                spec,
+                attempt,
+                prior,
+                injected(gotchas, spec),
+                name="envelope",
+                key=key,
             )
             reply = await delegate(
-                ctx, policy.queue(AGENT_QUEUE), envelope,
-                timeout=policy.agent_timeout, key=key,
+                ctx,
+                policy.queue(AGENT_QUEUE),
+                envelope,
+                timeout=policy.agent_timeout,
+                key=key,
             )
             if reply is None:
                 return await _escalate(ctx, spec, "no agent answered", key, policy)
@@ -81,37 +89,57 @@ def register(
             judgment: dict[str, Any] | None = None
             if gates["passed"]:
                 decision = await review(
-                    ctx, policy.queue(REVIEW_QUEUE),
+                    ctx,
+                    policy.queue(REVIEW_QUEUE),
                     {"task": spec["id"], "report": report, "gates": gates},
-                    timeout=policy.review_timeout, key=key,
+                    timeout=policy.review_timeout,
+                    key=key,
                 )
-                judgment = None if decision is None else {
-                    "verdict": decision.verdict,
-                    "by": decision.by.id,
-                    **(decision.data or {}),
-                }
+                judgment = (
+                    None
+                    if decision is None
+                    else {
+                        "verdict": decision.verdict,
+                        "by": decision.by.id,
+                        **(decision.data or {}),
+                    }
+                )
 
             route = decide(gates, judgment, attempt, policy.max_attempts)
             await ctx.announce(
                 "codeflow.routed",
-                {"task": spec["id"], "attempt": attempt, "route": str(route.route),
-                 "reason": route.reason},
-                name="routed", key=key,
+                {
+                    "task": spec["id"],
+                    "attempt": attempt,
+                    "route": str(route.route),
+                    "reason": route.reason,
+                },
+                name="routed",
+                key=key,
             )
 
             if route.route is Route.APPROVED:
                 merged = await delegate(
-                    ctx, policy.queue(MERGE_QUEUE),
-                    {"task": spec["id"], "branch": report.get("branch"),
-                     "base_commit": report.get("base_commit")},
-                    timeout=policy.merge_timeout, name="merge", key=key,
+                    ctx,
+                    policy.queue(MERGE_QUEUE),
+                    {
+                        "task": spec["id"],
+                        "branch": report.get("branch"),
+                        "base_commit": report.get("base_commit"),
+                    },
+                    timeout=policy.merge_timeout,
+                    name="merge",
+                    key=key,
                 )
                 if merged is not None and merged.payload.get("merged"):
-                    return {"outcome": "completed", "attempts": attempt,
-                            "commit": merged.payload.get("commit")}
+                    return {
+                        "outcome": "completed",
+                        "attempts": attempt,
+                        "commit": merged.payload.get("commit"),
+                    }
                 # A conflict or a failed gate of the merge queue is a rework
                 # with that context, and the queue is not blocked by it.
-                reason = (merged.payload.get("reason") if merged else "the merge queue timed out")
+                reason = merged.payload.get("reason") if merged else "the merge queue timed out"
                 prior = summarize(report, gates, str(reason))
                 continue
 
@@ -126,15 +154,19 @@ def register(
         ctx: Context, spec: dict[str, Any], reason: str, key: str, policy: Policy
     ) -> dict[str, Any]:
         await ctx.announce(
-            "codeflow.escalated", {"task": spec["id"], "reason": reason},
-            name="escalated", key=key,
+            "codeflow.escalated",
+            {"task": spec["id"], "reason": reason},
+            name="escalated",
+            key=key,
         )
         decision = await review(
-            ctx, policy.queue(ESCALATION_QUEUE),
+            ctx,
+            policy.queue(ESCALATION_QUEUE),
             {"task": spec["id"], "intent": spec.get("intent"), "reason": reason},
             # Its own name: the code review of this attempt already holds
             # `review-*:{key}` (spec 11, section 3.1).
-            name="escalation", key=key,
+            name="escalation",
+            key=key,
         )
         return {
             "outcome": "escalated",
@@ -150,10 +182,7 @@ def register(
         done: dict[str, Any] = {}
         for index, stage in enumerate(stages):
             results = await ctx.gather(
-                *[
-                    ctx.child(task, parsed.task(tid).to_payload(), key=tid)
-                    for tid in stage
-                ]
+                *[ctx.child(task, parsed.task(tid).to_payload(), key=tid) for tid in stage]
             )
             done.update(dict(zip(stage, results, strict=True)))
             if any(r["outcome"] == "escalated" for r in results):
@@ -178,9 +207,7 @@ def register(
             if seen < len(plan.features):
                 ready = plan.features[seen]
                 seen += 1
-                (result,) = await ctx.gather(
-                    ctx.child(feature, ready.to_payload(), key=ready.id)
-                )
+                (result,) = await ctx.gather(ctx.child(feature, ready.to_payload(), key=ready.id))
                 done.append({ready.id: result["outcome"]})
                 continue
 
@@ -193,27 +220,40 @@ def register(
             # A step returns JSON, so the plan comes back as data and is
             # structured again here (`04-api.md`, section 2.1).
             applied = await ctx.step(
-                _apply, plan.to_payload(), message.payload, policy.max_open_tasks,
-                name="delta", key=str(turn),
+                _apply,
+                plan.to_payload(),
+                message.payload,
+                policy.max_open_tasks,
+                name="delta",
+                key=str(turn),
             )
             plan = Milestone.from_payload(applied["plan"])
             if applied["refused"]:
                 await ctx.announce(
-                    "codeflow.delta_refused", {"refused": applied["refused"]},
-                    name="refused", key=str(turn),
+                    "codeflow.delta_refused",
+                    {"refused": applied["refused"]},
+                    name="refused",
+                    key=str(turn),
                 )
             for index, operation in enumerate(applied["gated"]):
                 # An operation a gate covers is not applied by the delta: it is
                 # a review (spec 11, section 8).
                 key = f"{turn}-{index}"
                 decision = await review(
-                    ctx, policy.queue(PLAN_QUEUE), {"operation": operation}, key=key,
+                    ctx,
+                    policy.queue(PLAN_QUEUE),
+                    {"operation": operation},
+                    key=key,
                 )
                 if decision is not None and decision.verdict == "accept":
                     plan = Milestone.from_payload(
                         await ctx.step(
-                            _apply_one, plan.to_payload(), operation, policy.max_open_tasks,
-                            name="apply", key=key,
+                            _apply_one,
+                            plan.to_payload(),
+                            operation,
+                            policy.max_open_tasks,
+                            name="apply",
+                            key=key,
                         )
                     )
             if message.payload.get("final"):
@@ -255,7 +295,9 @@ def _apply_one(
     if operation.get("op") == "declare_milestone_complete":
         return milestone.to_payload()
     result = apply_delta(
-        milestone, {"operations": [operation]}, gated_ops=frozenset(),
+        milestone,
+        {"operations": [operation]},
+        gated_ops=frozenset(),
         max_open_tasks=max_open_tasks,
     )
     return result.milestone.to_payload()
