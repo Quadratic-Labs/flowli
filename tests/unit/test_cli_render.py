@@ -266,8 +266,8 @@ def test_json_block_pins_the_exact_ansi_dark_encoding(colored):
     out = render.json_block({"n": 7, "s": "hi"})
     assert out == (
         "\x1b[49m{\x1b[0m\n"
-        '\x1b[90;49m  \x1b[0m\x1b[94;49m"n"\x1b[0m\x1b[49m:\x1b[0m\x1b[90;49m \x1b[0m\x1b[94;49m7\x1b[0m\x1b[49m,\x1b[0m\n'
-        '\x1b[90;49m  \x1b[0m\x1b[94;49m"s"\x1b[0m\x1b[49m:\x1b[0m\x1b[90;49m \x1b[0m\x1b[33;49m"hi"\x1b[0m\n'
+        '\x1b[90;49m  \x1b[0m\x1b[94;49m"n"\x1b[0m\x1b[49m:\x1b[0m\x1b[90;49m \x1b[0m\x1b[94;49m7\x1b[0m\x1b[49m,\x1b[0m\n'  # noqa: E501
+        '\x1b[90;49m  \x1b[0m\x1b[94;49m"s"\x1b[0m\x1b[49m:\x1b[0m\x1b[90;49m \x1b[0m\x1b[33;49m"hi"\x1b[0m\n'  # noqa: E501
         "\x1b[49m}\x1b[0m"
     )
 

@@ -18,9 +18,9 @@ from flowli.api.routes import worker
 from flowli.api.routes.executions import _cancel_delegates
 from flowli.api.routes.worker import _lease_body
 from flowli.domain import Actor, FrameRef, Task, TaskKind
+from tests.ids import E_ABC, E_BBB
 
 from .conftest import OPERATOR, READER, RUNNER, STRAY, auth, drain
-from tests.ids import E_ABC, E_BBB
 
 DELEGATING = {"workflow": "delegates", "version": "1", "args": {"amount": 100}}
 
@@ -464,7 +464,7 @@ async def test_cancelling_an_execution_does_not_touch_another_executions_delegat
     body_a = await take_one(client)
     task_a = body_a["task"]["task_id"]
 
-    eid_b = await start_and_delegate(client, engine)
+    await start_and_delegate(client, engine)
     body_b = await take_one(client)
     task_b, holder_b = body_b["task"]["task_id"], body_b["holder"]
 

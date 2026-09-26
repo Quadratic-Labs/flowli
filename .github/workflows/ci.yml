@@ -1,0 +1,74 @@
+# Check every change: lint, format, types, and the tests of the three packages.
+#
+# Runs on pull requests to main and release branches, and on pushes to them,
+# so main and every release line stay green.
+name: CI
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no floating major tag
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked --all-extras
+      - name: ruff check
+        run: uv run --no-sync ruff check --output-format github .
+      - name: ruff format
+        run: uv run --no-sync ruff format --check .
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no floating major tag
+        with:
+          enable-cache: true
+      - name: Install
+        run: |
+          uv sync --locked --all-extras
+          uv pip install -e runner -e codeflow
+      - name: mypy flowli
+        run: uv run --no-sync mypy src
+      - name: mypy flowli-runner
+        working-directory: runner
+        # the root environment: uv would make a new one for this subproject
+        run: ../.venv/bin/mypy src
+      - name: mypy flowli-codeflow
+        working-directory: codeflow
+        # the root environment: uv would make a new one for this subproject
+        run: ../.venv/bin/mypy src
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no floating major tag
+        with:
+          enable-cache: true
+      - name: Install
+        run: |
+          uv sync --locked --all-extras
+          uv pip install -e runner -e codeflow
+      - name: flowli
+        run: uv run --no-sync pytest
+      - name: flowli-runner
+        run: uv run --no-sync pytest runner/tests
+      - name: flowli-codeflow
+        run: uv run --no-sync pytest codeflow/tests
