@@ -11,13 +11,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from flowlet.api import ApiConfig
-from flowlet.api.auth import Principal
-from flowlet.api.dto import delegate_task
-from flowlet.api.routes import worker
-from flowlet.api.routes.executions import _cancel_delegates
-from flowlet.api.routes.worker import _lease_body
-from flowlet.domain import Actor, FrameRef, Task, TaskKind
+from flowli.api import ApiConfig
+from flowli.api.auth import Principal
+from flowli.api.dto import delegate_task
+from flowli.api.routes import worker
+from flowli.api.routes.executions import _cancel_delegates
+from flowli.api.routes.worker import _lease_body
+from flowli.domain import Actor, FrameRef, Task, TaskKind
 
 from .conftest import OPERATOR, READER, RUNNER, STRAY, auth, drain
 from tests.ids import E_ABC, E_BBB

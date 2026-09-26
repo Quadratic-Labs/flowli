@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from flowlet.runtime import Registry
+from flowli.runtime import Registry
 
 registry = Registry()
 NAP = timedelta(seconds=0.5)
@@ -31,9 +31,9 @@ async def wait_for_go_v2(ctx):
 
 def make_engine():
     """A callable app: builds an Engine over an in-memory backend."""
-    from flowlet.adapters.memory import MemoryBackend
-    from flowlet.domain import Site
-    from flowlet.runtime import Engine
+    from flowli.adapters.memory import MemoryBackend
+    from flowli.domain import Site
+    from flowli.runtime import Engine
 
     return Engine(MemoryBackend().ports, Site.local("cli-test"), registry=registry)
 

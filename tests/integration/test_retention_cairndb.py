@@ -6,10 +6,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.adapters.memory import ManualClock
-from flowlet.domain import Actor, Execution, ExecutionStatus, FrameRef, Site, Timer
-from flowlet.runtime import Engine, EngineConfig, UnknownExecution
+from flowli.adapters.cairndb import CairnBackend
+from flowli.adapters.memory import ManualClock
+from flowli.domain import Actor, Execution, ExecutionStatus, FrameRef, Site, Timer
+from flowli.runtime import Engine, EngineConfig, UnknownExecution
 from tests.ids import E_ABC, E_DEF, E_NOPE, E_ZZZ
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))

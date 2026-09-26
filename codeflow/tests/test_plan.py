@@ -2,7 +2,7 @@
 
 import pytest
 
-from flowlet_codeflow import (
+from flowli_codeflow import (
     FeatureSpec,
     Milestone,
     PlanError,
@@ -10,7 +10,7 @@ from flowlet_codeflow import (
     apply_delta,
     check_feature,
 )
-from flowlet_codeflow.model import stages_of
+from flowli_codeflow.model import stages_of
 
 
 def task(tid, *, depends=(), scope=("src/a/**",), exclusive=False) -> TaskSpec:

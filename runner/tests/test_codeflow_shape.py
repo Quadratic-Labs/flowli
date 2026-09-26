@@ -12,10 +12,10 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import Actor, ExecutionStatus, Site
-from flowlet.patterns import delegate, review
-from flowlet.runtime import Engine
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import Actor, ExecutionStatus, Site
+from flowli.patterns import delegate, review
+from flowli.runtime import Engine
 
 from .conftest import HUMAN, T0
 
@@ -164,7 +164,7 @@ async def _answer_agents(engine, backend, agent_says) -> bool:
     claimed = await backend.queue.dequeue("agents", "agent-runner", 60)
     if claimed is None:
         return False
-    from flowlet.domain import DelegateTask
+    from flowli.domain import DelegateTask
 
     target = DelegateTask.from_task_payload(claimed.task.payload)
     payload = agent_says or {"outcome": "completed", "branch": f"agent/{target.eid}"}
@@ -178,7 +178,7 @@ async def _answer_merges(engine, backend) -> bool:
     claimed = await backend.queue.dequeue("merge", "merge-queue", 60)
     if claimed is None:
         return False
-    from flowlet.domain import DelegateTask
+    from flowli.domain import DelegateTask
 
     target = DelegateTask.from_task_payload(claimed.task.payload)
     await engine.deliver(target.eid, target.reply_channel, {"merged": True}, by=Actor.worker("mq"))
@@ -192,7 +192,7 @@ async def _decide_reviews(engine, backend, verdict) -> bool:
         if not tasks:
             continue
         rid = tasks[0].payload["payload"]["rid"]
-        from flowlet.domain import DelegateTask
+        from flowli.domain import DelegateTask
 
         target = DelegateTask.from_task_payload(tasks[0].payload)
         await engine.reviews.decide(rid, eid=target.eid, queue=queue, verdict=verdict, by=CFO)

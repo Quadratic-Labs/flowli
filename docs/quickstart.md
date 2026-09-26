@@ -6,15 +6,15 @@ happened.
 
 ## 1. Install
 
-Flowlet needs Python 3.14 and CairnDB. CairnDB comes from the sibling checkout
-`../cairndb`, which `uv` resolves for you.
+Flowli needs Python 3.14 and CairnDB. CairnDB is installed from PyPI as a
+dependency of Flowli.
 
 ::::{tab-set}
 :::{tab-item} uv
 
 ```bash
-git clone git@github.com:Quadratic-Labs/flowlet.git
-cd flowlet
+git clone git@github.com:Quadratic-Labs/flowli.git
+cd flowli
 uv sync --extra cli
 ```
 :::
@@ -23,7 +23,6 @@ uv sync --extra cli
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ../cairndb
 pip install -e ".[cli]"
 ```
 :::
@@ -35,20 +34,20 @@ The extras choose what you install:
 | Extra | Content |
 |---|---|
 | none | the engine as a library |
-| `cli` | the `flowlet` command: worker, sweeper, retention, and the operator commands |
-| `api` | the HTTP service, `flowlet.api.create_app` |
+| `cli` | the `flowli` command: worker, sweeper, retention, and the operator commands |
+| `api` | the HTTP service, `flowli.api.create_app` |
 | `dev` | the test tools |
 
 ## 2. Write a workflow
 
 A workflow is an `async` function. Its first parameter is a
-{py:obj}`Context <flowlet.runtime.Context>`. A {py:obj}`Registry <flowlet.runtime.Registry>`
+{py:obj}`Context <flowli.runtime.Context>`. A {py:obj}`Registry <flowli.runtime.Registry>`
 holds the workflows of your application under a name and a version.
 
 :::{code-block} python
 :caption: myapp/flows.py
 
-from flowlet.runtime import Context, Registry
+from flowli.runtime import Context, Registry
 
 registry = Registry()
 
@@ -91,9 +90,9 @@ a workflow belong to your code. A short script starts one:
 
 import asyncio
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.domain import Actor, Site
-from flowlet.runtime import Engine
+from flowli.adapters.cairndb import CairnBackend
+from flowli.domain import Actor, Site
+from flowli.runtime import Engine
 
 from myapp.flows import greet, registry
 
@@ -124,14 +123,14 @@ Nothing runs yet: a worker runs the workflow.
 :class: note
 
 `by=` names the actor of the start. The journal keeps that name for as long
-as the execution exists. Use {py:obj}`Actor.human <flowlet.domain.Actor>` for a
+as the execution exists. Use {py:obj}`Actor.human <flowli.domain.Actor>` for a
 person, `Actor.system` for a service, `Actor.schedule` for a schedule.
 :::
 
 ## 4. Run a worker
 
 ```bash
-flowlet worker --app myapp.flows:registry --storage-path ./bucket --once
+flowli worker --app myapp.flows:registry --storage-path ./bucket --once
 ```
 
 `--app module:attr` names the `Registry`. The CLI builds the CairnDB backend
@@ -145,7 +144,7 @@ the function, appends the journal entries, and releases the lease.
 ## 5. Read what happened
 
 ```bash
-flowlet status 01a0c2d0-9706-742d-b8ec-eda635e1d316 \
+flowli status 01a0c2d0-9706-742d-b8ec-eda635e1d316 \
     --app myapp.flows:registry --storage-path ./bucket --journal
 ```
 
@@ -198,8 +197,8 @@ async def order(ctx: Context, order_id: str) -> str:
 Start it, then run one pass of the worker:
 
 ```bash
-flowlet worker --app myapp.flows:registry --storage-path ./bucket --once
-flowlet status $EID --app myapp.flows:registry --storage-path ./bucket
+flowli worker --app myapp.flows:registry --storage-path ./bucket --once
+flowli status $EID --app myapp.flows:registry --storage-path ./bucket
 ```
 
 ```text
@@ -211,7 +210,7 @@ waiting    channel:01a0c2d1-1f0e-766f-9632-fa2be4b1be56.payments
 The execution holds no worker now. It waits on a channel. Send the message:
 
 ```bash
-flowlet signal $EID payments '{"status": "paid"}' \
+flowli signal $EID payments '{"status": "paid"}' \
     --app myapp.flows:registry --storage-path ./bucket --by thomas@example.com
 ```
 
@@ -233,13 +232,13 @@ the function twice and the receive frame one time.
 
 ## 7. Add a person
 
-A {py:obj}`review <flowlet.patterns.review>` puts a task on a queue for people and waits
+A {py:obj}`review <flowli.patterns.review>` puts a task on a queue for people and waits
 for the decision:
 
 ```python
 from datetime import timedelta
 
-from flowlet.patterns import review
+from flowli.patterns import review
 
 
 @registry.workflow("invoice", version="1")
@@ -254,22 +253,22 @@ async def invoice(ctx: Context, invoice_id: str, amount: int) -> str:
     return decision.verdict
 ```
 
-An operator answers with {py:obj}`engine.reviews.decide <flowlet.patterns.Reviews>`,
+An operator answers with {py:obj}`engine.reviews.decide <flowli.patterns.Reviews>`,
 or a person answers in the web interface. The review id and the queue come from
 the inbox of the projection. The
 [HTTP service](hosting.md#the-http-service-and-the-interface) shows that inbox.
 
 ## 8. Test it without a bucket
 
-{py:obj}`MemoryBackend <flowlet.adapters.memory.MemoryBackend>` implements every port
+{py:obj}`MemoryBackend <flowli.adapters.memory.MemoryBackend>` implements every port
 in memory. A test needs no bucket and no disk:
 
 :::{code-block} python
 :caption: tests/test_greet.py
 
-from flowlet.adapters.memory import MemoryBackend
-from flowlet.domain import Actor, Site
-from flowlet.runtime import Engine
+from flowli.adapters.memory import MemoryBackend
+from flowli.domain import Actor, Site
+from flowli.runtime import Engine
 
 from myapp.flows import greet, registry
 

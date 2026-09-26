@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.codec import digest
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.codec import digest
+from flowli.domain import (
     ROOT_FID,
     Actor,
     Code,
@@ -26,7 +26,7 @@ from flowlet.domain import (
     TaskKind,
     execution_channel,
 )
-from flowlet.runtime import Done, Engine, EngineConfig, Wait, Worker
+from flowli.runtime import Done, Engine, EngineConfig, Wait, Worker
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")
@@ -941,7 +941,7 @@ def test_renew_loop_init_sets_interval_and_callback():
     """03-ports.md, 05-protocols.md and 10-agent-runner.md all pin the renew cadence at
     exactly ttl/3 -- and on_lost must be the exact callback passed in, since _run calls
     it by identity on LeaseLost."""
-    from flowlet.runtime.worker import _RenewLoop
+    from flowli.runtime.worker import _RenewLoop
 
     def on_lost() -> None:
         pass
@@ -1025,7 +1025,7 @@ async def test_unknown_workflow_is_nacked(backend, engine, worker):
         return 1
 
     engine.registry.register(
-        __import__("flowlet.runtime", fromlist=["WorkflowRef"]).WorkflowRef("w", "1", w)
+        __import__("flowli.runtime", fromlist=["WorkflowRef"]).WorkflowRef("w", "1", w)
     )
     eid = await engine.start(w, by=HUMAN)
     bare = Engine(

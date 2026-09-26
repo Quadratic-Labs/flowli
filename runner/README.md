@@ -1,9 +1,9 @@
-# flowlet-runner
+# flowli-runner
 
-Runs coding agents as the consumer of flowlet delegate tasks. See
-`flowlet/docs/specs/10-agent-runner.md`.
+Runs coding agents as the consumer of flowli delegate tasks. See
+`flowli/specs/10-agent-runner.md`.
 
-The loop is not here. `flowlet.runtime.Consumer` owns the dequeue, the
+The loop is not here. `flowli.runtime.Consumer` owns the dequeue, the
 heartbeat, the recovery and the cancel — sections 2 to 5 of the spec, which
 hold for any consumer of a delegate task. This package is the work that
 consumer drives: adapters, worktrees, write scopes, and the two contracts an
@@ -13,7 +13,7 @@ agent task carries.
 
 ```bash
 pip install -e ./runner
-flowlet-runner \
+flowli-runner \
     --app myapp.flows:registry \
     --queue agents \
     --repo /srv/repo \
@@ -22,7 +22,7 @@ flowlet-runner \
 ```
 
 `run` is not a subcommand: this CLI has one command, so its options sit
-directly on `flowlet-runner`.
+directly on `flowli-runner`.
 
 `--once` takes a single task and reports the pass, which suits a cron job:
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.api import ApiConfig, StaticAuthenticator, create_app
-from flowlet.api.auth import (
+from flowli.adapters.cairndb import CairnBackend
+from flowli.api import ApiConfig, StaticAuthenticator, create_app
+from flowli.api.auth import (
     EVIDENCE_READ,
     EXECUTIONS_CANCEL,
     EXECUTIONS_MIGRATE,
@@ -19,10 +19,10 @@ from flowlet.api.auth import (
     WORKFLOWS_READ,
     Principal,
 )
-from flowlet.domain import Actor, Site
-from flowlet.patterns import delegate
-from flowlet.patterns.review import review
-from flowlet.runtime import Engine, Registry
+from flowli.domain import Actor, Site
+from flowli.patterns import delegate
+from flowli.patterns.review import review
+from flowli.runtime import Engine, Registry
 
 OPERATOR = "token-operator"
 READER = "token-reader"

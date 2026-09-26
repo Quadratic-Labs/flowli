@@ -7,10 +7,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from cairndb import Timestamp
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import Actor, Site
-from flowlet.patterns import delegate
-from flowlet.runtime import Consumer, ConsumerConfig, Engine
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import Actor, Site
+from flowli.patterns import delegate
+from flowli.runtime import Consumer, ConsumerConfig, Engine
 
 T0 = Timestamp(datetime(2026, 9, 11, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")

@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 import pytest
 from cairndb import Timestamp
 
-from flowlet.codec import structure, unstructure
-from flowlet.domain import (
+from flowli.codec import structure, unstructure
+from flowli.domain import (
     Actor,
     Execution,
     ExecutionStatus,

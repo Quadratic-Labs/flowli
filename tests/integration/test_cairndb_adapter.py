@@ -8,9 +8,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.cairndb import SEQ_BASE, CairnBackend
-from flowlet.adapters.memory import ManualClock
-from flowlet.domain import (
+from flowli.adapters.cairndb import SEQ_BASE, CairnBackend
+from flowli.adapters.memory import ManualClock
+from flowli.domain import (
     Actor,
     Entry,
     Execution,
@@ -24,7 +24,7 @@ from flowlet.domain import (
     Timer,
     execution_channel,
 )
-from flowlet.runtime import Engine, EngineConfig
+from flowli.runtime import Engine, EngineConfig
 from tests.ids import E_AAA, E_ABC, E_BBB, E_DEF, E_NOPE, E_ZZZ
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
@@ -57,7 +57,7 @@ def test_dumps_is_compact_key_sorted_and_falls_back_to_str_for_a_stray_uuid():
     (no incidental whitespace), key-sorted (so two writers of equal content
     always produce equal bytes), and its `default` hook must still cover a
     UUID that reaches it unconverted."""
-    from flowlet.adapters.cairndb import _dumps
+    from flowli.adapters.cairndb import _dumps
 
     assert _dumps({"b": 1, "a": 2}) == b'{"a":2,"b":1}'
     stray = uuid.uuid4()
@@ -68,7 +68,7 @@ def test_json_default_refuses_anything_that_is_not_a_uuid():
     """The `default` hook is a last resort for the one case it knows
     (`UUID`); anything else must raise, naming the offending type, not
     silently swallow or mis-stringify it."""
-    from flowlet.adapters.cairndb import _json_default
+    from flowli.adapters.cairndb import _json_default
 
     with pytest.raises(TypeError, match="not JSON-compatible: set"):
         _json_default({1, 2, 3})
@@ -84,7 +84,7 @@ def test_encode_seq_combines_commit_and_index_not_subtracts_them():
     backwards."""
     from cairndb import SequenceNumber
 
-    from flowlet.adapters.cairndb import SEQ_BASE, encode_seq
+    from flowli.adapters.cairndb import SEQ_BASE, encode_seq
 
     assert encode_seq(SequenceNumber(commit=2, index=3)) == 2 * SEQ_BASE + 3
 
@@ -125,7 +125,7 @@ async def test_journal_append_tags_the_event_with_schema_version(backend, prov):
     every commit carries one real Event, not one with a blank schema tag."""
     from cairndb import SchemaVersion
 
-    from flowlet.domain import SCHEMA_VERSION
+    from flowli.domain import SCHEMA_VERSION
 
     j = backend.journal
     await j.append(E_ABC, Entry.execution_started(prov, ["x"]))
@@ -139,9 +139,9 @@ def test_event_entry_defaults_fid_to_root_for_metadata_without_it(prov):
     back to `ROOT_FID`, not `None` -- every `Entry` needs a real fid."""
     from cairndb import Event, EventType, SchemaVersion
 
-    from flowlet.adapters.cairndb import _event_entry
-    from flowlet.codec import unstructure
-    from flowlet.domain import ROOT_FID, SCHEMA_VERSION
+    from flowli.adapters.cairndb import _event_entry
+    from flowli.codec import unstructure
+    from flowli.domain import ROOT_FID, SCHEMA_VERSION
 
     event = Event(
         event_type=EventType("announce.review.requested"),
@@ -204,7 +204,7 @@ async def test_log_cache_hits_return_the_same_log_and_evicts_the_least_recently_
     and a hit counts as recently used: once the cache is over `maxsize`, the
     entry nobody touched again is the one that gets evicted and closed, not
     whichever happens to have been created first."""
-    from flowlet.adapters.cairndb import _LogCache
+    from flowli.adapters.cairndb import _LogCache
 
     cache = _LogCache(backend.db, maxsize=2)
     a = await cache.get("cache-a")
@@ -223,7 +223,7 @@ async def test_log_cache_hits_return_the_same_log_and_evicts_the_least_recently_
 
 def test_log_cache_default_maxsize_is_128():
     """Pins the cache's own default so a silent change doesn't go unnoticed."""
-    from flowlet.adapters.cairndb import _LogCache
+    from flowli.adapters.cairndb import _LogCache
 
     assert _LogCache(db=object())._maxsize == 128
 
@@ -342,7 +342,7 @@ def test_lease_key_replaces_only_the_leading_slash_t_slash_segment():
     """Per the key layout (module docstring): a task key's `/t/` segment becomes
     `/l/`, and only that one occurrence -- not any `/t/` that happens to appear
     later, inside the task id itself."""
-    from flowlet.adapters.cairndb import CairnQueue
+    from flowli.adapters.cairndb import CairnQueue
 
     key = "wf/queues/default/t/2026-09-07T09:00:00.000000Z-start:/t/echo"
     expected = "wf/queues/default/l/2026-09-07T09:00:00.000000Z-start:/t/echo"
@@ -585,7 +585,7 @@ async def test_drop_stale_lease_suppresses_release_of_an_already_released_lease(
     the lease already released (the acker got to this exact document first).
     That `LeaseLost` must be swallowed, not left to escape -- and the lease
     document must still be removed either way."""
-    from flowlet.adapters.cairndb import CairnLease
+    from flowli.adapters.cairndb import CairnLease
 
     q = backend.queue
     t = task(prov)
@@ -750,7 +750,7 @@ async def test_channel_send_tags_the_event_with_message_type_and_schema_version(
     them today, but because the log holds one real Event per message."""
     from cairndb import EventType, SchemaVersion
 
-    from flowlet.domain import SCHEMA_VERSION
+    from flowli.domain import SCHEMA_VERSION
 
     ch = backend.channel
     m = Message(f"{E_ABC}.tags", 0, {"n": 1}, prov, correlation="c")
@@ -1008,7 +1008,7 @@ async def test_sweeper_recovers_through_a_stranded_marker(backend, clock):
 
 async def test_evidence_round_trip_and_retention(backend, prov):
     """Attempt logs and attachments as plain objects. Nothing here is authority."""
-    from flowlet.domain import EvidenceRef
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     ref = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -1046,8 +1046,8 @@ async def test_evidence_list_falls_back_to_octet_stream_without_a_media_type_sid
 ):
     """An attachment written before the media-type sidecar existed (or by any writer
     that only ever puts the content key) still lists with a media type, not a crash."""
-    from flowlet.adapters import evidence as keys
-    from flowlet.domain import EvidenceRef
+    from flowli.adapters import evidence as keys
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     ref = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -1067,8 +1067,8 @@ async def test_append_log_never_overwrites_a_part_already_claimed_at_a_candidate
     it tries is already taken -- a racing flush that lands after this call's
     own listing but before its write -- `append_log` must move on to the next
     candidate rather than silently stomp over what's there."""
-    from flowlet.adapters import evidence as keys
-    from flowlet.domain import EvidenceRef
+    from flowli.adapters import evidence as keys
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     ref = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -1099,8 +1099,8 @@ async def test_append_log_gives_up_after_exactly_eight_candidates(backend, prov,
     """The retry budget is exactly 8 candidates (n..n+7): once every one of
     them reads as already taken, the call must give up loudly -- naming the
     frame it could not settle -- rather than keep trying forever."""
-    from flowlet.adapters import evidence as keys
-    from flowlet.domain import EvidenceRef
+    from flowli.adapters import evidence as keys
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     ref = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -1124,7 +1124,7 @@ async def test_list_sums_every_log_part_and_skips_one_gone_missing(backend, prov
     """The log's size is the sum of every flushed part, not just the last one
     written; a part that reads back as gone (a race with retention) must
     contribute nothing, rather than crash the whole listing."""
-    from flowlet.domain import EvidenceRef
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     ref = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -1153,7 +1153,7 @@ async def test_list_continues_past_one_missing_meta_object(backend, prov, monkey
     """One frame's meta may read back as gone (e.g. a concurrent delete);
     `list` must still report every other frame's evidence, not abandon the
     whole execution at the first gap."""
-    from flowlet.domain import EvidenceRef
+    from flowli.domain import EvidenceRef
 
     ev = backend.evidence
     refs = [EvidenceRef(E_ABC, f"root/f{i}#0", 1) for i in range(3)]

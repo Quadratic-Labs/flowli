@@ -21,9 +21,9 @@ from typing import Any
 
 import uvicorn
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.api import ApiConfig, StaticAuthenticator, create_app
-from flowlet.api.auth import (
+from flowli.adapters.cairndb import CairnBackend
+from flowli.api import ApiConfig, StaticAuthenticator, create_app
+from flowli.api.auth import (
     EVIDENCE_READ,
     EXECUTIONS_CANCEL,
     EXECUTIONS_MIGRATE,
@@ -35,10 +35,10 @@ from flowlet.api.auth import (
     WORKFLOWS_READ,
     Principal,
 )
-from flowlet.domain import Actor, Site
-from flowlet.log import configure_logging, get_logger
-from flowlet.patterns import delegate, review
-from flowlet.runtime import Engine, Registry
+from flowli.domain import Actor, Site
+from flowli.log import configure_logging, get_logger
+from flowli.patterns import delegate, review
+from flowli.runtime import Engine, Registry
 
 HERE = Path(__file__).resolve().parent
 BUCKET = HERE / ".local" / "bucket"
@@ -92,7 +92,7 @@ async def flaky_import(ctx: Any, source: str) -> str:
             raise RuntimeError(f"{source} refused the connection")
         return f"{source}:imported"
 
-    from flowlet.domain import RetryPolicy
+    from flowli.domain import RetryPolicy
 
     return await ctx.step(attempt, name="import", retry=RetryPolicy(max_attempts=3))
 
@@ -130,7 +130,7 @@ async def main() -> None:
         engine,
         authenticator=StaticAuthenticator(principals()),
         projection=projection,
-        config=ApiConfig(queues=QUEUES, title="flowlet (dev)"),
+        config=ApiConfig(queues=QUEUES, title="flowli (dev)"),
     )
 
     stop = asyncio.Event()

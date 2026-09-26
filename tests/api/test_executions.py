@@ -5,9 +5,9 @@ import hashlib
 import pytest
 from fastapi import Request
 
-from flowlet.api.deps import ApiConfig
-from flowlet.api.reads import STALE_HEADER, decode_cursor, encode_cursor, etag, freshness, json_response
-from flowlet.api.routes.executions import _written
+from flowli.api.deps import ApiConfig
+from flowli.api.reads import STALE_HEADER, decode_cursor, encode_cursor, etag, freshness, json_response
+from flowli.api.routes.executions import _written
 
 from .conftest import READER, auth, drain
 
@@ -337,7 +337,7 @@ async def test_a_read_that_waits_too_long_still_answers(client, projection):
     assert r.headers["x-projection-stale"] == "true"
 
 
-# --- flowlet.api.reads, exercised directly ---------------------------------------------
+# --- flowli.api.reads, exercised directly ---------------------------------------------
 
 
 def test_cursor_round_trips_even_when_the_base64_needs_padding():

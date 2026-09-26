@@ -8,11 +8,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from flowlet.domain import ExecutionStatus
-from flowlet.runtime import Consumer, ConsumerConfig
+from flowli.domain import ExecutionStatus
+from flowli.runtime import Consumer, ConsumerConfig
 
-from flowlet_runner import Envelope, RunnerConfig, SubprocessAgent, build_consumer
-from flowlet_runner.runner import AgentRunner
+from flowli_runner import Envelope, RunnerConfig, SubprocessAgent, build_consumer
+from flowli_runner.runner import AgentRunner
 
 from .conftest import HUMAN, consumer, git
 
@@ -130,7 +130,7 @@ async def test_a_scope_conflict_returns_the_task(engine, repo, drain, backend):
     from cairndb.storage.config import FilesystemStorageConfig
 
     db = cairndb.CairnDB(FilesystemStorageConfig(path=str(repo / ".scopes")).create_storage())
-    from flowlet_runner.scopes import key
+    from flowli_runner.scopes import key
 
     other = await db.lease(key("src/**"), ttl=60, holder="someone-else")
     assert other is not None
@@ -149,7 +149,7 @@ async def test_scopes_are_released_when_the_attempt_ends(engine, repo, drain):
     import cairndb
     from cairndb.storage.config import FilesystemStorageConfig
 
-    from flowlet_runner.scopes import key
+    from flowli_runner.scopes import key
 
     db = cairndb.CairnDB(FilesystemStorageConfig(path=str(repo / ".scopes")).create_storage())
     await start(engine, envelope(WRITES_A_COMMIT, write_scope=["src/**"]))
@@ -175,7 +175,7 @@ async def test_a_cancel_stops_the_agent_and_quarantines_its_tree(engine, repo, d
 
     async def ask_to_stop():
         await asyncio.sleep(0.35)
-        from flowlet.runtime.consumer import request_cancel
+        from flowli.runtime.consumer import request_cancel
 
         await request_cancel(engine, "agents", task.task_id, HUMAN)
 

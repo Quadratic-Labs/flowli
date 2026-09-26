@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from flowlet_runner import worktree as wt
+from flowli_runner import worktree as wt
 
 from .conftest import git
 

@@ -1,7 +1,7 @@
 import pytest
 
-from flowlet.codec import structure, unstructure
-from flowlet.domain import (
+from flowli.codec import structure, unstructure
+from flowli.domain import (
     ROOT_FID,
     Completed,
     Condition,

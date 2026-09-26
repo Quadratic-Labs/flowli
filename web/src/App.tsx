@@ -55,7 +55,7 @@ function Layout() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <nav className="flex items-center gap-6 bg-indigo-700 px-6 py-3 text-white">
-        <Link to="/" className="text-lg font-bold">flowlet</Link>
+        <Link to="/" className="text-lg font-bold">flowli</Link>
         {NAV.map(([path, label]) => (
           <Link key={path} to={path} className="text-sm font-medium hover:text-indigo-200">{label}</Link>
         ))}

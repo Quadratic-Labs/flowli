@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flowlet.domain import DelegateTask
-from flowlet_runner import worktree as wt
+from flowli.domain import DelegateTask
+from flowli_runner import worktree as wt
 
-from flowlet_codeflow import MergeConfig, MergeHandler
+from flowli_codeflow import MergeConfig, MergeHandler
 
 from .conftest import git
 

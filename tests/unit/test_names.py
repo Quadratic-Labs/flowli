@@ -2,8 +2,8 @@ import uuid
 
 import pytest
 
-from flowlet.domain import (
-    FLOWLET2_NAMESPACE,
+from flowli.domain import (
+    FLOWLI_NAMESPACE,
     FrameRef,
     InvalidName,
     check_channel,
@@ -36,7 +36,7 @@ def test_child_eid_is_deterministic_uuid5():
     assert a == FrameRef(parent, "root/child:0").child_eid
     assert a != FrameRef(parent, "root/child:1").child_eid
     assert a.version == 5
-    assert a == uuid.uuid5(FLOWLET2_NAMESPACE, f"{parent}/root/child:0")
+    assert a == uuid.uuid5(FLOWLI_NAMESPACE, f"{parent}/root/child:0")
 
 
 def test_parse_eid_accepts_uuid_and_canonical_string():

@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 from cairndb import Timestamp
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import Actor, DelegateTask, Site
-from flowlet.runtime import Engine, Registry
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import Actor, DelegateTask, Site
+from flowli.runtime import Engine, Registry
 
-from flowlet_codeflow import Policy, register
-from flowlet_codeflow.gotchas import Registry as Gotchas
+from flowli_codeflow import Policy, register
+from flowli_codeflow.gotchas import Registry as Gotchas
 
 T0 = Timestamp(datetime(2026, 9, 11, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")

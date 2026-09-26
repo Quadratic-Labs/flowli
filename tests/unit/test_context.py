@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.codec import digest
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.codec import digest
+from flowli.domain import (
     Actor,
     Cancelled,
     ChildFailed,
@@ -29,7 +29,7 @@ from flowlet.domain import (
     Timer,
     execution_channel,
 )
-from flowlet.runtime import Context, Raised, Returned, Suspended, Wait, WorkflowRef
+from flowli.runtime import Context, Raised, Returned, Suspended, Wait, WorkflowRef
 from tests.ids import E_ABC
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
@@ -83,7 +83,7 @@ def backend() -> MemoryBackend:
 
 
 def prov() -> Provenance:
-    from flowlet.domain import Code
+    from flowli.domain import Code
 
     return Provenance(Actor.system("test"), Site("h", 1, "ext"), Code("x", "1", "step", "x"), 1, T0)
 

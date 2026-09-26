@@ -1,6 +1,6 @@
-# flowlet-codeflow
+# flowli-codeflow
 
-The CodeFlow controller. See `flowlet/docs/specs/11-codeflow.md`.
+The CodeFlow controller. See `flowli/specs/11-codeflow.md`.
 
 **The controller is workflows.** A milestone is an execution, a feature is a
 child of it, a task is a child of a feature, routing is a pure function, and a
@@ -11,16 +11,16 @@ Three things stay processes, because they never end:
 
 | Process | Where |
 |---|---|
-| the agent runner | `flowlet-runner` |
-| the merge queue | `flowlet-codeflow merge` |
-| the board reconciler | `flowlet-codeflow board` |
+| the agent runner | `flowli-runner` |
+| the merge queue | `flowli-codeflow merge` |
+| the board reconciler | `flowli-codeflow board` |
 
 ## Using it
 
 ```python
-from flowlet.runtime import Registry
-from flowlet_codeflow import Policy, register
-from flowlet_codeflow.gotchas import Gotcha, Registry as Gotchas
+from flowli.runtime import Registry
+from flowli_codeflow import Policy, register
+from flowli_codeflow.gotchas import Gotcha, Registry as Gotchas
 
 registry, gotchas = Registry(), Gotchas()
 gotchas.add(Gotcha(scope=["src/billing/**"], text="the webhook fixture resets per test"))
@@ -30,10 +30,10 @@ workflows = register(registry, policy=Policy(max_attempts=3), gotchas=gotchas)
 Then start a milestone like any execution, and run the processes:
 
 ```bash
-flowlet worker            --app myapp:registry --queue default
-flowlet-runner            --app myapp:registry --queue agents --repo /srv/repo --runner-id r1
-flowlet-codeflow merge    --app myapp:registry --repo /srv/repo --gate 'just test'
-flowlet-codeflow board    --app myapp:registry --projection ./wf_view.sqlite
+flowli worker            --app myapp:registry --queue default
+flowli-runner            --app myapp:registry --queue agents --repo /srv/repo --runner-id r1
+flowli-codeflow merge    --app myapp:registry --repo /srv/repo --gate 'just test'
+flowli-codeflow board    --app myapp:registry --projection ./wf_view.sqlite
 ```
 
 Each takes `--log-level` and `--log-format console|json`, and logs to stderr.

@@ -1,9 +1,9 @@
 # API reference
 
 This page is generated from the docstrings of the code by `sphinx.ext.autodoc`.
-The [specifications](specs/00-overview.md) give the rules behind each signature.
+The [specifications](https://github.com/Quadratic-Labs/flowli/tree/main/specs) give the rules behind each signature.
 
-## flowlet.runtime
+## flowli.runtime
 
 The runtime: what you call, and what runs your workflows.
 
@@ -12,10 +12,10 @@ The runtime: what you call, and what runs your workflows.
 The operator API. One engine holds the ports, the site and the registry.
 
 ```{eval-rst}
-.. autoclass:: flowlet.runtime.Engine
-.. autoclass:: flowlet.runtime.EngineConfig
-.. autoclass:: flowlet.runtime.engine.StartResult
-.. autoexception:: flowlet.runtime.UnknownExecution
+.. autoclass:: flowli.runtime.Engine
+.. autoclass:: flowli.runtime.EngineConfig
+.. autoclass:: flowli.runtime.engine.StartResult
+.. autoexception:: flowli.runtime.UnknownExecution
 ```
 
 ### Context
@@ -23,31 +23,31 @@ The operator API. One engine holds the ports, the site and the registry.
 The API for the author of a workflow. Every method creates one frame.
 
 ```{eval-rst}
-.. autoclass:: flowlet.runtime.Context
-.. autoclass:: flowlet.runtime.Wait
-.. autoclass:: flowlet.runtime.Returned
-.. autoclass:: flowlet.runtime.Raised
-.. autoclass:: flowlet.runtime.Suspended
+.. autoclass:: flowli.runtime.Context
+.. autoclass:: flowli.runtime.Wait
+.. autoclass:: flowli.runtime.Returned
+.. autoclass:: flowli.runtime.Raised
+.. autoclass:: flowli.runtime.Suspended
 ```
 
 ### Registry
 
 ```{eval-rst}
-.. autoclass:: flowlet.runtime.Registry
-.. autoclass:: flowlet.runtime.WorkflowRef
+.. autoclass:: flowli.runtime.Registry
+.. autoclass:: flowli.runtime.WorkflowRef
 ```
 
 ### Worker, sweeper and retention
 
 ```{eval-rst}
-.. autoclass:: flowlet.runtime.Worker
-.. autoclass:: flowlet.runtime.Sweeper
-.. autoclass:: flowlet.runtime.SweepReport
-.. autoclass:: flowlet.runtime.Retention
-.. autoclass:: flowlet.runtime.RetentionReport
-.. autoclass:: flowlet.runtime.ControlSource
-.. autoclass:: flowlet.runtime.ControlView
-.. autoclass:: flowlet.runtime.KnownExecution
+.. autoclass:: flowli.runtime.Worker
+.. autoclass:: flowli.runtime.Sweeper
+.. autoclass:: flowli.runtime.SweepReport
+.. autoclass:: flowli.runtime.Retention
+.. autoclass:: flowli.runtime.RetentionReport
+.. autoclass:: flowli.runtime.ControlSource
+.. autoclass:: flowli.runtime.ControlView
+.. autoclass:: flowli.runtime.KnownExecution
 ```
 
 ### Consumer
@@ -55,80 +55,80 @@ The API for the author of a workflow. Every method creates one frame.
 The loop of a consumer of delegate tasks, minus the work.
 
 ```{eval-rst}
-.. autoclass:: flowlet.runtime.Consumer
-.. autoclass:: flowlet.runtime.ConsumerConfig
-.. autoclass:: flowlet.runtime.ConsumerReport
-.. autoclass:: flowlet.runtime.Handler
-.. autoclass:: flowlet.runtime.Held
-.. autoexception:: flowlet.runtime.Refused
+.. autoclass:: flowli.runtime.Consumer
+.. autoclass:: flowli.runtime.ConsumerConfig
+.. autoclass:: flowli.runtime.ConsumerReport
+.. autoclass:: flowli.runtime.Handler
+.. autoclass:: flowli.runtime.Held
+.. autoexception:: flowli.runtime.Refused
 ```
 
-## flowlet.patterns
+## flowli.patterns
 
 Helpers written against the `Context` API only. The engine does not know them.
 
 ```{eval-rst}
-.. autofunction:: flowlet.patterns.delegate
-.. autofunction:: flowlet.patterns.review
-.. autoclass:: flowlet.patterns.Decision
-.. autoclass:: flowlet.patterns.Reviews
-.. autofunction:: flowlet.patterns.saga
-.. autofunction:: flowlet.patterns.fan_out
-.. autofunction:: flowlet.patterns.on_tick
+.. autofunction:: flowli.patterns.delegate
+.. autofunction:: flowli.patterns.review
+.. autoclass:: flowli.patterns.Decision
+.. autoclass:: flowli.patterns.Reviews
+.. autofunction:: flowli.patterns.saga
+.. autofunction:: flowli.patterns.fan_out
+.. autofunction:: flowli.patterns.on_tick
 ```
 
-## flowlet.domain
+## flowli.domain
 
 The objects, the errors and the ports. This layer has no I/O.
 
 ### Execution and frames
 
 ```{eval-rst}
-.. autoclass:: flowlet.domain.Execution
-.. autoclass:: flowlet.domain.ExecutionStatus
-.. autoclass:: flowlet.domain.FrameRef
-.. autoclass:: flowlet.domain.Frame
-.. autoclass:: flowlet.domain.FrameKind
-.. autoclass:: flowlet.domain.RetryPolicy
-.. autoclass:: flowlet.domain.Attempt
-.. autoclass:: flowlet.domain.Completed
-.. autoclass:: flowlet.domain.Failed
+.. autoclass:: flowli.domain.Execution
+.. autoclass:: flowli.domain.ExecutionStatus
+.. autoclass:: flowli.domain.FrameRef
+.. autoclass:: flowli.domain.Frame
+.. autoclass:: flowli.domain.FrameKind
+.. autoclass:: flowli.domain.RetryPolicy
+.. autoclass:: flowli.domain.Attempt
+.. autoclass:: flowli.domain.Completed
+.. autoclass:: flowli.domain.Failed
 ```
 
 ### The journal
 
 ```{eval-rst}
-.. autoclass:: flowlet.domain.Entry
-.. autoclass:: flowlet.domain.EntryType
-.. autoclass:: flowlet.domain.MemoTable
-.. autoclass:: flowlet.domain.Sequenced
-.. autoclass:: flowlet.domain.Condition
+.. autoclass:: flowli.domain.Entry
+.. autoclass:: flowli.domain.EntryType
+.. autoclass:: flowli.domain.MemoTable
+.. autoclass:: flowli.domain.Sequenced
+.. autoclass:: flowli.domain.Condition
 ```
 
 ### Tasks, messages and timers
 
 ```{eval-rst}
-.. autoclass:: flowlet.domain.Task
-.. autoclass:: flowlet.domain.TaskKind
-.. autoclass:: flowlet.domain.DelegateTask
-.. autoclass:: flowlet.domain.Message
-.. autoclass:: flowlet.domain.Timer
-.. autofunction:: flowlet.domain.execution_channel
+.. autoclass:: flowli.domain.Task
+.. autoclass:: flowli.domain.TaskKind
+.. autoclass:: flowli.domain.DelegateTask
+.. autoclass:: flowli.domain.Message
+.. autoclass:: flowli.domain.Timer
+.. autofunction:: flowli.domain.execution_channel
 ```
 
 ### Provenance
 
 ```{eval-rst}
-.. autoclass:: flowlet.domain.Actor
-.. autoclass:: flowlet.domain.Site
-.. autoclass:: flowlet.domain.Code
-.. autoclass:: flowlet.domain.Provenance
+.. autoclass:: flowli.domain.Actor
+.. autoclass:: flowli.domain.Site
+.. autoclass:: flowli.domain.Code
+.. autoclass:: flowli.domain.Provenance
 ```
 
 ### Errors
 
 ```{eval-rst}
-.. automodule:: flowlet.domain.errors
+.. automodule:: flowli.domain.errors
 ```
 
 ### Ports
@@ -136,22 +136,22 @@ The objects, the errors and the ports. This layer has no I/O.
 Each port is a `Protocol`. An adapter implements all of them.
 
 ```{eval-rst}
-.. automodule:: flowlet.domain.ports
+.. automodule:: flowli.domain.ports
 ```
 
 ### Names and ids
 
 ```{eval-rst}
-.. automodule:: flowlet.domain.names
+.. automodule:: flowli.domain.names
 ```
 
-## flowlet.adapters
+## flowli.adapters
 
 ### CairnDB
 
 ```{eval-rst}
-.. autoclass:: flowlet.adapters.cairndb.CairnBackend
-.. autoclass:: flowlet.adapters.cairndb_projection.WorkflowProjection
+.. autoclass:: flowli.adapters.cairndb.CairnBackend
+.. autoclass:: flowli.adapters.cairndb_projection.WorkflowProjection
 ```
 
 ### In memory
@@ -159,39 +159,39 @@ Each port is a `Protocol`. An adapter implements all of them.
 For the tests. No bucket, no disk.
 
 ```{eval-rst}
-.. autoclass:: flowlet.adapters.memory.MemoryBackend
-.. autoclass:: flowlet.adapters.memory.ManualClock
+.. autoclass:: flowli.adapters.memory.MemoryBackend
+.. autoclass:: flowli.adapters.memory.ManualClock
 ```
 
-## flowlet.api
+## flowli.api
 
 The HTTP service over one engine. Install the `api` extra.
 
 ```{eval-rst}
-.. autofunction:: flowlet.api.create_app
-.. autoclass:: flowlet.api.ApiConfig
-.. autoclass:: flowlet.api.Catalog
-.. autoclass:: flowlet.api.Principal
-.. autoclass:: flowlet.api.StaticAuthenticator
-.. autoclass:: flowlet.api.OIDCAuthenticator
-.. autoclass:: flowlet.api.OIDCConfig
-.. autoclass:: flowlet.api.CachingAuthenticator
+.. autofunction:: flowli.api.create_app
+.. autoclass:: flowli.api.ApiConfig
+.. autoclass:: flowli.api.Catalog
+.. autoclass:: flowli.api.Principal
+.. autoclass:: flowli.api.StaticAuthenticator
+.. autoclass:: flowli.api.OIDCAuthenticator
+.. autoclass:: flowli.api.OIDCConfig
+.. autoclass:: flowli.api.CachingAuthenticator
 ```
 
-## flowlet.log
+## flowli.log
 
 ```{eval-rst}
-.. automodule:: flowlet.log
+.. automodule:: flowli.log
 ```
 
-## flowlet.evidence
+## flowli.evidence
 
 ```{eval-rst}
-.. automodule:: flowlet.evidence
+.. automodule:: flowli.evidence
 ```
 
-## flowlet.codec
+## flowli.codec
 
 ```{eval-rst}
-.. automodule:: flowlet.codec
+.. automodule:: flowli.codec
 ```

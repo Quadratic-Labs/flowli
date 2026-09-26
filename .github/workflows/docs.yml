@@ -1,46 +1,90 @@
-name: docs
+# Build the Sphinx documentation, and publish it to GitHub Pages from the
+# latest release branch.
+#
+# - Pull requests: build only (warnings fail), as a check.
+# - Push to main: build only, so a merge that breaks the docs shows at once.
+#   main is never published.
+# - Push to release/X.Y: build, then deploy only if X.Y is the highest
+#   release branch on the remote. Pushes to older release branches
+#   (backports) are built but never overwrite the published site.
+# - Manual runs (workflow_dispatch) follow the same rule for the chosen branch.
+name: Docs
 
 on:
   push:
-    branches: [main]
-    paths: ["docs/**", "src/**", "pyproject.toml", ".github/workflows/docs.yml"]
+    branches: [main, "release/**"]
   pull_request:
-    paths: ["docs/**", "src/**", "pyproject.toml", ".github/workflows/docs.yml"]
+    branches: [main, "release/**"]
+    paths:
+      - "docs/**"
+      - "src/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CODE_OF_CONDUCT.md"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.latest.outputs.deploy }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
-      - name: Build the site
+
+      - name: Build
         # autodoc imports the package, so the api and cli extras must be here.
         run: >
-          uv run --extra docs --extra api --extra cli
+          uv run --locked --extra docs --extra api --extra cli
           sphinx-build -b html -W --keep-going docs docs/_build/html
-      - uses: actions/upload-pages-artifact@v3
+
+      - name: Is this the latest release branch?
+        id: latest
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/release/')
+        run: |
+          latest=$(git ls-remote --heads origin 'release/*' \
+            | sed -n 's|.*refs/heads/\(release/[0-9][0-9]*\(\.[0-9][0-9]*\)*\)$|\1|p' \
+            | sort -V | tail -n 1)
+          echo "Latest release branch: ${latest:-<none>}; this run: $GITHUB_REF_NAME"
+          if [ -n "$latest" ] && [ "$GITHUB_REF_NAME" = "$latest" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not the latest release branch ($latest): docs built, not published."
+          fi
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.latest.outputs.deploy == 'true'
         with:
           path: docs/_build/html
 
   deploy:
-    if: github.event_name != 'pull_request'
     needs: build
+    if: needs.build.outputs.deploy == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
     steps:
+      - uses: actions/configure-pages@v6
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

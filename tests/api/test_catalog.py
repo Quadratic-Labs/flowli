@@ -4,9 +4,9 @@ import inspect
 
 import pytest
 
-from flowlet.api import ApiConfig, Catalog, StaticAuthenticator, create_app
-from flowlet.domain import WorkflowNotRegistered
-from flowlet.runtime import Registry, WorkflowRef
+from flowli.api import ApiConfig, Catalog, StaticAuthenticator, create_app
+from flowli.domain import WorkflowNotRegistered
+from flowli.runtime import Registry, WorkflowRef
 
 from .conftest import OPERATOR, READER, auth
 
@@ -127,7 +127,7 @@ async def test_catalog_uses_the_configured_default_queue(engine, projection, pri
         projection=projection,
         config=ApiConfig(default_queue="agents"),
     )
-    entries = app.state.flowlet.catalog.entries()
+    entries = app.state.flowli.catalog.entries()
     assert entries
     assert all(e.queue == "agents" for e in entries)
 

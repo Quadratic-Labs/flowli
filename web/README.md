@@ -1,7 +1,7 @@
-# flowlet-web
+# flowli-web
 
 The operator interface: executions, their frames and journals, the catalog,
-the review inbox, the queues. It talks to `flowlet.api` and holds no state of
+the review inbox, the queues. It talks to `flowli.api` and holds no state of
 its own.
 
 ## Running it
@@ -9,7 +9,7 @@ its own.
 Two processes. The backend first:
 
 ```bash
-cd flowlet
+cd flowli
 uv run python web/dev_server.py        # http://127.0.0.1:8000
 ```
 
@@ -18,12 +18,12 @@ uv run python web/dev_server.py        # http://127.0.0.1:8000
 static token map in place of an identity provider. Then the interface:
 
 ```bash
-cd flowlet/web
+cd flowli/web
 npm install
 npm run dev                            # http://localhost:5173
 ```
 
-Vite proxies `/api` to the backend (`FLOWLET2_API` overrides the target). Sign
+Vite proxies `/api` to the backend (`FLOWLI_API` overrides the target). Sign
 in with the token `dev-operator` (every capability) or `dev-viewer` (reads
 only) in the bar at the top right.
 

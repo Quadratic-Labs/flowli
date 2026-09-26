@@ -1,11 +1,11 @@
-# flowlet
+# flowli
 
 A workflow engine that runs a workflow as a coroutine execution stack and
 journals every frame to CairnDB.
 
-**Documentation: <https://quadratic-labs.github.io/flowlet/>** — the quickstart,
+**Documentation: <https://quadratic-labs.github.io/flowli/>** — the quickstart,
 the concepts, the architecture, every setting, the hosting guide, and the API
-reference from the docstrings. The specifications stay in `docs/specs/`.
+reference from the docstrings. The specifications stay in `specs/`.
 
 ```bash
 uv sync --extra docs
@@ -14,24 +14,24 @@ uv run sphinx-build -b html -W docs docs/_build/html    # or: make -C docs liveh
 
 Layout:
 
-- `src/flowlet/domain/` — pure domain objects and ports. No I/O, no CairnDB import.
-- `src/flowlet/adapters/` — port implementations (CairnDB, in-memory).
-- `src/flowlet/api/` — the HTTP service (the `api` extra).
+- `src/flowli/domain/` — pure domain objects and ports. No I/O, no CairnDB import.
+- `src/flowli/adapters/` — port implementations (CairnDB, in-memory).
+- `src/flowli/api/` — the HTTP service (the `api` extra).
 - `web/` — the operator interface over that service.
-- `runner/` — `flowlet-runner`: coding agents as delegate consumers.
-- `codeflow/` — `flowlet-codeflow`: the controller over the runner.
+- `runner/` — `flowli-runner`: coding agents as delegate consumers.
+- `codeflow/` — `flowli-codeflow`: the controller over the runner.
 
 ## Running the jobs
 
 Install with the CLI extra, then point the CLI at your workflow registry:
 
 ```bash
-pip install "flowlet[cli]"
+pip install "flowli[cli]"
 export CAIRNDB_STORAGE_TYPE=s3 CAIRNDB_S3_BUCKET=my-bucket      # or --storage-path ./bucket
 
-flowlet worker    --app myapp.flows:registry --queue default --queue finance
-flowlet sweeper   --app myapp.flows:registry --interval 60
-flowlet retention --app myapp.flows:registry --delay-days 30 --once
+flowli worker    --app myapp.flows:registry --queue default --queue finance
+flowli sweeper   --app myapp.flows:registry --interval 60
+flowli retention --app myapp.flows:registry --delay-days 30 --once
 ```
 
 `--app module:attr` names a `Registry`, an `Engine`, or a zero-argument callable
@@ -44,15 +44,15 @@ SIGINT or SIGTERM.
 Operator commands share the same `--app` and storage options:
 
 ```bash
-flowlet status  EID --journal
-flowlet signal  EID payments '{"amount": 100}' --by bank@example.com
-flowlet cancel  EID --by ops@example.com
-flowlet migrate EID 2 --by ops@example.com
+flowli status  EID --journal
+flowli signal  EID payments '{"amount": 100}' --by bank@example.com
+flowli cancel  EID --by ops@example.com
+flowli migrate EID 2 --by ops@example.com
 ```
 
 `--by` names the actor recorded in provenance: an email, or `kind:id` with kind
 `human`, `system`, `schedule` or `worker`. It defaults to the local user, or to
-`FLOWLET_BY`. Commands exit with code 1 on an unknown execution or a refused
+`FLOWLI_BY`. Commands exit with code 1 on an unknown execution or a refused
 action, such as cancelling a finished execution.
 
 ## What the commands print
@@ -95,11 +95,11 @@ Every `--once` job answers with one line of counters, which suits a cron job
 that mails its output:
 
 ```bash
-flowlet sweeper   --once     # timers_fired=1 recovered=0 restarted=0 repaired=0 waits_cleared=0
-flowlet retention --once     # archived=1 cleaned=0, then one line per archived execution
-flowlet-runner    --once     # recovered=0 processed=1, then one line per reattached task
-flowlet-codeflow merge --once   # merged=1
-flowlet-codeflow board --once   # reconciled=3
+flowli sweeper   --once     # timers_fired=1 recovered=0 restarted=0 repaired=0 waits_cleared=0
+flowli retention --once     # archived=1 cleaned=0, then one line per archived execution
+flowli-runner    --once     # recovered=0 processed=1, then one line per reattached task
+flowli-codeflow merge --once   # merged=1
+flowli-codeflow board --once   # reconciled=3
 ```
 
 ### Colour
@@ -118,13 +118,13 @@ to drop the colour on a terminal too.
 ## The HTTP service and the interface
 
 ```bash
-pip install "flowlet[api]"
+pip install "flowli[api]"
 uv run python web/dev_server.py        # an engine, a worker and the service
 cd web && npm install && npm run dev   # the operator interface
 ```
 
-`flowlet.api.create_app(engine, projection=..., authenticator=...)` is the
-service: the catalog and the control plane (`docs/specs/09-http-api.md`,
+`flowli.api.create_app(engine, projection=..., authenticator=...)` is the
+service: the catalog and the control plane (`specs/09-http-api.md`,
 sections 7 and 8), the worker plane for consumers that cannot reach the bucket
 (section 9), and evidence (section 10). It holds no state of its own: reads
 come from the projection, writes go through the engine, and the actor of every
@@ -139,15 +139,19 @@ Every component emits structured events through structlog, the library CairnDB
 uses, so one configuration produces one stream:
 
 ```python
-from flowlet.log import configure_logging
+from flowli.log import configure_logging
 configure_logging("INFO", "json")      # or "console"
 ```
 
-All three CLIs — `flowlet`, `flowlet-runner` and `flowlet-codeflow` — take
-`--log-level` and `--log-format console|json`; `flowlet` also reads
-`FLOWLET2_LOG_LEVEL` and `FLOWLET2_LOG_FORMAT`. Logs go to stderr, so a job's
+All three CLIs — `flowli`, `flowli-runner` and `flowli-codeflow` — take
+`--log-level` and `--log-format console|json`; `flowli` also reads
+`FLOWLI_LOG_LEVEL` and `FLOWLI_LOG_FORMAT`. Logs go to stderr, so a job's
 report on stdout stays pipeable on its own. Events are named with snake_case
 nouns such as `execution_started`, `execution_suspended`, `frame_failed`,
 `execution_recovered` and `execution_archived`. While a worker holds a task,
 `worker_id`, `task_id`, `eid` and `epoch` are bound to every event it emits, and
 live frames add `fid` and `attempt`. Frame events are at DEBUG level.
+
+## License
+
+MIT. See [LICENSE](https://github.com/Quadratic-Labs/flowli/blob/main/LICENSE).

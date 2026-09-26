@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from flowlet.domain import ExecutionStatus
+from flowli.domain import ExecutionStatus
 
-from flowlet_codeflow import MemoryBoard, Reconciler
+from flowli_codeflow import MemoryBoard, Reconciler
 
 
 @dataclass
@@ -45,8 +45,8 @@ class FakeProjection:
 
 @pytest.fixture
 def engine(backend):
-    from flowlet.domain import Site
-    from flowlet.runtime import Engine
+    from flowli.domain import Site
+    from flowli.runtime import Engine
 
     return Engine(backend.ports, Site.local("w-1"))
 

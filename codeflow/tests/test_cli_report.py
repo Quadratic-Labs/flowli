@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 
 import pytest
-from flowlet import cli_render as render
+from flowli import cli_render as render
 
-from flowlet_codeflow.cli import board_report, merge_report
+from flowli_codeflow.cli import board_report, merge_report
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -49,7 +49,7 @@ class FakeLoaded:
 
 
 async def test_merge_once_prints_its_report_and_closes(capsys, plain):
-    from flowlet_codeflow.cli import _serve
+    from flowli_codeflow.cli import _serve
 
     loaded = FakeLoaded()
 
@@ -62,7 +62,7 @@ async def test_merge_once_prints_its_report_and_closes(capsys, plain):
 
 
 async def test_board_once_prints_its_report(capsys, plain):
-    from flowlet_codeflow.cli import _serve
+    from flowli_codeflow.cli import _serve
 
     async def run() -> int:
         return 3

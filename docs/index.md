@@ -1,11 +1,11 @@
-# Flowlet
+# Flowli
 
-Flowlet is a workflow engine for Python. A workflow is an `async` function. The
+Flowli is a workflow engine for Python. A workflow is an `async` function. The
 engine runs that function as a coroutine execution stack. It appends one journal
 entry for each frame of that stack. Because of the journal, an execution is
 traceable and it is resumable.
 
-Flowlet has no server of its own. CairnDB gives the storage, the coordination
+Flowli has no server of its own. CairnDB gives the storage, the coordination
 and the audit log. One bucket holds the journals, the queues, the leases and the
 messages. The bucket is the only shared component. You run processes. You do not
 run a cluster.
@@ -98,11 +98,11 @@ The public classes and functions, from the docstrings of the code.
 
 | Part | Content |
 |---|---|
-| `flowlet` | the engine: the domain, the adapters, the runtime, the CLI |
-| `flowlet[api]` | the HTTP service over one engine |
+| `flowli` | the engine: the domain, the adapters, the runtime, the CLI |
+| `flowli[api]` | the HTTP service over one engine |
 | `web/` | the operator interface over that service |
-| `flowlet-runner` | coding agents as the consumer of a delegate task |
-| `flowlet-codeflow` | the controller over the runner: plan, routing, merge, gates |
+| `flowli-runner` | coding agents as the consumer of a delegate task |
+| `flowli-codeflow` | the controller over the runner: plan, routing, merge, gates |
 
 ## The design principles
 
@@ -127,7 +127,7 @@ The public classes and functions, from the docstrings of the code.
 These documents and the specifications use ASD-STE100 Strict: one word for
 one concept, short sentences, and the active voice. The
 [glossary](concepts.md#the-words-and-their-meanings) lists the words and the
-verbs. The [specifications](specs/00-overview.md) are the authority when a
+verbs. The [specifications](https://github.com/Quadratic-Labs/flowli/tree/main/specs) are the authority when a
 page here is shorter than the truth.
 :::
 
@@ -151,18 +151,10 @@ reference
 
 :::{toctree}
 :hidden:
-:caption: Specifications
+:caption: Project
 
-specs/00-overview
-specs/01-domain-model
-specs/02-journal
-specs/03-ports
-specs/04-api
-specs/05-protocols
-specs/06-patterns
-specs/07-walkthroughs
-specs/08-projection
-specs/09-http-api
-specs/10-agent-runner
-specs/11-codeflow
+project/roadmap
+project/changelog
+project/contributing
+project/code-of-conduct
 :::

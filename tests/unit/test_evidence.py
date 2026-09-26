@@ -6,11 +6,11 @@ import json
 import pytest
 import structlog
 
-from flowlet.adapters import evidence as keys
-from flowlet.adapters.memory import MemoryBackend, MemoryEvidence
-from flowlet.domain import EvidenceRef, InvalidName, digest_text
-from flowlet.evidence import TAIL_LINES, AttemptBuffer, EvidenceWriter, NullEvidence, capture
-from flowlet.log import configure_logging
+from flowli.adapters import evidence as keys
+from flowli.adapters.memory import MemoryBackend, MemoryEvidence
+from flowli.domain import EvidenceRef, InvalidName, digest_text
+from flowli.evidence import TAIL_LINES, AttemptBuffer, EvidenceWriter, NullEvidence, capture
+from flowli.log import configure_logging
 from tests.ids import E_ABC
 
 REF = EvidenceRef(E_ABC, "root/fetch#0", 1)
@@ -271,8 +271,8 @@ def test_meta_bytes_is_deterministic_key_order():
 async def test_a_step_leaves_its_log_as_evidence(prov):
     configure_logging("INFO", "json")
     backend = MemoryBackend()
-    from flowlet.domain import Actor, Site
-    from flowlet.runtime import Engine
+    from flowli.domain import Actor, Site
+    from flowli.runtime import Engine
 
     engine = Engine(backend.ports, Site.local("w-1"), registry=None)
     log = structlog.get_logger("app")

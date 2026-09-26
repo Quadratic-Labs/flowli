@@ -1,6 +1,6 @@
 """Routing and the deterministic gates. Spec 11 section 4."""
 
-from flowlet_codeflow import Route, decide, run_gates
+from flowli_codeflow import Route, decide, run_gates
 
 PASSED = {"passed": True, "failures": []}
 FAILED = {"passed": False, "failures": ["the verification 'just test' exited 1"]}

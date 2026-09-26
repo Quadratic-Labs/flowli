@@ -11,9 +11,9 @@ from collections import Counter
 from datetime import timedelta
 from pathlib import Path
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.domain import Actor, EntryType, ExecutionStatus, Site, parse_eid
-from flowlet.runtime import Engine, EngineConfig
+from flowli.adapters.cairndb import CairnBackend
+from flowli.domain import Actor, EntryType, ExecutionStatus, Site, parse_eid
+from flowli.runtime import Engine, EngineConfig
 
 from . import concurrent_app
 
@@ -147,7 +147,7 @@ def spawn(*args: str, bucket: str) -> subprocess.Popen:
         [
             sys.executable,
             "-m",
-            "flowlet.cli",
+            "flowli.cli",
             *args,
             "--app",
             "tests.integration.concurrent_app:registry",

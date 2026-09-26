@@ -3,8 +3,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import (
     ROOT_FID,
     Actor,
     ExecutionStatus,
@@ -13,7 +13,7 @@ from flowlet.domain import (
     Timer,
     execution_channel,
 )
-from flowlet.runtime import Engine, EngineConfig, RetentionReport, UnknownExecution
+from flowli.runtime import Engine, EngineConfig, RetentionReport, UnknownExecution
 from tests.ids import E_NOPE
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
@@ -298,7 +298,7 @@ async def test_worker_drops_task_for_archived_execution(backend, engine):
 
 async def test_retention_deletes_the_evidence_of_an_execution(backend, engine):
     """The archive does not hold evidence, so retention must remove it."""
-    from flowlet.domain import EvidenceRef
+    from flowli.domain import EvidenceRef
 
     @engine.workflow("plain", "1")
     async def plain(ctx):

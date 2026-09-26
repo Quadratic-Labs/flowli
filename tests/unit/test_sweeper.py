@@ -3,8 +3,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import (
     ROOT_FID,
     Actor,
     ExecutionStatus,
@@ -13,7 +13,7 @@ from flowlet.domain import (
     Site,
     execution_channel,
 )
-from flowlet.runtime import Context, Engine, EngineConfig
+from flowli.runtime import Context, Engine, EngineConfig
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")
@@ -68,11 +68,11 @@ def test_lease_info_is_expired_exactly_at_its_deadline():
 
 
 def test_sweeper_init_defaults(engine):
-    """Defaults per docs/specs/05-protocols.md section 9: a 60-second repair window and
+    """Defaults per specs/05-protocols.md section 9: a 60-second repair window and
     the "sweeper" system actor. `_known` starts as an empty dict, not None -- nothing
     reads it before the first `run_once()` overwrites it, but it must still be a dict a
     caller can safely inspect (e.g. `.items()`) right after construction."""
-    from flowlet.runtime.sweeper import Sweeper
+    from flowli.runtime.sweeper import Sweeper
 
     sweeper = Sweeper(engine)
     assert sweeper.repair_window == timedelta(seconds=60)
@@ -83,7 +83,7 @@ def test_sweeper_init_defaults(engine):
 def test_sweeper_init_threads_sweeper_id_into_the_actor(engine):
     """A custom `sweeper_id` must actually reach `Actor.system`, not be ignored in favor
     of a fixed name."""
-    from flowlet.runtime.sweeper import Sweeper
+    from flowli.runtime.sweeper import Sweeper
 
     sweeper = Sweeper(engine, sweeper_id="repair-bot")
     assert sweeper.actor == Actor.system("repair-bot")
@@ -98,8 +98,8 @@ async def test_control_view_apply_queue_carries_forward_and_defaults(engine):
     has never seen before, whose first entry lacks `queue` (e.g. a fresh `ControlView` fed
     by `_repair_control_log` when the sweeper's `source` is an external projection), falls
     back to the same "default" `KnownExecution.queue` itself defaults to."""
-    from flowlet.domain import Entry, EntryType, parse_eid
-    from flowlet.runtime.sweeper import ControlView
+    from flowli.domain import Entry, EntryType, parse_eid
+    from flowli.runtime.sweeper import ControlView
 
     view = ControlView()
     prov = engine.provenance(HUMAN)
@@ -122,8 +122,8 @@ async def test_control_view_terminal_before_excludes_the_boundary_instant(engine
     """"Older than `before`", not "at or older than" (matches the cairndb projection's
     own `updated_at < ?`, and the same strict boundary the repair-window checks use): an
     entry exactly at `before` is not yet old enough to retain."""
-    from flowlet.domain import Entry, EntryType, parse_eid
-    from flowlet.runtime.sweeper import ControlView
+    from flowli.domain import Entry, EntryType, parse_eid
+    from flowli.runtime.sweeper import ControlView
 
     view = ControlView()
     prov = engine.provenance(HUMAN)
@@ -242,7 +242,7 @@ async def test_sweeper_ignores_running_execution_with_live_lease(backend, engine
     eid = await engine.start(w, by=HUMAN)
     lease = await backend.ownership.acquire(eid, "w-9", ttl=120)
     prov = engine.provenance(HUMAN)
-    from flowlet.domain import Entry
+    from flowli.domain import Entry
 
     await backend.control.announce(
         Entry("execution.started", "root", {"eid": str(eid), "args": {}}, prov)
@@ -255,7 +255,7 @@ async def test_sweeper_recovery_does_not_break_on_an_early_continue(backend, eng
     """Each guard in the dead-execution scan must skip only its own execution: a `break`
     in place of either `continue` there would silently stop the sweeper from recovering
     every eid that sorts after the first one it decides to skip."""
-    from flowlet.domain import Entry
+    from flowli.domain import Entry
 
     @engine.workflow("nap", "1")
     async def nap(ctx):
@@ -365,8 +365,8 @@ async def test_sweeper_restart_does_not_break_on_an_early_continue(backend, engi
     """Each guard in the lost-start scan must skip only its own execution: a `break` in
     place of either `continue` there would silently stop the sweeper from restarting
     every eid that sorts after the first one it decides to skip."""
-    from flowlet.domain import parse_eid
-    from flowlet.runtime.sweeper import KnownExecution, SweepReport
+    from flowli.domain import parse_eid
+    from flowli.runtime.sweeper import KnownExecution, SweepReport
 
     sweeper = engine.sweeper()
     eid_a = parse_eid("00000000-0000-0000-0000-00000000000a")  # not PENDING: hits the status guard
@@ -459,7 +459,7 @@ async def test_sweeper_repair_does_not_break_on_an_early_continue(backend, engin
 
     # a worker resumed eid3 and journaled its completion, but crashed before announcing
     # it -- fresh in the journal even though `known` still shows the old, stale status
-    from flowlet.domain import Entry, EntryType
+    from flowli.domain import Entry, EntryType
 
     prov = engine.provenance(HUMAN)
     await backend.journal.append(eid3, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov))
@@ -484,7 +484,7 @@ async def test_sweeper_does_not_repair_a_fresh_entry_when_known_is_stale(backend
     await drain(engine.worker())  # suspended; control shows execution.suspended at T0
     backend.clock.advance(timedelta(minutes=5))  # known.last_at is now well past the window
 
-    from flowlet.domain import Entry, EntryType
+    from flowli.domain import Entry, EntryType
 
     prov = engine.provenance(HUMAN)  # fresh: provenance.at == now
     await backend.journal.append(eid, Entry(EntryType.EXECUTION_COMPLETED, "root", {"value": 1}, prov))
@@ -508,8 +508,8 @@ async def test_sweeper_repair_ignores_trailing_frame_only_entries(backend, engin
     eid = await engine.start(nap, by=HUMAN)
     await drain(engine.worker())  # suspended; journal + control both show execution.suspended
 
-    from flowlet.domain import Entry, EntryType
-    from flowlet.runtime.sweeper import SweepReport
+    from flowli.domain import Entry, EntryType
+    from flowli.runtime.sweeper import SweepReport
 
     prov = engine.provenance(HUMAN)
     await backend.journal.append(eid, Entry(EntryType.FRAME_COMPLETED, "some/frame", {}, prov))

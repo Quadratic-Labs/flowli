@@ -1,4 +1,4 @@
-"""The flowlet CLI over a filesystem bucket, driven through typer's CliRunner."""
+"""The flowli CLI over a filesystem bucket, driven through typer's CliRunner."""
 
 import asyncio
 import json
@@ -10,10 +10,10 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.cli import app, build_app, load_ref
-from flowlet.domain import Actor, ExecutionStatus, Site
-from flowlet.runtime import Engine
+from flowli.adapters.cairndb import CairnBackend
+from flowli.cli import app, build_app, load_ref
+from flowli.domain import Actor, ExecutionStatus, Site
+from flowli.runtime import Engine
 from tests.ids import E_NOPE
 
 from . import sample_app
@@ -104,8 +104,8 @@ def test_build_app_uses_env_storage_config_when_no_storage_path(bucket, monkeypa
 
 
 def test_source_for_variants(bucket, tmp_path):
-    from flowlet.adapters.cairndb_projection import WorkflowProjection
-    from flowlet.cli import source_for
+    from flowli.adapters.cairndb_projection import WorkflowProjection
+    from flowli.cli import source_for
 
     loaded = build_app(APP, storage_path=bucket, worker_id=None, code_ref=None)
     assert source_for(loaded, None) is None
@@ -123,11 +123,11 @@ def test_source_for_variants(bucket, tmp_path):
 
 
 def test_setup_logging_maps_fmt_to_log_format(monkeypatch):
-    from flowlet.cli import setup_logging
+    from flowli.cli import setup_logging
 
     calls = []
     monkeypatch.setattr(
-        "flowlet.cli.configure_logging", lambda level, fmt: calls.append((level, fmt))
+        "flowli.cli.configure_logging", lambda level, fmt: calls.append((level, fmt))
     )
     setup_logging("INFO", "console")
     setup_logging("DEBUG", "json")
@@ -139,7 +139,7 @@ def test_setup_logging_maps_fmt_to_log_format(monkeypatch):
 
 
 def test_loaded_app_close_calls_closers_in_reverse_and_awaits_coroutines():
-    from flowlet.cli import LoadedApp
+    from flowli.cli import LoadedApp
 
     calls = []
 
@@ -254,7 +254,7 @@ def test_no_args_shows_help():
 
 
 def test_parse_actor_and_payload():
-    from flowlet.cli import parse_actor, parse_payload
+    from flowli.cli import parse_actor, parse_payload
 
     assert parse_actor("thomas@example.com") == Actor.human("thomas@example.com")
     assert parse_actor("human:alice") == Actor.human("alice")
@@ -273,7 +273,7 @@ def test_parse_actor_and_payload():
 
 
 def test_eid_arg_rejects_invalid_uuid():
-    from flowlet.cli import eid_arg
+    from flowli.cli import eid_arg
 
     with pytest.raises(typer.BadParameter) as exc_info:
         eid_arg("not-a-uuid")

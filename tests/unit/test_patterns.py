@@ -3,9 +3,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.codec import unstructure
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.codec import unstructure
+from flowli.domain import (
     Actor,
     ExecutionStatus,
     FrameRef,
@@ -14,9 +14,9 @@ from flowlet.domain import (
     Task,
     TaskKind,
 )
-from flowlet.patterns import DelegateTask, delegate, fan_out, on_tick, review, saga
-from flowlet.patterns.review import Decision, review_task_key
-from flowlet.runtime import Engine, EngineConfig
+from flowli.patterns import DelegateTask, delegate, fan_out, on_tick, review, saga
+from flowli.patterns.review import Decision, review_task_key
+from flowli.runtime import Engine, EngineConfig
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")

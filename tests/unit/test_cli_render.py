@@ -12,7 +12,7 @@ import re
 import pytest
 from typer import colors
 
-from flowlet import cli_render as render
+from flowli import cli_render as render
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

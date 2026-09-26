@@ -2,9 +2,9 @@ from datetime import timedelta
 
 import pytest
 
-from flowlet.api.frames import build
-from flowlet.codec import structure, unstructure
-from flowlet.domain import (
+from flowli.api.frames import build
+from flowli.codec import structure, unstructure
+from flowli.domain import (
     ROOT_FID,
     DuplicateFrameError,
     Entry,
@@ -67,7 +67,7 @@ def test_allocator_is_replay_stable():
 
 
 def test_frame_ref_is_plain_data_and_codec_validates_eid():
-    from flowlet.codec import structure, unstructure
+    from flowli.codec import structure, unstructure
 
     ref = FrameRef(E_ABC, "root")
     assert unstructure(ref) == {"eid": str(E_ABC), "fid": "root"}
@@ -138,8 +138,8 @@ def test_reply_channel_matches_the_documented_formula():
     assert ref.reply_channel("review:r1") == expected
 
 
-# region ----- flowlet.api.frames.build -----
-# `build()` folds a journal into the tree of `docs/specs/09-http-api.md`
+# region ----- flowli.api.frames.build -----
+# `build()` folds a journal into the tree of `specs/09-http-api.md`
 # section 8.3. Each `execution.*`/`frame.*` branch below is exercised as the
 # very *first* entry for its fid at least once, so the node it creates is
 # fresh rather than a lookup of an already-cached node -- only then do the

@@ -1,6 +1,6 @@
 # Architecture
 
-Flowlet is a library with four layers and five processes. This page explains
+Flowli is a library with four layers and five processes. This page explains
 what each one owns, and where each guarantee comes from.
 
 ## The shape
@@ -11,7 +11,7 @@ flowchart TB
         W[workflow functions]
         R[Registry]
     end
-    subgraph runtime[flowlet.runtime]
+    subgraph runtime[flowli.runtime]
         E[Engine]
         C[Context]
         WK[Worker]
@@ -19,17 +19,17 @@ flowchart TB
         RT[Retention]
         CO[Consumer]
     end
-    subgraph domain[flowlet.domain]
+    subgraph domain[flowli.domain]
         M[objects: Execution, Frame, Task, Message]
         P[ports: Protocol definitions]
     end
-    subgraph adapters[flowlet.adapters]
+    subgraph adapters[flowli.adapters]
         CB[CairnBackend]
         MB[MemoryBackend]
         PR[WorkflowProjection]
     end
     B[(one bucket<br/>filesystem, S3, Azure, GCS)]
-    API[flowlet.api<br/>HTTP service] --> E
+    API[flowli.api<br/>HTTP service] --> E
     WEB[web/<br/>operator interface] --> API
     app --> runtime --> domain
     runtime --> adapters
@@ -42,16 +42,16 @@ flowchart TB
 
 | Layer | Content | Rule |
 |---|---|---|
-| `flowlet.domain` | the objects, the errors, and the ports as `Protocol` definitions | pure. No I/O. It imports one thing from CairnDB: the `Timestamp` value type. |
-| `flowlet.adapters` | the implementations of every port | one module per backend: `cairndb`, `memory`. |
-| `flowlet.runtime` | `Engine`, `Context`, `Worker`, `Sweeper`, `Retention`, `Consumer` | the protocols of the specifications, step by step. |
-| `flowlet.patterns` | `delegate`, `review`, `saga`, `fan_out`, `on_tick` | written against the `Context` API only. The engine does not know them. |
-| `flowlet.api` | the HTTP service | holds no state: reads come from the projection, writes go through the engine. |
-| `flowlet.cli` | the `flowlet` command | builds the backend and the engine, then runs one job. |
+| `flowli.domain` | the objects, the errors, and the ports as `Protocol` definitions | pure. No I/O. It imports one thing from CairnDB: the `Timestamp` value type. |
+| `flowli.adapters` | the implementations of every port | one module per backend: `cairndb`, `memory`. |
+| `flowli.runtime` | `Engine`, `Context`, `Worker`, `Sweeper`, `Retention`, `Consumer` | the protocols of the specifications, step by step. |
+| `flowli.patterns` | `delegate`, `review`, `saga`, `fan_out`, `on_tick` | written against the `Context` API only. The engine does not know them. |
+| `flowli.api` | the HTTP service | holds no state: reads come from the projection, writes go through the engine. |
+| `flowli.cli` | the `flowli` command | builds the backend and the engine, then runs one job. |
 
-Three modules sit beside the layers: `flowlet.codec` renders objects to
-JSON-compatible data and back, `flowlet.log` configures structlog, and
-`flowlet.evidence` keeps the attempt log.
+Three modules sit beside the layers: `flowli.codec` renders objects to
+JSON-compatible data and back, `flowli.log` configures structlog, and
+`flowli.evidence` keeps the attempt log.
 
 ## The ports
 
@@ -103,11 +103,11 @@ One bucket is one tenant. There is no tenant field.
 
 | Process | Command | Needed when | How many |
 |---|---|---|---|
-| **worker** | `flowlet worker` | always | as many as the throughput asks for |
-| **sweeper** | `flowlet sweeper` | always | one is enough; two do no harm |
-| **retention** | `flowlet retention` | you keep the bucket small | one, as a cron job |
-| **HTTP service** | `flowlet.api.create_app` | people or remote clients need access | two or more, behind a load balancer |
-| **consumer** | `flowlet-runner`, or your own | a workflow delegates work outside the engine | one per pool of agents |
+| **worker** | `flowli worker` | always | as many as the throughput asks for |
+| **sweeper** | `flowli sweeper` | always | one is enough; two do no harm |
+| **retention** | `flowli retention` | you keep the bucket small | one, as a cron job |
+| **HTTP service** | `flowli.api.create_app` | people or remote clients need access | two or more, behind a load balancer |
+| **consumer** | `flowli-runner`, or your own | a workflow delegates work outside the engine | one per pool of agents |
 
 Each process reads the same bucket. No process talks to another process.
 
@@ -223,7 +223,7 @@ Rules of that boundary:
 - A consumer that reaches the bucket uses the ports. A consumer that cannot
   uses the HTTP worker plane, which is the same protocol with one more hop.
 
-{py:obj}`flowlet.runtime.Consumer` implements that loop,
+{py:obj}`flowli.runtime.Consumer` implements that loop,
 minus the work. The work is a `Handler` that you write.
 
 ## What you can replace

@@ -1,29 +1,29 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flowlet-runner"
+name = "flowli-runner"
 version = "0.1.0"
-description = "Runs coding agents as the consumer of flowlet delegate tasks"
+description = "Runs coding agents as the consumer of flowli delegate tasks"
 readme = "README.md"
 requires-python = ">=3.14"
-license = {text = "MIT"}
-dependencies = ["flowlet", "cairndb"]
+license = "MIT"
+dependencies = ["flowli"]
 
 [project.optional-dependencies]
 service = ["httpx>=0.27.0"]   # the adapter for a hosted agent runtime
-cli = ["flowlet[cli]", "typer>=0.9.0"]
+cli = ["flowli[cli]", "typer>=0.9.0"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.2.0", "mypy>=1.8.0", "httpx>=0.27.0"]
 
 [project.scripts]
-flowlet-runner = "flowlet_runner.cli:app"
+flowli-runner = "flowli_runner.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"flowlet_runner" = ["py.typed"]
+"flowli_runner" = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -42,6 +42,6 @@ strict = true
 python_version = "3.14"
 
 [[tool.mypy.overrides]]
-module = ["cairndb", "cairndb.*", "httpx"]
+module = ["httpx"]
 ignore_missing_imports = true
 follow_untyped_imports = true

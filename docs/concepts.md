@@ -142,7 +142,7 @@ this.
 When the code of a live execution changes, a replay finds a frame id with a
 different argument digest and raises `NondeterminismError`. The execution
 suspends and waits for an operator. The operator cancels it, or points it at
-another version with `flowlet migrate`.
+another version with `flowli migrate`.
 
 ## Attempt, failure and retry
 
@@ -150,7 +150,7 @@ An **attempt** is one real run of a frame by one worker. The first attempt is
 number 1. A new attempt is `1 + the count of failed attempts`.
 
 ```python
-from flowlet.domain import RetryPolicy
+from flowli.domain import RetryPolicy
 
 await ctx.step(call_bank, payment,
                retry=RetryPolicy(max_attempts=5, backoff=timedelta(seconds=2),
@@ -176,7 +176,7 @@ appends `execution.suspended`, releases the lease, and takes other work.
 
 | You write | The frame waits for | What resumes it |
 |---|---|---|
-| `await ctx.receive("payments")` | a message on a channel | `engine.signal`, or `flowlet signal` |
+| `await ctx.receive("payments")` | a message on a channel | `engine.signal`, or `flowli signal` |
 | `await ctx.sleep(timedelta(days=1))` | an instant | the sweeper |
 | `await ctx.child(other_workflow, x)` | a child execution | the child, when it ends |
 | a retry with a delay | an instant | the sweeper |
@@ -291,7 +291,7 @@ attachments. It explains the journal. It is never authority, and no decision
 depends on it.
 
 ```python
-from flowlet.log import get_logger
+from flowli.log import get_logger
 
 log = get_logger("myapp")
 
@@ -311,15 +311,15 @@ evidence is best effort: a frame never fails because a log did not write.
 ## Patterns
 
 A **pattern** is a function written against the `Context` API only. The engine
-does not know it. They live in `flowlet.patterns`.
+does not know it. They live in `flowli.patterns`.
 
 | Pattern | What it does |
 |---|---|
-| {py:obj}`delegate <flowlet.patterns.delegate>` | puts a task on a queue, waits for the answer on a channel |
-| {py:obj}`review <flowlet.patterns.review>` | a delegate to a human queue, plus the announcements of the inbox |
-| {py:obj}`saga <flowlet.patterns.saga>` | runs actions in order, undoes the completed ones in reverse on a failure |
-| {py:obj}`fan_out <flowlet.patterns.fan_out>` | one child execution per item, in item order |
-| {py:obj}`on_tick <flowlet.patterns.on_tick>` | one execution per tick of a schedule, exactly once |
+| {py:obj}`delegate <flowli.patterns.delegate>` | puts a task on a queue, waits for the answer on a channel |
+| {py:obj}`review <flowli.patterns.review>` | a delegate to a human queue, plus the announcements of the inbox |
+| {py:obj}`saga <flowli.patterns.saga>` | runs actions in order, undoes the completed ones in reverse on a failure |
+| {py:obj}`fan_out <flowli.patterns.fan_out>` | one child execution per item, in item order |
+| {py:obj}`on_tick <flowli.patterns.on_tick>` | one execution per tick of a schedule, exactly once |
 
 Write your own the same way. A pattern needs no support from the engine.
 

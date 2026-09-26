@@ -1,6 +1,6 @@
 # Hosting
 
-Flowlet has no server of its own. To host it, you run processes and you give
+Flowli has no server of its own. To host it, you run processes and you give
 them one bucket. This page says which processes, with which rights, and what to
 watch.
 
@@ -30,7 +30,7 @@ process reads and writes the same keys.
 
 ```bash
 export CAIRNDB_STORAGE_TYPE=s3
-export CAIRNDB_S3_BUCKET=flowlet-prod
+export CAIRNDB_S3_BUCKET=flowli-prod
 export CAIRNDB_STORAGE_PREFIX=eu/          # optional
 ```
 
@@ -56,7 +56,7 @@ one tenant. Separate installations with separate buckets or prefixes.
 ## The workers
 
 ```bash
-flowlet worker --app myapp.flows:registry --queue default --queue finance
+flowli worker --app myapp.flows:registry --queue default --queue finance
 ```
 
 A worker polls its queues in order, so the first queue has the priority. Give
@@ -64,19 +64,19 @@ a slow workload its own queue and its own workers, so one long step does not
 delay the rest.
 
 :::{code-block} ini
-:caption: /etc/systemd/system/flowlet-worker@.service
+:caption: /etc/systemd/system/flowli-worker@.service
 
 [Unit]
-Description=flowlet worker %i
+Description=flowli worker %i
 After=network-online.target
 
 [Service]
 Environment=CAIRNDB_STORAGE_TYPE=s3
-Environment=CAIRNDB_S3_BUCKET=flowlet-prod
-Environment=FLOWLET2_APP=myapp.flows:registry
-Environment=FLOWLET2_CODE_REF=git:0f3c1ab
-Environment=FLOWLET2_LOG_FORMAT=json
-ExecStart=/opt/myapp/.venv/bin/flowlet worker --queue default --worker-id %H-%i
+Environment=CAIRNDB_S3_BUCKET=flowli-prod
+Environment=FLOWLI_APP=myapp.flows:registry
+Environment=FLOWLI_CODE_REF=git:0f3c1ab
+Environment=FLOWLI_LOG_FORMAT=json
+ExecStart=/opt/myapp/.venv/bin/flowli worker --queue default --worker-id %H-%i
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -98,7 +98,7 @@ Rules for a worker:
 ## The sweeper
 
 ```bash
-flowlet sweeper --app myapp.flows:registry --interval 60 --projection /var/lib/flowlet/wf_view.sqlite
+flowli sweeper --app myapp.flows:registry --interval 60 --projection /var/lib/flowli/wf_view.sqlite
 ```
 
 The sweeper has no lease of its own, and each of its actions is idempotent, so
@@ -111,7 +111,7 @@ fresh process then catches up from the file, not from the first entry.
 As a cron job:
 
 ```text
-* * * * * /opt/myapp/.venv/bin/flowlet sweeper --once >> /var/log/flowlet-sweeper.log 2>&1
+* * * * * /opt/myapp/.venv/bin/flowli sweeper --once >> /var/log/flowli-sweeper.log 2>&1
 ```
 
 `--once` prints one line of counters, which suits a cron job that mails its
@@ -124,7 +124,7 @@ timers_fired=1 recovered=0 restarted=0 repaired=0 waits_cleared=0
 ## The retention job
 
 ```text
-17 3 * * * /opt/myapp/.venv/bin/flowlet retention --delay-days 30 --once
+17 3 * * * /opt/myapp/.venv/bin/flowli retention --delay-days 30 --once
 ```
 
 The job folds each execution that finished before the delay into one archive
@@ -139,7 +139,7 @@ installation that must keep a transcript copies it out of the bucket before
 the delay expires.
 :::
 
-After the fold, `flowlet status` still answers and `engine.journal(eid)` still
+After the fold, `flowli status` still answers and `engine.journal(eid)` still
 returns the entries. They come from the archive.
 
 ## The HTTP service and the interface
@@ -154,27 +154,27 @@ import os
 from cairndb import CairnDB
 from cairndb.storage.config import StorageConfig
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.api import ApiConfig, CachingAuthenticator, OIDCAuthenticator, OIDCConfig, create_app
-from flowlet.domain import Site
-from flowlet.runtime import Engine
+from flowli.adapters.cairndb import CairnBackend
+from flowli.api import ApiConfig, CachingAuthenticator, OIDCAuthenticator, OIDCConfig, create_app
+from flowli.domain import Site
+from flowli.runtime import Engine
 
 from myapp.flows import registry
 
 backend = CairnBackend(CairnDB(StorageConfig.from_env().create_storage()))
 engine = Engine(backend.ports, Site.local(os.environ.get("INSTANCE", "api-1")), registry=registry)
-projection = backend.projection(db_path="/var/lib/flowlet/api.sqlite", poll_interval=5.0)
+projection = backend.projection(db_path="/var/lib/flowli/api.sqlite", poll_interval=5.0)
 
 authenticator = CachingAuthenticator(OIDCAuthenticator(OIDCConfig(
     issuer=os.environ["OIDC_ISSUER"],
-    audience="flowlet",
+    audience="flowli",
     jwks_url=os.environ["OIDC_JWKS_URL"],
     roles={
-        "flowlet-operators": ["workflows:read", "executions:read", "executions:start",
+        "flowli-operators": ["workflows:read", "executions:read", "executions:start",
                               "executions:signal", "executions:cancel", "queues:read",
                               "reviews:read", "reviews:decide:finance", "evidence:read"],
-        "flowlet-viewers": ["workflows:read", "executions:read", "reviews:read"],
-        "flowlet-agents": ["tasks:consume:agents"],
+        "flowli-viewers": ["workflows:read", "executions:read", "reviews:read"],
+        "flowli-agents": ["tasks:consume:agents"],
     },
 )))
 
@@ -230,7 +230,7 @@ readiness probe.
 A `DELEGATE` task waits for a process that you run.
 
 ```bash
-flowlet-runner --app myapp.flows:registry --queue agents \
+flowli-runner --app myapp.flows:registry --queue agents \
     --repo /srv/repo --runner-id runner-a --command 'claude -p {intent}'
 ```
 
@@ -260,8 +260,8 @@ A change under a live execution raises `NondeterminismError` at the replay. The
 execution suspends and waits for an operator:
 
 ```bash
-flowlet migrate EID 4 --by ops@example.com     # replay with the version 4
-flowlet cancel  EID --by ops@example.com       # or give up on it
+flowli migrate EID 4 --by ops@example.com     # replay with the version 4
+flowli cancel  EID --by ops@example.com       # or give up on it
 ```
 
 Old memos stay valid when their frame ids and their argument digests match.
@@ -315,7 +315,7 @@ no broker, no local state that matters.
 - [ ] One bucket or prefix per installation.
 - [ ] A sweeper runs, and you see its counters.
 - [ ] `--exec-ttl` is above the duration of the longest step.
-- [ ] `FLOWLET2_CODE_REF` names the commit in each deployment.
+- [ ] `FLOWLI_CODE_REF` names the commit in each deployment.
 - [ ] The logs are JSON and they are shipped.
 - [ ] The retention job runs, and its delay matches your audit rules.
 - [ ] Each service instance has its own projection file on a local disk.

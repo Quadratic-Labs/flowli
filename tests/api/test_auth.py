@@ -1,8 +1,8 @@
 """Who may do what. Spec 09 sections 5 and 6."""
 
-from flowlet.api.auth import Principal, _bearer
-from flowlet.api.problems import Problem
-from flowlet.domain import Actor
+from flowli.api.auth import Principal, _bearer
+from flowli.api.problems import Problem
+from flowli.domain import Actor
 
 from .conftest import FINANCE, OPERATOR, READER, auth
 
@@ -35,7 +35,7 @@ async def test_missing_capability_is_403(client):
 
 
 async def test_the_actor_in_a_body_is_refused(client):
-    """Flowlet v1 read the actor from the body, so a review was self-asserted."""
+    """Flowli v1 read the actor from the body, so a review was self-asserted."""
     r = await client.post(
         "/executions",
         json={

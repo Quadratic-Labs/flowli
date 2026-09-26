@@ -1,30 +1,41 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0"]  # >=77: SPDX license expressions (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flowlet"
+name = "flowli"
 version = "0.1.0"
 description = "Workflow engine: a journaled coroutine execution stack on CairnDB"
 readme = "README.md"
 requires-python = ">=3.14"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Thomas Zamojski"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
 dependencies = [
-    "cairndb",
+    "cairndb>=0.4.1,<0.5",
     "cattrs>=24.1.0",
     "structlog>=24.1.0",
-    "uvicorn>=0.52.4",
 ]
 
+[project.urls]
+Documentation = "https://quadratic-labs.github.io/flowli/"
+Repository = "https://github.com/Quadratic-Labs/flowli"
+Changelog = "https://github.com/Quadratic-Labs/flowli/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
-cairndb = ["cairndb"]
-cli = ["cairndb", "typer>=0.9.0", "rich>=13.8.0"]
+cli = ["typer>=0.9.0", "rich>=13.8.0", "uvicorn>=0.52.4"]
 api = [
-    "cairndb",
     "fastapi>=0.115.0",
     "pydantic>=2.7.0",
     "pyjwt[crypto]>=2.9.0",
-    "uvicorn>=0.30.0",
+    "uvicorn>=0.52.4",
 ]
 docs = [
     "sphinx>=8.1.0",
@@ -45,16 +56,17 @@ dev = [
     "httpx>=0.27.0",
     "pyjwt[crypto]>=2.9.0",
     "asgi-lifespan>=2.1.0",
+    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
-flowlet = "flowlet.cli:app"
+flowli = "flowli.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"flowlet" = ["py.typed"]
+"flowli" = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -72,12 +84,9 @@ strict = true
 python_version = "3.14"
 
 [[tool.mypy.overrides]]
-module = ["cairndb", "cairndb.*", "msgpack"]
+module = ["msgpack"]
 ignore_missing_imports = true
 follow_untyped_imports = true
-
-[tool.uv.sources]
-cairndb = { path = "../../cairndb" }
 
 [dependency-groups]
 dev = [

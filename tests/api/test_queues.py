@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 from asgi_lifespan import LifespanManager
 from cairndb import Timestamp
 
-from flowlet.api import ApiConfig, StaticAuthenticator, create_app
-from flowlet.api.dto import task_row
-from flowlet.domain import FrameRef, Task, TaskKind
+from flowli.api import ApiConfig, StaticAuthenticator, create_app
+from flowli.api.dto import task_row
+from flowli.domain import FrameRef, Task, TaskKind
 
 from .conftest import OPERATOR, READER, auth, drain
 from tests.ids import E_ABC

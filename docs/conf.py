@@ -1,4 +1,4 @@
-"""Sphinx configuration for the Flowlet documentation.
+"""Sphinx configuration for the Flowli documentation.
 
 Build it with:
 
@@ -20,12 +20,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 # region ----- Project -----
 
-project = "Flowlet"
-author = "Quadratic Labs"
-copyright = f"{datetime.now(UTC):%Y}, Quadratic Labs"  # noqa: A001
+project = "Flowli"
+author = "Thomas Zamojski"
+copyright = f"{datetime.now(UTC):%Y}, Thomas Zamojski"  # noqa: A001
 
 try:
-    from flowlet import __version__ as release
+    from flowli import __version__ as release
 except ImportError:  # the package is not importable yet
     release = "0.1.0"
 version = release
@@ -102,13 +102,14 @@ intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 # region ----- HTML -----
 
 html_theme = "furo"
-html_title = "Flowlet"
+html_title = "Flowli"
+html_baseurl = "https://quadratic-labs.github.io/flowli/"  # published by .github/workflows/docs.yml
 html_static_path = ["_static"]
 html_copy_source = False
 html_show_sphinx = False
 html_last_updated_fmt = "%Y-%m-%d"
 
-_GITHUB = "https://github.com/Quadratic-Labs/flowlet"
+_GITHUB = "https://github.com/Quadratic-Labs/flowli"
 
 html_theme_options = {
     "source_repository": f"{_GITHUB}/",

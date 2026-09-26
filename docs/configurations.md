@@ -1,12 +1,12 @@
 # Configuration
 
-Every setting of Flowlet lives in one of six places: the storage, the engine,
+Every setting of Flowli lives in one of six places: the storage, the engine,
 the jobs, the HTTP service, the consumer, and the logs. This page lists all of
 them with their defaults.
 
 ## The storage
 
-Flowlet stores everything in one bucket, through CairnDB. You name that bucket
+Flowli stores everything in one bucket, through CairnDB. You name that bucket
 in one of three ways.
 
 ::::{tab-set}
@@ -24,7 +24,7 @@ The CLI reads them when you give no `--storage-path`.
 :::{tab-item} A CLI option
 
 ```bash
-flowlet worker --app myapp.flows:registry --storage-path ./bucket
+flowli worker --app myapp.flows:registry --storage-path ./bucket
 ```
 
 `--storage-path` selects the filesystem backend. It also reads the
@@ -66,7 +66,7 @@ their control log. There is no tenant field.
 
 ## The engine
 
-{py:obj}`EngineConfig <flowlet.runtime.EngineConfig>` holds the timings of the
+{py:obj}`EngineConfig <flowli.runtime.EngineConfig>` holds the timings of the
 runtime.
 
 | Setting | Default | Content |
@@ -95,17 +95,17 @@ with it, because the task lease is the visibility timeout of the same work.
 :class: tip
 
 It names the code that acted. A journal that is read one year later tells
-you which commit ran each frame. The CLI reads `FLOWLET2_CODE_REF`.
+you which commit ran each frame. The CLI reads `FLOWLI_CODE_REF`.
 :::
 
 ## The jobs
 
 All three jobs take `--app`, the storage options, and the logging options.
 
-### `flowlet worker`
+### `flowli worker`
 
 ```bash
-flowlet worker --app myapp.flows:registry --queue default --queue finance
+flowli worker --app myapp.flows:registry --queue default --queue finance
 ```
 
 | Option | Default | Content |
@@ -120,10 +120,10 @@ flowlet worker --app myapp.flows:registry --queue default --queue finance
 | `--storage-path` | — | the filesystem bucket |
 | `--code-ref` | — | the git sha or the image digest |
 
-### `flowlet sweeper`
+### `flowli sweeper`
 
 ```bash
-flowlet sweeper --app myapp.flows:registry --interval 60
+flowli sweeper --app myapp.flows:registry --interval 60
 ```
 
 | Option | Default | Content |
@@ -136,10 +136,10 @@ flowlet sweeper --app myapp.flows:registry --interval 60
 Without `--projection` the sweeper folds the control log in memory. A fresh
 process then reads the log from the start. The projection makes that cheap.
 
-### `flowlet retention`
+### `flowli retention`
 
 ```bash
-flowlet retention --app myapp.flows:registry --delay-days 30 --once
+flowli retention --app myapp.flows:registry --delay-days 30 --once
 ```
 
 | Option | Default | Content |
@@ -152,27 +152,27 @@ flowlet retention --app myapp.flows:registry --delay-days 30 --once
 ### The operator commands
 
 ```bash
-flowlet status  EID --journal
-flowlet signal  EID payments '{"amount": 100}' --by bank@example.com
-flowlet cancel  EID --by ops@example.com
-flowlet migrate EID 2 --by ops@example.com
+flowli status  EID --journal
+flowli signal  EID payments '{"amount": 100}' --by bank@example.com
+flowli cancel  EID --by ops@example.com
+flowli migrate EID 2 --by ops@example.com
 ```
 
 `--by` names the actor that the provenance records: an email, or `kind:id` with
 the kind `human`, `system`, `schedule` or `worker`. It defaults to the local
-user, or to `FLOWLET_BY`. A command exits with the code 1 on an unknown
+user, or to `FLOWLI_BY`. A command exits with the code 1 on an unknown
 execution, or on a refused action such as a cancel of a finished execution.
 
 ### The environment variables of the CLI
 
 | Variable | Replaces |
 |---|---|
-| `FLOWLET2_APP` | `--app` |
-| `FLOWLET2_WORKER_ID` | `--worker-id` |
-| `FLOWLET2_CODE_REF` | `--code-ref` |
-| `FLOWLET2_BY` | `--by` |
-| `FLOWLET2_LOG_LEVEL` | `--log-level` |
-| `FLOWLET2_LOG_FORMAT` | `--log-format` |
+| `FLOWLI_APP` | `--app` |
+| `FLOWLI_WORKER_ID` | `--worker-id` |
+| `FLOWLI_CODE_REF` | `--code-ref` |
+| `FLOWLI_BY` | `--by` |
+| `FLOWLI_LOG_LEVEL` | `--log-level` |
+| `FLOWLI_LOG_FORMAT` | `--log-format` |
 | `CAIRNDB_STORAGE_PATH` | `--storage-path` |
 
 ## The projection
@@ -199,7 +199,7 @@ disk for two processes.
 
 ## The HTTP service
 
-{py:obj}`ApiConfig <flowlet.api.ApiConfig>` holds the settings of the service.
+{py:obj}`ApiConfig <flowli.api.ApiConfig>` holds the settings of the service.
 
 | Setting | Default | Content |
 |---|---|---|
@@ -214,7 +214,7 @@ disk for two processes.
 | `nack_delay` | `5.0` | the delay when the relay returns a task that is not a delegate |
 | `max_wait_seconds` | `20.0` | the limit of a long poll on a dequeue |
 | `poll_interval` | `0.5` | the poll period inside a long poll |
-| `title` | `"flowlet"` | the title of the OpenAPI document |
+| `title` | `"flowli"` | the title of the OpenAPI document |
 
 ```python
 app = create_app(
@@ -232,17 +232,17 @@ signature against the JWKS of the issuer, the issuer, the audience and the
 expiry.
 
 ```python
-from flowlet.api import CachingAuthenticator, OIDCAuthenticator, OIDCConfig
+from flowli.api import CachingAuthenticator, OIDCAuthenticator, OIDCConfig
 
 authenticator = CachingAuthenticator(OIDCAuthenticator(OIDCConfig(
     issuer="https://id.example.com/",
-    audience="flowlet",
+    audience="flowli",
     jwks_url="https://id.example.com/.well-known/jwks.json",
     roles={
-        "flowlet-operators": ["executions:read", "executions:start",
+        "flowli-operators": ["executions:read", "executions:start",
                               "executions:cancel", "reviews:decide:finance"],
-        "flowlet-viewers": ["workflows:read", "executions:read"],
-        "flowlet-agents": ["tasks:consume:agents"],
+        "flowli-viewers": ["workflows:read", "executions:read"],
+        "flowli-agents": ["tasks:consume:agents"],
     },
 )))
 ```
@@ -286,7 +286,7 @@ a test and in a local run. An unknown token is refused.
 
 ## The consumer
 
-{py:obj}`ConsumerConfig <flowlet.runtime.ConsumerConfig>` holds the settings of a
+{py:obj}`ConsumerConfig <flowli.runtime.ConsumerConfig>` holds the settings of a
 consumer of delegate tasks.
 
 | Setting | Default | Content |
@@ -313,7 +313,7 @@ Every component emits structured events through structlog, the library that
 CairnDB uses, so one configuration produces one stream.
 
 ```python
-from flowlet.log import configure_logging
+from flowli.log import configure_logging
 
 configure_logging("INFO", "json")      # or "console"
 ```
@@ -336,7 +336,7 @@ and `attempt`.
 ### The evidence
 
 The same stream feeds the evidence of an attempt. The settings are the
-constants of `flowlet.evidence`:
+constants of `flowli.evidence`:
 
 | Setting | Default | Content |
 |---|---|---|
@@ -350,7 +350,7 @@ leaves no object at all, so evidence costs nothing until somebody logs. Use
 
 ## A retry policy
 
-{py:obj}`RetryPolicy <flowlet.domain.RetryPolicy>` is a setting of one frame, not of
+{py:obj}`RetryPolicy <flowli.domain.RetryPolicy>` is a setting of one frame, not of
 the installation.
 
 ```python

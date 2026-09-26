@@ -3,8 +3,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend, _ts
-from flowlet.domain import (
+from flowli.adapters.memory import ManualClock, MemoryBackend, _ts
+from flowli.domain import (
     ClaimedTask,
     Entry,
     FrameRef,
@@ -441,7 +441,7 @@ async def test_timers_remove_of_an_unscheduled_timer_is_a_safe_no_op(backend):
 async def test_execution_store_put_if_absent(backend, prov):
     from dataclasses import replace
 
-    from flowlet.domain import Execution
+    from flowli.domain import Execution
 
     s = backend.executions
     ex = Execution(E_ABC, "w", "1", None, prov)

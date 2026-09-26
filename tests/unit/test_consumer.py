@@ -7,12 +7,12 @@ import pytest
 import structlog
 from cairndb import Timestamp
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import Actor, ExecutionStatus, Site
-from flowlet.patterns import delegate
-from flowlet.runtime import Consumer, ConsumerConfig, Engine, Held, Refused
-from flowlet.runtime import consumer as consumer_module
-from flowlet.runtime.consumer import request_cancel
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import Actor, ExecutionStatus, Site
+from flowli.patterns import delegate
+from flowli.runtime import Consumer, ConsumerConfig, Engine, Held, Refused
+from flowli.runtime import consumer as consumer_module
+from flowli.runtime.consumer import request_cancel
 
 T0 = Timestamp(datetime(2026, 9, 11, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")
@@ -788,7 +788,7 @@ async def test_a_thief_fences_the_watcher_which_gives_back_cleanly(engine, backe
 
 async def test_request_cancel_names_its_own_frame_in_the_provenance(engine, backend):
     """The provenance recorded with the cancel names its own frame, the same
-    way every other engine-initiated write does (docs/specs/05, provenance) --
+    way every other engine-initiated write does (specs/05, provenance) --
     not the engine's own default of "engine"."""
     await start_and_delegate(engine)
     (task,) = await backend.queue.pending("agents")

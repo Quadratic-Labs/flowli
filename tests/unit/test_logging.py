@@ -11,10 +11,10 @@ import structlog
 from cairndb import Timestamp
 from structlog.testing import LogCapture
 
-from flowlet.adapters.memory import ManualClock, MemoryBackend
-from flowlet.domain import Actor, FrameRef, LeaseLost, NonRetryableError, Site, Task, TaskKind
-from flowlet.log import bound, configure_logging, get_logger
-from flowlet.runtime import Context, Engine, EngineConfig, WorkflowRef
+from flowli.adapters.memory import ManualClock, MemoryBackend
+from flowli.domain import Actor, FrameRef, LeaseLost, NonRetryableError, Site, Task, TaskKind
+from flowli.log import bound, configure_logging, get_logger
+from flowli.runtime import Context, Engine, EngineConfig, WorkflowRef
 from tests.ids import E_ABC
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))

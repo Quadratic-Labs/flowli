@@ -7,10 +7,10 @@ of the workflows.
 
 from __future__ import annotations
 
-from flowlet.domain import ExecutionStatus
+from flowli.domain import ExecutionStatus
 
-from flowlet_codeflow import FeatureSpec, Milestone, TaskSpec
-from flowlet_codeflow.gotchas import Gotcha
+from flowli_codeflow import FeatureSpec, Milestone, TaskSpec
+from flowli_codeflow.gotchas import Gotcha
 
 from .conftest import HUMAN, Agents, drive
 

@@ -8,9 +8,9 @@ from cairndb import Timestamp
 from hypothesis import given
 from hypothesis import strategies as st
 
-from flowlet.adapters.cairndb import ISO_WIDTH
-from flowlet.codec import canonical_json, digest, structure, unstructure
-from flowlet.domain import InvalidName, RetryPolicy, digest_text
+from flowli.adapters.cairndb import ISO_WIDTH
+from flowli.codec import canonical_json, digest, structure, unstructure
+from flowli.domain import InvalidName, RetryPolicy, digest_text
 from tests.ids import E_ABC
 
 

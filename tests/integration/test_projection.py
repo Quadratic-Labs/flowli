@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cairndb import Timestamp
 
-from flowlet.adapters.cairndb import CairnBackend
-from flowlet.adapters.cairndb_projection import PrefixRegistry, WorkflowProjection
-from flowlet.adapters.memory import ManualClock
-from flowlet.codec import unstructure
-from flowlet.domain import Actor, ExecutionStatus, FrameRef, NonRetryableError, Site
-from flowlet.runtime import Engine, EngineConfig, KnownExecution
+from flowli.adapters.cairndb import CairnBackend
+from flowli.adapters.cairndb_projection import PrefixRegistry, WorkflowProjection
+from flowli.adapters.memory import ManualClock
+from flowli.codec import unstructure
+from flowli.domain import Actor, ExecutionStatus, FrameRef, NonRetryableError, Site
+from flowli.runtime import Engine, EngineConfig, KnownExecution
 
 T0 = Timestamp(datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
 HUMAN = Actor.human("thomas@example.com")
@@ -116,7 +116,7 @@ async def test_init_config_defaults_and_overrides(backend, tmp_path):
 async def test_wait_for_defaults_to_a_30_second_timeout():
     """`wait_for`'s own default timeout (08-projection.md section 4) is 30
     seconds when a caller passes none -- distinct from any caller's own
-    default (e.g. `flowlet.api.reads.freshness`'s), which always passes an
+    default (e.g. `flowli.api.reads.freshness`'s), which always passes an
     explicit value through and so never exercises this one."""
     calls = []
 
@@ -125,7 +125,7 @@ async def test_wait_for_defaults_to_a_30_second_timeout():
             calls.append(timeout)
             return True
 
-    from flowlet.adapters.cairndb import SEQ_BASE
+    from flowli.adapters.cairndb import SEQ_BASE
 
     projection = object.__new__(WorkflowProjection)
     projection._updater = FakeUpdater()
@@ -202,7 +202,7 @@ async def test_executions_default_limit_and_combined_filters(backend, engine, pr
     with AND (matching only rows that satisfy both), not garble the query."""
     import aiosqlite
 
-    from flowlet.domain import new_eid
+    from flowli.domain import new_eid
 
     @engine.workflow("bulk", "1")
     async def bulk(ctx):
@@ -272,7 +272,7 @@ async def test_lifecycle_entry_for_missing_row_creates_it(backend, engine, proje
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowlet.domain import ROOT_FID, Code, EntryType, Provenance, new_eid
+    from flowli.domain import ROOT_FID, Code, EntryType, Provenance, new_eid
 
     @engine.workflow("seed", "1")
     async def seed(ctx):
@@ -382,7 +382,7 @@ async def test_on_task_field_mapping_and_defensive_defaults(backend, engine, pro
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowlet.domain import ROOT_FID, Code, EntryType, Provenance, new_eid
+    from flowli.domain import ROOT_FID, Code, EntryType, Provenance, new_eid
 
     @engine.workflow("seed", "1")
     async def seed(ctx):
@@ -488,7 +488,7 @@ async def test_on_created_field_mapping_and_defensive_defaults(backend, engine, 
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowlet.domain import Code, EntryType, Provenance, new_eid
+    from flowli.domain import Code, EntryType, Provenance, new_eid
 
     @engine.workflow("seed2", "1")
     async def seed2(ctx):
@@ -589,7 +589,7 @@ async def test_on_migrated_field_mapping_and_defensive_default(backend, engine, 
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowlet.domain import Code, EntryType, Provenance, new_eid
+    from flowli.domain import Code, EntryType, Provenance, new_eid
 
     @engine.workflow("mig", "1")
     async def mig(ctx):
@@ -644,7 +644,7 @@ async def test_on_archived_field_mapping_and_defensive_default(backend, engine, 
     import aiosqlite
     from cairndb import Event, EventType, SchemaVersion, SequencedEvent, SequenceNumber
 
-    from flowlet.domain import Code, EntryType, Provenance, new_eid
+    from flowli.domain import Code, EntryType, Provenance, new_eid
 
     @engine.workflow("arch", "1")
     async def arch(ctx):
@@ -719,7 +719,7 @@ async def test_children_and_terminal_status_is_sticky(backend, engine, projectio
     assert projection.execution(eid).result == 7
 
     # a late, out-of-order suspended announcement must not regress a terminal row
-    from flowlet.domain import Entry
+    from flowli.domain import Entry
 
     prov = engine.provenance(HUMAN)
     await backend.control.announce(
@@ -747,7 +747,7 @@ def test_children_forwards_a_10000_limit_not_executions_own_default_of_100():
 async def test_execution_of_an_unknown_eid_is_none_not_a_crash(backend, engine, projection):
     """`execution()` on a ready projection returns None for an eid with no
     matching row -- not an attempt to build an `ExecutionRow` out of no row."""
-    from flowlet.domain import new_eid
+    from flowli.domain import new_eid
 
     @engine.workflow("seed_exec_none", "1")
     async def seed(ctx):
@@ -907,7 +907,7 @@ async def test_review_requested_defaults_when_fields_missing(backend, engine, pr
     eid is null rather than a literal sentinel, and queue falls back to 'default'
     (08-projection.md's `_on_announce` handles any announce.* payload, not only the
     ones the review() pattern helper produces)."""
-    from flowlet.domain import Entry
+    from flowli.domain import Entry
 
     prov = engine.provenance(HUMAN)
     await backend.control.announce(
@@ -940,7 +940,7 @@ def test_review_row_from_row_handles_a_null_payload():
     exactly that column and must not call `json.loads(None)` if it ever does."""
     import sqlite3
 
-    from flowlet.adapters.cairndb_projection import ReviewRow
+    from flowli.adapters.cairndb_projection import ReviewRow
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -964,8 +964,8 @@ def test_known_maps_every_field_and_derives_archived_flag():
     whether `archived_at` is set -- not leave it at `KnownExecution`'s own
     default of `False` regardless (sweeper.py checks `not k.archived` to avoid
     re-archiving an already-archived row)."""
-    from flowlet.adapters.cairndb_projection import ExecutionRow, _known
-    from flowlet.domain import new_eid
+    from flowli.adapters.cairndb_projection import ExecutionRow, _known
+    from flowli.domain import new_eid
 
     base = dict(
         eid=new_eid(),
@@ -1004,7 +1004,7 @@ async def test_review_expiry(backend, engine, projection, clock):
     """announce.review.expired folds a pending review to status='expired' with a real
     decided_at, and never regresses a review that is already decided (08-projection.md:
     'A decision or expiry for a review that is not pending is ignored.')."""
-    from flowlet.domain import Entry
+    from flowli.domain import Entry
 
     async def announce(kind, payload):
         prov = engine.provenance(HUMAN)

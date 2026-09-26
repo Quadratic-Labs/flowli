@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from cairndb import Timestamp
 
-from flowlet.domain import Actor, Code, Provenance, Site
+from flowli.domain import Actor, Code, Provenance, Site
 
 
 @pytest.fixture

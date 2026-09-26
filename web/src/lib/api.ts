@@ -1,4 +1,4 @@
-/** The client of the flowlet HTTP service. See flowlet/docs/specs/09-http-api.md.
+/** The client of the flowli HTTP service. See flowli/specs/09-http-api.md.
  *
  *  Every noun here is the engine's: an execution runs a workflow, a frame is a
  *  node of its stack, a journal entry records what happened, evidence explains
@@ -153,11 +153,11 @@ const API = '/api';
 
 /** The access token. The service takes a bearer token and derives the actor
  *  from it: no request ever names its own actor (spec 09 section 5.2). */
-let token: string | null = localStorage.getItem('flowlet.token');
+let token: string | null = localStorage.getItem('flowli.token');
 export function setToken(value: string | null) {
   token = value;
-  if (value) localStorage.setItem('flowlet.token', value);
-  else localStorage.removeItem('flowlet.token');
+  if (value) localStorage.setItem('flowli.token', value);
+  else localStorage.removeItem('flowli.token');
 }
 export function getToken(): string | null { return token; }
 

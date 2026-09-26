@@ -3,7 +3,7 @@
 import asyncio
 from datetime import timedelta
 
-from flowlet.runtime import Registry
+from flowli.runtime import Registry
 
 registry = Registry()
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 
 import pytest
-from flowlet import cli_render as render
+from flowli import cli_render as render
 
-from flowlet_runner.cli import once_report
+from flowli_runner.cli import once_report
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -57,7 +57,7 @@ class FakeLoaded:
 
 
 async def test_once_pass_prints_its_report_and_closes(capsys, plain):
-    from flowlet_runner.cli import _serve
+    from flowli_runner.cli import _serve
 
     loaded = FakeLoaded()
     await _serve(FakeConsumer(["t-1", "t-2"], True), loaded, once=True)
@@ -67,7 +67,7 @@ async def test_once_pass_prints_its_report_and_closes(capsys, plain):
 
 
 async def test_idle_pass_lists_nothing(capsys, plain):
-    from flowlet_runner.cli import _serve
+    from flowli_runner.cli import _serve
 
     await _serve(FakeConsumer([], False), FakeLoaded(), once=True)
     assert capsys.readouterr().out == "recovered=0 processed=0\n"
