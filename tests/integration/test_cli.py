@@ -217,6 +217,15 @@ def test_sweeper_once_fires_due_timer(bucket):
     assert code == 0 and "timers_fired=0" in out
 
 
+def test_sweeper_and_retention_with_a_projection_on_an_empty_bucket(bucket, tmp_path):
+    """A fresh installation: no execution yet, so no control log commit."""
+    projection = str(tmp_path / "v.sqlite")
+    code, out = cli("sweeper", "--once", "--projection", projection, bucket=bucket)
+    assert code == 0 and "timers_fired=0" in out, out
+    code, out = cli("retention", "--once", "--projection", projection, bucket=bucket)
+    assert code == 0 and "archived=0" in out, out
+
+
 def test_retention_once_archives(bucket, tmp_path):
     async def finish(engine, backend):
         eid = await engine.start(sample_app.greet, "old", by=HUMAN)

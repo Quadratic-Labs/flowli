@@ -720,6 +720,8 @@ class WorkflowProjection:
     async def snapshot(self) -> dict[Eid, KnownExecution]:
         """ControlSource for the Sweeper: refresh, then the non-terminal executions."""
         await self.refresh()
+        if not self.ready:  # a control log with no commit yet: nothing to sweep
+            return {}
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM executions WHERE status NOT IN ('completed', 'failed', 'cancelled')"
@@ -731,6 +733,8 @@ class WorkflowProjection:
     async def terminal_before(self, before: Timestamp) -> dict[Eid, KnownExecution]:
         """ControlSource for Retention: terminal, not archived, last entry older than `before`."""
         await self.refresh()
+        if not self.ready:  # a control log with no commit yet: nothing to archive
+            return {}
         with self.connect() as conn:
             rows = conn.execute(
                 """

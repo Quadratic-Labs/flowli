@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- `flowli sweeper --projection` and `flowli retention --projection` no
+  longer fail with `unable to open database file` before the first
+  execution: on a control log with no commit, the projection's sweeper and
+  retention sources answer empty.
+
 ## [0.1.0] - 2026-09-26
 
 First release, published to PyPI (`pip install flowli`). The project was
