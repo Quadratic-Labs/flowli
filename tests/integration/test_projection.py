@@ -756,6 +756,15 @@ def test_children_forwards_a_10000_limit_not_executions_own_default_of_100():
     assert calls == [{"parent_eid": "e-1", "limit": 10_000}]
 
 
+async def test_control_sources_on_an_empty_control_log_are_empty_not_a_crash(projection):
+    """Before the first execution the control log has no commit, so a refresh
+    writes no file: the sweeper and retention sources answer empty instead of
+    opening a file that is not there."""
+    assert await projection.snapshot() == {}
+    assert await projection.terminal_before(T0) == {}
+    assert not projection.ready
+
+
 async def test_execution_of_an_unknown_eid_is_none_not_a_crash(backend, engine, projection):
     """`execution()` on a ready projection returns None for an eid with no
     matching row -- not an attempt to build an `ExecutionRow` out of no row."""
