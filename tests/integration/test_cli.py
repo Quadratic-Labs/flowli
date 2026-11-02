@@ -103,6 +103,80 @@ def test_build_app_uses_env_storage_config_when_no_storage_path(bucket, monkeypa
     asyncio.run(loaded.close())
 
 
+@pytest.fixture
+def storage_ref(bucket, monkeypatch) -> str:
+    """'module:attr' of a cairndb StorageConfig over the bucket, as an application names its own."""
+    from cairndb.storage.config import FilesystemStorageConfig
+
+    monkeypatch.setattr(
+        sample_app, "storage_config", FilesystemStorageConfig(path=bucket), raising=False
+    )
+    return "tests.integration.sample_app:storage_config"
+
+
+def test_build_app_from_a_storage_config_a_storage_or_a_callable(bucket, storage_ref, monkeypatch):
+    from cairndb.storage.config import FilesystemStorageConfig
+
+    storage = FilesystemStorageConfig(path=bucket).create_storage()
+    monkeypatch.setattr(sample_app, "storage", storage, raising=False)
+    monkeypatch.setattr(sample_app, "make_storage", lambda: storage, raising=False)
+    # CAIRNDB_* would name another bucket: --storage wins
+    monkeypatch.setenv("CAIRNDB_STORAGE_TYPE", "s3")
+    for ref in (
+        storage_ref,
+        "tests.integration.sample_app:storage",
+        "tests.integration.sample_app:make_storage",
+    ):
+        loaded = build_app(APP, storage_path=None, worker_id="w", code_ref=None, storage_ref=ref)
+        assert loaded.backend is not None and loaded.engine.site.worker_id == "w"
+        asyncio.run(loaded.close())
+
+
+def test_build_app_refuses_a_misused_storage(bucket, storage_ref):
+    with pytest.raises(typer.BadParameter, match="exclusive"):
+        build_app(APP, storage_path=bucket, worker_id=None, code_ref=None, storage_ref=storage_ref)
+    with pytest.raises(typer.BadParameter, match="needs a Registry app"):
+        build_app(
+            "tests.integration.sample_app:make_engine",
+            storage_path=None,
+            worker_id=None,
+            code_ref=None,
+            storage_ref=storage_ref,
+        )
+    with pytest.raises(typer.BadParameter, match="expected a StorageConfig"):
+        build_app(
+            APP,
+            storage_path=None,
+            worker_id=None,
+            code_ref=None,
+            storage_ref="tests.integration.sample_app:not_an_app",
+        )
+
+
+def test_worker_and_sweeper_with_a_storage_option(bucket, storage_ref, tmp_path):
+    async def start(engine, backend):
+        return await engine.start(sample_app.greet, "eve", by=HUMAN)
+
+    eid = asyncio.run(with_backend(bucket, start))
+    result = runner.invoke(
+        app, ["worker", "--once", "--worker-id", "w-st", "--app", APP, "--storage", storage_ref]
+    )
+    assert result.exit_code == 0, result.output
+
+    async def status(engine, backend):
+        return await engine.status(eid)
+
+    assert asyncio.run(with_backend(bucket, status)) == ExecutionStatus.COMPLETED
+
+    projection = str(tmp_path / "sweeper.sqlite")
+    result = runner.invoke(
+        app,
+        ["sweeper", "--once", "--app", APP, "--projection", projection],
+        env={"FLOWLI_STORAGE": storage_ref},
+    )
+    assert result.exit_code == 0, result.output
+
+
 def test_source_for_variants(bucket, tmp_path):
     from flowli.adapters.cairndb_projection import WorkflowProjection
     from flowli.cli import source_for
