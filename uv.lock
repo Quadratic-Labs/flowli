@@ -578,7 +578,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asgi-lifespan", marker = "extra == 'dev'", specifier = ">=2.1.0" },
-    { name = "cairndb", specifier = ">=0.4.1,<0.5" },
+    { name = "cairndb", specifier = ">=0.4.1,<0.6" },
     { name = "cattrs", specifier = ">=24.1.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115.0" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115.0" },

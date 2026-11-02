@@ -8,6 +8,19 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- `--storage module:attr` (or `FLOWLI_STORAGE`) on every command: a
+  CairnDB `StorageConfig` or `BlobStorage`, or a callable that returns one.
+  An application builds its bucket from its own settings, credentials
+  included, and the CLI still owns the backend (`--projection`,
+  `--worker-id`). It excludes `--storage-path` and takes precedence over
+  the `CAIRNDB_*` variables.
+
+### Changed
+
+- CairnDB `>=0.4.1,<0.6`, so that 0.5 and its Azure `credential` can be used.
+
 ## [0.1.1] - 2026-11-01
 
 ### Fixed

@@ -19,7 +19,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "cairndb>=0.4.1,<0.5",
+    "cairndb>=0.4.1,<0.6",
     "cattrs>=24.1.0",
     "structlog>=24.1.0",
 ]

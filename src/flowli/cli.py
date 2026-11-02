@@ -10,9 +10,16 @@
     flowli migrate EID VERSION --app ... --by ...
 
 `--app module:attr` names a `Registry`, an `Engine`, or a zero-argument callable
-that returns one. With a `Registry`, the CLI builds a CairnDB backend from the
-`CAIRNDB_*` environment variables (see cairndb.storage.config) or `--storage-path`,
-and an `Engine` on top of it. With an `Engine`, the CLI uses it as is.
+that returns one. With a `Registry`, the CLI builds a CairnDB backend, and an
+`Engine` on top of it, over the storage named by, in this order:
+
+- `--storage module:attr`: a cairndb `StorageConfig` or `BlobStorage`, or a
+  zero-argument callable that returns one. The application builds its storage
+  from its own settings, credentials included;
+- `--storage-path`: a filesystem bucket;
+- the `CAIRNDB_*` environment variables (see cairndb.storage.config).
+
+With an `Engine`, the CLI uses it as is.
 
 Every job stops cleanly on SIGINT or SIGTERM. `--once` runs one pass and exits.
 """
@@ -69,6 +76,14 @@ StoragePathOpt = Annotated[
         "--storage-path",
         envvar="CAIRNDB_STORAGE_PATH",
         help="Filesystem bucket path. Other backends: set CAIRNDB_* variables.",
+    ),
+]
+StorageOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--storage",
+        envvar="FLOWLI_STORAGE",
+        help="module:attr naming a cairndb StorageConfig, a BlobStorage, or a callable.",
     ),
 ]
 LogLevelOpt = Annotated[str, typer.Option("--log-level", envvar="FLOWLI_LOG_LEVEL")]
@@ -141,6 +156,24 @@ class LoadedApp:
                 await result
 
 
+def load_storage(ref: str) -> Any:
+    """The cairndb BlobStorage named by 'module:attr', built if it is a config or a callable."""
+    from cairndb.storage.base import BlobStorage
+    from cairndb.storage.config import StorageConfig
+
+    obj = load_ref(ref)
+    if callable(obj) and not isinstance(obj, StorageConfig | BlobStorage):
+        obj = obj()
+    if isinstance(obj, StorageConfig):
+        obj = obj.create_storage()
+    if not isinstance(obj, BlobStorage):
+        raise typer.BadParameter(
+            f"{ref!r} is a {type(obj).__name__}, "
+            "expected a StorageConfig, a BlobStorage, or a callable returning one"
+        )
+    return obj
+
+
 def build_app(
     ref: str,
     *,
@@ -148,14 +181,19 @@ def build_app(
     worker_id: str | None,
     code_ref: str | None,
     config: EngineConfig | None = None,
+    storage_ref: str | None = None,
 ) -> LoadedApp:
     from flowli.adapters.cairndb import CairnBackend
     from flowli.domain import Site
 
+    if storage_ref is not None and storage_path is not None:
+        raise typer.BadParameter("--storage and --storage-path are exclusive")
     obj = load_ref(ref)
     if callable(obj) and not isinstance(obj, Engine | Registry):
         obj = obj()
     if isinstance(obj, Engine):
+        if storage_ref is not None:
+            raise typer.BadParameter("--storage needs a Registry app (the CLI owns the backend)")
         return LoadedApp(obj, [])
     if not isinstance(obj, Registry):
         raise typer.BadParameter(
@@ -165,12 +203,13 @@ def build_app(
     from cairndb import CairnDB
     from cairndb.storage.config import FilesystemStorageConfig, StorageConfig
 
-    storage: StorageConfig
-    if storage_path is not None:
-        storage = FilesystemStorageConfig(path=storage_path)
+    if storage_ref is not None:
+        storage = load_storage(storage_ref)
+    elif storage_path is not None:
+        storage = FilesystemStorageConfig(path=storage_path).create_storage()
     else:
-        storage = StorageConfig.from_env()
-    backend = CairnBackend(CairnDB(storage.create_storage()))
+        storage = StorageConfig.from_env().create_storage()
+    backend = CairnBackend(CairnDB(storage))
     site = Site.local(worker_id or default_worker_id(), instance=os.environ.get("HOSTNAME"))
     engine = Engine(
         backend.ports,
@@ -256,11 +295,19 @@ def parse_payload(text: str) -> Any:
         return text
 
 
-def operator_main(app_ref: str, storage_path: str | None, fn: Callable[[Engine], Any]) -> None:
+def operator_main(
+    app_ref: str, storage_path: str | None, storage_ref: str | None, fn: Callable[[Engine], Any]
+) -> None:
     """Load the app, run fn(engine), close. Exit 1 on an unknown execution or a refused action."""
 
     async def main() -> None:
-        loaded = build_app(app_ref, storage_path=storage_path, worker_id=None, code_ref=None)
+        loaded = build_app(
+            app_ref,
+            storage_path=storage_path,
+            worker_id=None,
+            code_ref=None,
+            storage_ref=storage_ref,
+        )
         try:
             await fn(loaded.engine)
         except (UnknownExecution, ValueError) as exc:
@@ -289,6 +336,7 @@ def worker(
     poll_interval: Annotated[float, typer.Option(help="Idle sleep between polls, seconds.")] = 1.0,
     once: OnceOpt = False,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     code_ref: CodeRefOpt = None,
     log_level: LogLevelOpt = "INFO",
     log_format: LogFormatOpt = "console",
@@ -303,6 +351,7 @@ def worker(
         loaded = build_app(
             app_ref,
             storage_path=storage_path,
+            storage_ref=storage,
             worker_id=worker_id,
             code_ref=code_ref,
             config=config,
@@ -333,6 +382,7 @@ def sweeper(
     projection: ProjectionOpt = None,
     once: OnceOpt = False,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     code_ref: CodeRefOpt = None,
     log_level: LogLevelOpt = "INFO",
     log_format: LogFormatOpt = "console",
@@ -341,7 +391,13 @@ def sweeper(
     setup_logging(log_level, log_format)
 
     async def main() -> None:
-        loaded = build_app(app_ref, storage_path=storage_path, worker_id=None, code_ref=code_ref)
+        loaded = build_app(
+            app_ref,
+            storage_path=storage_path,
+            worker_id=None,
+            code_ref=code_ref,
+            storage_ref=storage,
+        )
         try:
             s = loaded.engine.sweeper(
                 repair_window=timedelta(seconds=repair_window),
@@ -378,6 +434,7 @@ def retention(
     projection: ProjectionOpt = None,
     once: OnceOpt = False,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     code_ref: CodeRefOpt = None,
     log_level: LogLevelOpt = "INFO",
     log_format: LogFormatOpt = "console",
@@ -386,7 +443,13 @@ def retention(
     setup_logging(log_level, log_format)
 
     async def main() -> None:
-        loaded = build_app(app_ref, storage_path=storage_path, worker_id=None, code_ref=code_ref)
+        loaded = build_app(
+            app_ref,
+            storage_path=storage_path,
+            worker_id=None,
+            code_ref=code_ref,
+            storage_ref=storage,
+        )
         try:
             job = loaded.engine.retention(
                 delay=timedelta(days=delay_days), source=source_for(loaded, projection)
@@ -422,6 +485,7 @@ def status(
         bool, typer.Option("--journal", "-j", help="Also list the journal.")
     ] = False,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     log_level: LogLevelOpt = "WARNING",
 ) -> None:
     """Show an execution: status, definition, creator, and optionally its journal."""
@@ -491,7 +555,7 @@ def status(
                     )
                 )
 
-    operator_main(app_ref, storage_path, show)
+    operator_main(app_ref, storage_path, storage, show)
 
 
 @app.command("signal")
@@ -503,6 +567,7 @@ def signal_command(
     by: ByOpt = None,
     correlation: Annotated[str | None, typer.Option("--correlation")] = None,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     log_level: LogLevelOpt = "WARNING",
 ) -> None:
     """Send a message on an execution's channel and enqueue its resume."""
@@ -523,7 +588,7 @@ def signal_command(
         typer.echo(render.paint("payload", dim=True))
         typer.echo(render.json_block(value))
 
-    operator_main(app_ref, storage_path, send)
+    operator_main(app_ref, storage_path, storage, send)
 
 
 @app.command()
@@ -532,6 +597,7 @@ def cancel(
     app_ref: AppOpt,
     by: ByOpt = None,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     log_level: LogLevelOpt = "WARNING",
 ) -> None:
     """Request the cancellation of an execution. A worker applies it at the next frame."""
@@ -550,7 +616,7 @@ def cancel(
             + render.actor_value(actor.kind, actor.id)
         )
 
-    operator_main(app_ref, storage_path, do)
+    operator_main(app_ref, storage_path, storage, do)
 
 
 @app.command()
@@ -560,6 +626,7 @@ def migrate(
     app_ref: AppOpt,
     by: ByOpt = None,
     storage_path: StoragePathOpt = None,
+    storage: StorageOpt = None,
     log_level: LogLevelOpt = "WARNING",
 ) -> None:
     """Point a live execution at another workflow version, then enqueue its resume."""
@@ -586,7 +653,7 @@ def migrate(
             + render.actor_value(actor.kind, actor.id)
         )
 
-    operator_main(app_ref, storage_path, do)
+    operator_main(app_ref, storage_path, storage, do)
 
 
 # endregion

@@ -7,7 +7,7 @@ them with their defaults.
 ## The storage
 
 Flowli stores everything in one bucket, through CairnDB. You name that bucket
-in one of three ways.
+in one of four ways.
 
 ::::{tab-set}
 :::{tab-item} Environment variables
@@ -18,7 +18,7 @@ export CAIRNDB_S3_BUCKET=my-bucket
 export CAIRNDB_S3_REGION=eu-west-3
 ```
 
-The CLI reads them when you give no `--storage-path`.
+The CLI reads them when you give neither `--storage` nor `--storage-path`.
 :::
 
 :::{tab-item} A CLI option
@@ -29,6 +29,32 @@ flowli worker --app myapp.flows:registry --storage-path ./bucket
 
 `--storage-path` selects the filesystem backend. It also reads the
 variable `CAIRNDB_STORAGE_PATH`.
+:::
+
+:::{tab-item} Your application's storage
+
+```bash
+flowli worker --app myapp.flows:registry --storage myapp.settings:storage
+```
+
+`--storage module:attr` names a CairnDB `StorageConfig` or `BlobStorage`,
+or a zero-argument callable that returns one. Use it when your application
+builds the bucket from its own settings, for example with an Azure
+credential it manages:
+
+```python
+def storage():
+    return AzureStorageConfig(
+        container=settings.container,
+        account_url=settings.account_url,
+        credential=ClientSecretCredential(settings.tenant_id, settings.client_id, settings.secret),
+    )
+```
+
+It also reads the variable `FLOWLI_STORAGE`. It excludes `--storage-path`,
+and it takes precedence over the `CAIRNDB_*` variables. Every command
+accepts it, and the CLI still owns the backend, so `--projection` and
+`--worker-id` work as with the other ways.
 :::
 
 :::{tab-item} A dictionary, in Python
