@@ -8,6 +8,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
 ### Added
 
 - `--storage module:attr` (or `FLOWLI_STORAGE`) on every command: a
@@ -57,6 +59,7 @@ developed as Flowlet before this release.
 - A CI workflow: `ruff check`, `ruff format --check`, `mypy` and the
   tests of the three packages.
 
-[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.1.0
