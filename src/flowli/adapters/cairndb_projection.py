@@ -209,6 +209,20 @@ class ExecutionRow:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowSummary:
+    """What the dashboard shows of one workflow name, over all its versions."""
+
+    workflow: str
+    runs: int
+    active: int  # pending, running or suspended
+    last_run_at: str
+    recent: list[ExecutionStatus]  # oldest first
+    finished: int  # in the window
+    completed: int  # in the window
+    avg_duration_ms: int | None  # of the completed ones in the window
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewRow:
     rid: str
     eid: Eid | None
@@ -644,6 +658,74 @@ class WorkflowProjection:
                 "SELECT status, COUNT(*) AS n FROM executions GROUP BY status"
             ).fetchall()  # pragma: no mutate
         return {ExecutionStatus(r["status"]): r["n"] for r in rows}  # pragma: no mutate
+
+    def workflow_summaries(self, *, recent: int = 5, window: int = 20) -> list[WorkflowSummary]:
+        """One summary per workflow name that has an execution, sorted by name.
+
+        `recent` holds the statuses of the last `recent` executions by creation,
+        oldest first. The rates and the mean duration cover the last `window`
+        executions that finished. The duration runs from `created_at` to the
+        terminal entry, so it includes the wait in the queue and any suspension.
+        """
+        if not self.ready:
+            return []
+        terminal = ", ".join(f"'{s}'" for s in sorted(_TERMINAL))  # pragma: no mutate
+        with self.connect() as conn:
+            totals = conn.execute(
+                f"""
+                SELECT workflow, COUNT(*) AS runs,
+                       SUM(status NOT IN ({terminal})) AS active,
+                       MAX(created_at) AS last_run_at
+                FROM executions GROUP BY workflow ORDER BY workflow
+                """
+            ).fetchall()
+            last = conn.execute(
+                """
+                SELECT workflow, status FROM (
+                    SELECT workflow, status, ROW_NUMBER() OVER (
+                        PARTITION BY workflow ORDER BY created_at DESC, eid DESC) AS rn
+                    FROM executions)
+                WHERE rn <= ? ORDER BY workflow, rn DESC
+                """,
+                (recent,),
+            ).fetchall()
+            finished = conn.execute(
+                f"""
+                SELECT workflow, COUNT(*) AS finished,
+                       SUM(status = 'completed') AS completed,
+                       AVG(CASE WHEN status = 'completed' THEN
+                           (julianday(updated_at) - julianday(created_at)) * 86400000.0
+                       END) AS avg_ms
+                FROM (
+                    SELECT workflow, status, created_at, updated_at, ROW_NUMBER() OVER (
+                        PARTITION BY workflow ORDER BY updated_at DESC, eid DESC) AS rn
+                    FROM executions WHERE status IN ({terminal}))
+                WHERE rn <= ? GROUP BY workflow
+                """,
+                (window,),
+            ).fetchall()
+        statuses: dict[str, list[ExecutionStatus]] = {}
+        for r in last:
+            statuses.setdefault(r["workflow"], []).append(ExecutionStatus(r["status"]))
+        done = {r["workflow"]: r for r in finished}
+        out = []
+        for t in totals:
+            f = done.get(t["workflow"])
+            out.append(
+                WorkflowSummary(
+                    workflow=t["workflow"],
+                    runs=t["runs"],
+                    active=t["active"],
+                    last_run_at=t["last_run_at"],
+                    recent=statuses.get(t["workflow"], []),
+                    finished=0 if f is None else f["finished"],
+                    completed=0 if f is None else f["completed"],
+                    avg_duration_ms=None
+                    if f is None or f["avg_ms"] is None
+                    else round(f["avg_ms"]),
+                )
+            )
+        return out
 
     def tasks(
         self,

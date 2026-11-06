@@ -1,15 +1,17 @@
-"""`/queues`, `/stats`, `/health`. See specs/09-http-api.md sections 8 and 8.6."""
+"""`/queues`, `/stats`, `/stats/workflows`, `/health`. See specs/09-http-api.md
+sections 8, 8.6 and 8.7."""
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 from cairndb import Timestamp
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from ..auth import EXECUTIONS_READ, QUEUES_READ, Principal
 from ..deps import Config, Engine, Limit, Projection, require
-from ..dto import queue_depth, task_row
+from ..dto import queue_depth, task_row, workflow_summary
 from ..reads import etag, json_response
 
 router = APIRouter(tags=["queues"])
@@ -43,6 +45,21 @@ async def list_tasks(
 async def stats(request: Request, projection: Projection, who: StatsReader) -> Response:
     counts = {status.value: n for status, n in projection.counts_by_status().items()}
     return json_response(request, {"by_status": counts}, etag("stats", sorted(counts.items())))
+
+
+@router.get("/stats/workflows")
+async def workflow_stats(
+    request: Request,
+    projection: Projection,
+    who: StatsReader,
+    recent: Annotated[int, Query(ge=1, le=50)] = 5,
+    window: Annotated[int, Query(ge=1, le=500)] = 20,
+) -> Response:
+    """One row per workflow name that has an execution (section 8.7)."""
+    rows = projection.workflow_summaries(recent=recent, window=window)
+    items = [workflow_summary(r) for r in rows]
+    tag = etag("workflow-stats", recent, window, json.dumps(items, sort_keys=True))
+    return json_response(request, {"items": items}, tag)
 
 
 @router.get("/health")

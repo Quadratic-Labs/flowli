@@ -8,6 +8,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- A Workflows table at the end of the dashboard: for each workflow, five
+  dots for the statuses of its last five executions (newest on the right,
+  grey for no run yet), the run and active counts, the success rate and the
+  mean duration of the last 20 finished executions, the time since the last
+  run, and a Start button. It reads the new `GET /stats/workflows`
+  (`projection.workflow_summaries`), joined with the catalog so that a
+  workflow that never ran still shows.
+
 ### Fixed
 
 - The web application's execution list kept showing a finished execution
