@@ -70,6 +70,18 @@ export interface FrameNode {
 export interface WorkflowSummary {
   name: string; version: string; summary: string | null; queue: string; has_schema: boolean;
 }
+/** What the dashboard shows of one workflow name, over all its versions
+ *  (spec 09 section 8.7). `recent` is oldest first. */
+export interface WorkflowStats {
+  workflow: string;
+  runs: number;
+  active: number;
+  last_run_at: string;
+  recent: ExecutionStatus[];
+  finished: number;
+  completed: number;
+  avg_duration_ms: number | null;
+}
 export interface WorkflowDetail extends WorkflowSummary {
   description: string | null;
   schema: JsonSchema | null;
@@ -281,6 +293,7 @@ export const api = {
   tasks: (queue: string, limit = 50) =>
     request<Page<TaskRow>>(`/queues/${encodeURIComponent(queue)}/tasks${query({ limit })}`),
   stats: () => request<{ by_status: Record<string, number> }>(withSeq('/stats')),
+  workflowStats: () => request<{ items: WorkflowStats[] }>(withSeq('/stats/workflows')),
   health: () => request<Health>('/health'),
 
   // evidence

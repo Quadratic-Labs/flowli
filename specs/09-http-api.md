@@ -271,6 +271,7 @@ Rules:
 | `GET /queues` | `queues:read` | `Queue.depth` for each queue |
 | `GET /queues/{queue}/tasks` | `queues:read` | `Queue.pending` |
 | `GET /stats` | `executions:read` | `projection.counts_by_status` |
+| `GET /stats/workflows` | `executions:read` | `projection.workflow_summaries`, see section 8.7 |
 | `GET /health` | none | see section 8.6 |
 
 ### 8.1 Start
@@ -367,6 +368,32 @@ There is no lag in seconds. A control log with no recent entry is not a
 projection that is behind, and nothing in the log says when the projection
 read it. `projection_seq` and the time of the check are what the service
 knows.
+
+### 8.7 Workflow summaries
+
+`GET /stats/workflows?recent=5&window=20` returns one item for each
+workflow name that has an execution in the projection, over all its
+versions, sorted by name:
+
+```json
+{"items": [{"workflow": "invoice_approval", "runs": 7, "active": 2,
+  "last_run_at": "...", "recent": ["completed", "completed", "suspended",
+  "suspended", "cancelled"], "finished": 5, "completed": 4,
+  "avg_duration_ms": 458}]}
+```
+
+- `runs` counts every execution, `active` those that are pending, running
+  or suspended, and `last_run_at` is the latest `created_at`.
+- `recent` holds the statuses of the last `recent` executions (1 to 50) by
+  creation, oldest first.
+- `finished` and `completed` count, among the last `window` executions (1 to
+  500) that reached a terminal status, all of them and the completed ones.
+- `avg_duration_ms` is the mean, over those completed ones, of the time from
+  `created_at` to the terminal entry. It includes the wait in the queue and
+  any suspension. It is null when none completed.
+
+A workflow that never ran has no item: the client joins the catalog
+(section 7) to show it. The ETag is a digest of the items.
 
 ## 9. Worker plane
 
@@ -524,7 +551,7 @@ sections 7 to 10:
 
 | View | Endpoints |
 |---|---|
-| dashboard | `/stats`, `/executions?status=`, `/queues` |
+| dashboard | `/stats`, `/stats/workflows`, `/workflows`, `/executions?status=`, `/queues` |
 | execution list | `/executions` |
 | execution detail | `/executions/{eid}`, `/frames`, `/journal`, `/evidence/...` |
 | start a workflow | `/workflows`, `POST /executions` |

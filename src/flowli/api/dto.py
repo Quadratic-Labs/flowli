@@ -10,7 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from flowli.adapters.cairndb_projection import AnnouncementRow, ExecutionRow, ReviewRow
+from flowli.adapters.cairndb_projection import (
+    AnnouncementRow,
+    ExecutionRow,
+    ReviewRow,
+    WorkflowSummary,
+)
 from flowli.domain import Entry, Execution, ExecutionStatus, QueueDepth, Sequenced, Task
 
 
@@ -70,6 +75,19 @@ def execution_row(row: ExecutionRow) -> dict[str, Any]:
         "worker_id": row.worker_id,
         "host": row.host,
         "archived_at": row.archived_at,
+    }
+
+
+def workflow_summary(row: WorkflowSummary) -> dict[str, Any]:
+    return {
+        "workflow": row.workflow,
+        "runs": row.runs,
+        "active": row.active,
+        "last_run_at": row.last_run_at,
+        "recent": [s.value for s in row.recent],
+        "finished": row.finished,
+        "completed": row.completed,
+        "avg_duration_ms": row.avg_duration_ms,
     }
 
 

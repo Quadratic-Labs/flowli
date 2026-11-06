@@ -87,6 +87,7 @@ projection.executions(status=None, workflow=None, parent_eid=None, limit=100,
                       after=None) -> list[ExecutionRow]   # after = (updated_at, eid) keyset
 projection.children(eid) -> list[ExecutionRow]
 projection.counts_by_status() -> dict[ExecutionStatus, int]
+projection.workflow_summaries(recent=5, window=20) -> list[WorkflowSummary]  # one per name
 projection.pending_reviews(queue=None) -> list[ReviewRow]
 projection.review(rid) -> ReviewRow | None
 projection.announcements(kind=None, eid=None, limit=100) -> list[AnnouncementRow]

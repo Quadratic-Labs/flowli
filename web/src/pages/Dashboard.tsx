@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, Clock, Inbox, Layers } from 'lucide-react';
-import { api } from '@/lib/api';
+import { Activity, AlertTriangle, Clock, Inbox, Layers, Play, Workflow } from 'lucide-react';
+import { api, type ExecutionStatus, type WorkflowStats } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import { shortEid, timeAgo } from '@/lib/format';
+import { humanizeDuration, shortEid, statusColor, timeAgo } from '@/lib/format';
 
 export default function Dashboard() {
   const stats = useQuery({ queryKey: ['stats'], queryFn: api.stats, refetchInterval: 10_000 });
@@ -15,6 +15,10 @@ export default function Dashboard() {
     refetchInterval: 15_000,
   });
   const reviews = useQuery({ queryKey: ['reviews'], queryFn: () => api.reviews(), refetchInterval: 15_000 });
+  const workflowStats = useQuery({
+    queryKey: ['workflow-stats'], queryFn: api.workflowStats, refetchInterval: 10_000,
+  });
+  const catalog = useQuery({ queryKey: ['workflows'], queryFn: api.workflows, refetchInterval: 30_000 });
 
   const counts = stats.data?.by_status ?? {};
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -101,7 +105,131 @@ export default function Dashboard() {
           {!failed.data?.items.length && <li className="py-3 text-slate-400">none</li>}
         </ul>
       </Card>
+
+      <Card title="Workflows" icon={<Workflow size={16} />} to="/workflows">
+        <WorkflowTable
+          stats={workflowStats.data?.items ?? []}
+          catalog={catalog.data?.items ?? []}
+          loading={workflowStats.isLoading || catalog.isLoading}
+        />
+      </Card>
     </div>
+  );
+}
+
+/** How many past runs the dots show, newest on the right. */
+const RECENT = 5;
+
+interface WorkflowLine {
+  name: string;
+  stats: WorkflowStats | undefined;
+  /** The version Start opens: the highest one this process registers. */
+  version: string | undefined;
+}
+
+/** The catalog and the projection, one line per workflow name. A name the
+ *  catalog lacks ran on another deployment: it has stats and no Start. A name
+ *  that never ran has a Start and grey dots. */
+function lines(stats: WorkflowStats[], catalog: { name: string; version: string }[]): WorkflowLine[] {
+  const byName = new Map<string, WorkflowLine>();
+  for (const wf of catalog) {
+    const line = byName.get(wf.name) ?? { name: wf.name, stats: undefined, version: undefined };
+    if (!line.version || wf.version.localeCompare(line.version, undefined, { numeric: true }) > 0) {
+      line.version = wf.version;
+    }
+    byName.set(wf.name, line);
+  }
+  for (const s of stats) {
+    const line = byName.get(s.workflow) ?? { name: s.workflow, stats: undefined, version: undefined };
+    line.stats = s;
+    byName.set(s.workflow, line);
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function WorkflowTable({ stats, catalog, loading }: {
+  stats: WorkflowStats[]; catalog: { name: string; version: string }[]; loading: boolean;
+}) {
+  const rows = lines(stats, catalog);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs uppercase text-slate-500">
+          <tr>
+            <th className="py-1">Workflow</th>
+            <th>Last {RECENT}</th>
+            <th className="text-right">Runs</th>
+            <th className="text-right">Active</th>
+            <th className="text-right" title="Completed, among the last 20 finished runs">Success</th>
+            <th className="text-right" title="Of the completed runs among the last 20 finished, from creation to end">
+              Avg duration
+            </th>
+            <th className="pl-4">Last run</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ name, stats: s, version }) => (
+            <tr key={name} className="border-t border-slate-100">
+              <td className="py-1.5">
+                <Link
+                  to={`/executions?workflow=${encodeURIComponent(name)}`}
+                  className="font-medium text-indigo-600 hover:underline"
+                >{name}</Link>
+              </td>
+              <td><RecentDots recent={s?.recent ?? []} /></td>
+              <td className="text-right tabular-nums">{s?.runs ?? 0}</td>
+              <td className="text-right tabular-nums text-slate-600">{s?.active || '—'}</td>
+              <td className="text-right tabular-nums text-slate-600">
+                {s?.finished ? `${Math.round((100 * s.completed) / s.finished)}%` : '—'}
+              </td>
+              <td className="text-right tabular-nums text-slate-600">
+                {s?.avg_duration_ms != null ? humanizeDuration(s.avg_duration_ms) : '—'}
+              </td>
+              <td className="pl-4 text-slate-500" title={s?.last_run_at}>
+                {s ? timeAgo(s.last_run_at) : 'never'}
+              </td>
+              <td className="py-1.5 text-right">
+                {version ? (
+                  <Link
+                    to={`/workflows/${encodeURIComponent(name)}/${encodeURIComponent(version)}/start`}
+                    className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700"
+                    title={`Start ${name} v${version}`}
+                  ><Play size={12} /> Start</Link>
+                ) : (
+                  <span className="text-xs text-slate-400" title="This process does not register it">
+                    not here
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+          {!loading && !rows.length && (
+            <tr><td colSpan={8} className="py-3 text-slate-400">no workflow</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** The last runs, oldest on the left. A slot with no run yet stays grey. */
+function RecentDots({ recent }: { recent: ExecutionStatus[] }) {
+  const slots: (ExecutionStatus | null)[] = [
+    ...Array<null>(Math.max(0, RECENT - recent.length)).fill(null),
+    ...recent.slice(-RECENT),
+  ];
+  return (
+    <span className="inline-flex items-center gap-1" aria-label={recent.join(', ') || 'no run yet'}>
+      {slots.map((status, i) => (
+        <span
+          key={i}
+          title={status ?? 'no run yet'}
+          className={`inline-block h-3 w-3 rounded-full ${status === 'running' ? 'animate-pulse' : ''}`}
+          style={{ backgroundColor: status ? statusColor(status) : '#e2e8f0' }}
+        />
+      ))}
+    </span>
   );
 }
 
