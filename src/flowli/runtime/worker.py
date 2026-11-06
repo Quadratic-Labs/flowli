@@ -7,7 +7,7 @@ import importlib
 import inspect
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
@@ -263,6 +263,10 @@ class Worker:
                         raise LeaseLost(f"execution {eid} lease lost during run") from None
                     raise
 
+            # The run took time: the outcome entries carry the instant it ended, not
+            # the one it started. The projection's updated_at, and the elapsed time a
+            # reader derives from it, come from this stamp.
+            prov = replace(prov, at=engine.clock())
             match outcome:
                 case Returned(value):
                     await self._record(eid, Entry.execution_completed(prov, value), memo, lease)

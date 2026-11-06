@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -41,6 +42,16 @@ TERMINAL = (ExecutionStatus.COMPLETED, ExecutionStatus.FAILED, ExecutionStatus.C
 
 def _eid(value: str) -> Eid:
     return parse_eid(value)  # InvalidName -> 400
+
+
+def _content(items: list[dict[str, Any]]) -> str:
+    """The rows of a list, as the tag sees them: every field the client sees.
+
+    `eid@updated_at` was not enough. A status can change while `updated_at`
+    does not (two entries stamped with the same instant), and an archive sets
+    `archived_at` only. A 304 then kept the client on a row it had replaced.
+    """
+    return json.dumps(items, sort_keys=True, separators=(",", ":"))
 
 
 async def _written(projection: Any, config: Config) -> dict[str, str]:
@@ -206,7 +217,7 @@ async def list_executions(
         cursor,
         limit,
         len(items),
-        *(f"{i['eid']}@{i['updated_at']}" for i in items),
+        _content(items),
     )
     return json_response(request, {"items": items, "next_cursor": next_cursor}, tag, stale=stale)
 
@@ -268,7 +279,7 @@ async def get_frames(request: Request, eid: str, engine: Engine, who: Reader) ->
 async def get_children(request: Request, eid: str, projection: Projection, who: Reader) -> Response:
     rows = projection.children(_eid(eid))
     items = [execution_row(r) for r in rows]
-    tag = etag("children", eid, len(items), *(f"{i['eid']}@{i['updated_at']}" for i in items))
+    tag = etag("children", eid, len(items), _content(items))
     return json_response(request, {"items": items, "next_cursor": None}, tag)
 
 
