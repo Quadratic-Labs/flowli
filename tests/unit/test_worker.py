@@ -256,6 +256,36 @@ async def test_start_runs_to_completion(backend, engine, worker):
     assert created.actor == HUMAN
 
 
+@pytest.mark.parametrize("outcome", ["completed", "failed", "suspended"])
+async def test_the_outcome_entry_carries_the_instant_the_run_ended(
+    backend, engine, worker, outcome
+):
+    """Regression: the outcome entry reused the provenance of execution.started, so
+    the projection's updated_at never moved past the start and a list of executions
+    could keep showing a finished run as running."""
+
+    def slow() -> str:
+        backend.clock.advance(timedelta(seconds=7))
+        if outcome == "failed":
+            raise ValueError("boom")
+        return "done"
+
+    @engine.workflow("slow", "1")
+    async def slow_wf(ctx):
+        await ctx.step(slow, name="slow")
+        if outcome == "suspended":
+            await ctx.receive("go")
+        return "ok"
+
+    eid = await engine.start(slow_wf, by=HUMAN)
+    await drain(worker)
+    entries = [s.item for s in await engine.journal(eid)]
+    started = next(e for e in entries if e.type == EntryType.EXECUTION_STARTED)
+    ended = next(e for e in entries if e.type == f"execution.{outcome}")
+    assert started.provenance.at == T0
+    assert ended.provenance.at == T0 + timedelta(seconds=7)
+
+
 async def test_start_with_key_is_idempotent(engine):
     @engine.workflow("w", "1")
     async def w(ctx):

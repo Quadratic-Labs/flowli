@@ -8,6 +8,17 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- The web application's execution list kept showing a finished execution
+  as running. The worker stamped `execution.completed`, `failed`,
+  `cancelled` and `suspended` with the instant the run *started*, so the
+  projection's `updated_at` did not move. The ETag of `/executions` and
+  `/executions/{eid}/children`, built from `eid@updated_at` only, then gave a
+  304 on the stale list. Outcome entries now carry the instant the run ended
+  (which also fixes the elapsed time and the newest-first order). The list
+  ETags now cover every field of every row.
+
 ## [0.2.0] - 2026-11-02
 
 ### Added
