@@ -144,6 +144,12 @@ signed, and `main` only changes through squash-merged pull requests.
 Only the `flowli` package is published. `flowli-runner` and
 `flowli-codeflow` stay in the repository.
 
+`main` always carries the development version of the next minor release,
+`X.Y.0.dev0`, never a released one. An install from `main` then reports a
+version that sorts after every release it contains, and that no release
+ever had. Only release branches carry released versions, so only they are
+tagged.
+
 ### Publishing the documentation
 
 The `Docs` workflow (`.github/workflows/docs.yml`) builds the site with
@@ -165,8 +171,8 @@ uv run --extra docs --extra api --extra cli make -C docs html
 
 ### A new minor release (X.Y.0)
 
-1. On `main`, set the version in `pyproject.toml` and
-   `src/flowli/__init__.py`. In `CHANGELOG.md`, move the `[Unreleased]`
+1. On `main`, set the version from `X.Y.0.dev0` to `X.Y.0` in
+   `pyproject.toml`, `src/flowli/__init__.py` and `uv.lock`. In `CHANGELOG.md`, move the `[Unreleased]`
    entries under a new `## [X.Y.0] - YYYY-MM-DD` heading, and add its link
    at the bottom:
    `[X.Y.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/vX.Y.0`.
@@ -188,6 +194,10 @@ uv run --extra docs --extra api --extra cli make -C docs html
    git push origin vX.Y.0
    ```
 
+4. Open the next development line: a pull request that sets the version on
+   `main` to `X.(Y+1).0.dev0`, in the same three files. The changelog does
+   not change.
+
 ### A patch release (X.Y.Z)
 
 1. Land the fix on `main` first when it applies there, through a pull
@@ -204,6 +214,10 @@ uv run --extra docs --extra api --extra cli make -C docs html
      git switch release/X.Y && git merge --ff-only origin/main
      ```
 
+     This brings `main`'s development version too. Do not push before
+     step 2 sets the release version, or the docs publish from a
+     development version.
+
    - **Cherry-pick** otherwise: when `main` has changes that must not ship
      in a patch, or when the release branch already has commits of its
      own. The version bump of any earlier patch release is such a commit,
@@ -216,13 +230,15 @@ uv run --extra docs --extra api --extra cli make -C docs html
 
    `git merge --ff-only` refuses to run when a fast-forward is not
    possible, so it is safe to try first.
-2. On `release/X.Y`, bump the version to X.Y.Z in both files, add the
-   changelog entry and its link, commit, and push. The docs republish if
+2. On `release/X.Y`, set the version to X.Y.Z in `pyproject.toml`,
+   `src/flowli/__init__.py` and `uv.lock`, add the changelog entry and its
+   link, commit, and push. The docs republish if
    this is still the latest release branch.
 3. Tag `vX.Y.Z` on the release branch with a signed tag, and push it.
    That publishes the release, as above.
 4. Bring the changelog entry back to `main`, so `main`'s changelog lists
-   every release.
+   every release. Only the changelog: `main` keeps its development
+   version.
 
 ### Publishing a release
 
