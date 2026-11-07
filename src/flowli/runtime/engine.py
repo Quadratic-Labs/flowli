@@ -85,9 +85,9 @@ class Engine:
     # --- registration ----------------------------------------------------------
 
     def workflow(
-        self, name: str, version: str
+        self, name: str, version: str, *, queue: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return self.registry.workflow(name, version)
+        return self.registry.workflow(name, version, queue=queue)
 
     # --- provenance --------------------------------------------------------------
 
@@ -149,7 +149,7 @@ class Engine:
             args={"args": list(args), "kwargs": kwargs},
             created_by=self.provenance(by, workflow=wf.name, version=wf.version),
             dispatch_key=key,
-            queue=queue or self.config.default_queue,
+            queue=queue or wf.queue or self.config.default_queue,
         )
         created = await self.create_execution(execution)
         return StartResult(execution.eid, not created)

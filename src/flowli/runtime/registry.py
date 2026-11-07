@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from flowli.domain import WorkflowNotRegistered
+from flowli.domain import WorkflowNotRegistered, check_queue
 
 from .context import WorkflowRef
 
@@ -16,10 +16,18 @@ class Registry:
         self._by_fn: dict[Callable[..., Any], WorkflowRef] = {}
 
     def workflow(
-        self, name: str, version: str
+        self, name: str, version: str, *, queue: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Register the decorated function under `(name, version)`.
+
+        `queue` is where a start that names none puts its executions: the
+        queue of the workers that can run it. None leaves the engine's default.
+        """
+        if queue is not None:
+            check_queue(queue)
+
         def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self.register(WorkflowRef(name, version, fn))
+            self.register(WorkflowRef(name, version, fn, queue))
             return fn
 
         return decorate

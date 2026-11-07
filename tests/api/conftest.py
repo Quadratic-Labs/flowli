@@ -44,6 +44,11 @@ def registry() -> Registry:
         """
         return await ctx.step(lambda: f"{invoice_id}:{amount}", name="settle")
 
+    @reg.workflow("nightly", "1", queue="batch")
+    async def nightly(ctx) -> str:
+        """Run on the workers of the batch queue only."""
+        return "ok"
+
     @reg.workflow("untyped", "1")
     async def untyped(ctx, whatever) -> str:  # no annotation: no schema
         return "ok"

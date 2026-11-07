@@ -8,6 +8,24 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Added
+
+- A workflow can name its queue: `registry.workflow(name, version,
+  queue="batch")`. `engine.start` and `ctx.child` put an execution there
+  when the caller names no queue, and the catalog shows it as the item's
+  `queue`.
+- The start form of the web application has a Queue field. It defaults to
+  the catalog's queue of the workflow and suggests the queues of the
+  service. Before, a start from the interface always went to the default
+  queue, where a deployment that runs its workers on other queues never
+  picked it up.
+
+### Changed
+
+- `ctx.child` defaults `queue` to None, which means the child workflow's
+  queue, else `default`: the queue it used before for a workflow that names
+  none.
+
 ## [0.3.0] - 2026-11-06
 
 ### Added

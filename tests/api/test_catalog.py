@@ -19,6 +19,7 @@ async def test_list_workflows(client):
         ("delegates", "1"),
         ("invoice_approval", "3"),
         ("needs_review", "1"),
+        ("nightly", "1"),
         ("untyped", "1"),
         ("waits", "1"),
     }
@@ -29,6 +30,9 @@ async def test_list_workflows(client):
     assert items[("untyped", "1")]["has_schema"] is False
     # Spec 09 section 7: an item holds `queue` under that exact key.
     assert items[("invoice_approval", "3")]["queue"] == "default"
+    # A workflow registered with a queue shows it, so a client can start it
+    # where its workers are.
+    assert items[("nightly", "1")]["queue"] == "batch"
 
 
 async def test_workflow_schema_skips_the_context(client):
@@ -127,9 +131,12 @@ async def test_catalog_uses_the_configured_default_queue(engine, projection, pri
         projection=projection,
         config=ApiConfig(default_queue="agents"),
     )
-    entries = app.state.flowli.catalog.entries()
-    assert entries
-    assert all(e.queue == "agents" for e in entries)
+    queues = {e.name: e.queue for e in app.state.flowli.catalog.entries()}
+    # A workflow registered with its own queue keeps it; the others show the
+    # configured default.
+    assert queues.pop("nightly") == "batch"
+    assert queues
+    assert set(queues.values()) == {"agents"}
 
 
 def test_catalog_own_default_queue_is_default():

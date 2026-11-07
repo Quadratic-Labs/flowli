@@ -233,7 +233,8 @@ holds no state. It reads the `Registry` of this process.
 | `GET /workflows/{name}/versions/{version}` | `workflows:read` | the item, with its argument schema |
 
 An item holds `name`, `version`, `summary` (the first line of the
-docstring), `queue` and `has_schema`. The detail adds `description` and
+docstring), `queue` and `has_schema`. `queue` is the workflow's queue
+(`04-api.md`, section 1), else the `default_queue` of the service. The detail adds `description` and
 `schema`.
 
 Rules:
@@ -281,6 +282,10 @@ POST /executions
 {"workflow": "invoice_approval", "version": "3",
  "args": {"invoice_id": "INV-7"}, "queue": "default", "dispatch_key": null}
 ```
+
+`queue` is optional. Without it, the execution goes to the workflow's queue,
+else the engine's default queue. The web interface fills it with the
+catalog's `queue`, which the operator can change.
 
 The response is 201 with `{"eid": ..., "deduplicated": false}` and the
 header `X-Control-Seq`. `deduplicated` is true when the dispatch key had a

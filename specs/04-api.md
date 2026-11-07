@@ -5,7 +5,7 @@
 ```python
 engine = WorkflowEngine(db, site=Site.local(worker_id="w-1"), code_ref="git:abc123")
 
-@engine.workflow("invoice_approval", version="3")
+@engine.workflow("invoice_approval", version="3", queue=None)
 async def invoice_approval(ctx: Context, invoice_id: str) -> str:
     ...
 ```
@@ -16,6 +16,10 @@ Rules:
 - All other parameters and the return value must be JSON-compatible.
 - The engine registers the function under `(name, version)`. Two versions
   of one name can be registered at the same time.
+- `queue` is the workflow's queue: where `engine.start` and `ctx.child` put
+  an execution when the caller names no queue. It is the queue of the
+  workers that can run the workflow. None leaves the engine's default queue.
+  An invalid queue name raises `InvalidName` at registration.
 - A workflow function must be deterministic. It must read the clock, random
   numbers and external state through a step only.
 - A workflow function must not change its arguments. A replay runs the
@@ -48,10 +52,11 @@ value = await ctx.step(fn, *args, name=None, key=None, retry=RetryPolicy(), **kw
 ### 2.2 child
 
 ```python
-value = await ctx.child(workflow_fn, *args, name=None, key=None, queue="default", **kwargs)
+value = await ctx.child(workflow_fn, *args, name=None, key=None, queue=None, **kwargs)
 ```
 
-- Starts a new execution of `workflow_fn` with `parent` set to this frame.
+- Starts a new execution of `workflow_fn` with `parent` set to this frame,
+  on `queue`, else the child workflow's queue, else `default`.
 - `name` defaults to `workflow_fn.__name__`, and not to the registered
   workflow name: a workflow name may hold `.`, and a frame name may not.
 - Suspends this frame on `child:{child_eid}` until the child completes.
@@ -157,10 +162,11 @@ ctx.cancel_requested() -> bool     # reads the cooperative lease state
 ## 3. WorkflowEngine API for operators
 
 ```python
-eid = await engine.start(workflow_fn, *args, key=None, queue="default", by=Actor, **kwargs)
+eid = await engine.start(workflow_fn, *args, key=None, queue=None, by=Actor, **kwargs)
 ```
 
-- Creates the `Execution`. When `key` is given, claims `wf/dispatch/{key}`.
+- Creates the `Execution` on `queue`, else the workflow's queue (section 1),
+  else `EngineConfig.default_queue`. When `key` is given, claims `wf/dispatch/{key}`.
   A loser returns the winner's `eid`.
 - `engine.start_result(...)` takes the same arguments and returns
   `StartResult(eid, deduplicated)`. `deduplicated` is true when the dispatch

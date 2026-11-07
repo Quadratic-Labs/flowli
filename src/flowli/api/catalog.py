@@ -102,7 +102,7 @@ class Catalog:
                 version=version,
                 summary=summary,
                 description=description,
-                queue=self.default_queue,
+                queue=ref.queue or self.default_queue,
                 schema=None if model is None else model.model_json_schema(),
             )
 
