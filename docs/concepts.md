@@ -207,6 +207,8 @@ payload is therefore harmless.
 ## Task and queue
 
 A **task** is a unit of work on a **queue**. A worker dequeues tasks.
+A workflow registered with `queue=` starts on that queue when the caller names
+none, so its executions reach the workers that can run them.
 
 | Kind | Meaning |
 |---|---|

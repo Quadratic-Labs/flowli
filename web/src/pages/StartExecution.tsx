@@ -13,17 +13,28 @@ export default function StartExecution() {
   const nav = useNavigate();
   const [values, setValues] = useState<Record<string, string>>({});
   const [dispatchKey, setDispatchKey] = useState('');
+  // null until the operator edits it: the workflow's queue, once loaded.
+  const [queueInput, setQueueInput] = useState<string | null>(null);
 
   const workflow = useQuery({
     queryKey: ['workflow', name, version],
     queryFn: () => api.workflow(name, version),
   });
 
+  // Suggestions only: a principal without queues:read can still type a queue.
+  const queues = useQuery({ queryKey: ['queues'], queryFn: api.queues, retry: false });
+  const queue = queueInput ?? workflow.data?.queue ?? '';
+  const knownQueues = [...new Set([
+    ...(workflow.data?.queue ? [workflow.data.queue] : []),
+    ...(queues.data?.items.map(q => q.queue) ?? []),
+  ])];
+
   const start = useMutation({
     mutationFn: () => api.start({
       workflow: name,
       version,
       args: coerce(values, workflow.data?.schema?.properties ?? {}),
+      queue: queue.trim() || undefined,
       dispatch_key: dispatchKey.trim() || undefined,
     }),
     onSuccess: result => nav(`/executions/${result.eid}`),
@@ -78,6 +89,26 @@ export default function StartExecution() {
         )}
 
         <div className="border-t border-slate-100 pt-4">
+          <label htmlFor="start-queue" className="mb-1 block text-sm font-medium text-slate-700">
+            Queue
+          </label>
+          <input
+            id="start-queue"
+            list="start-queues"
+            value={queue}
+            onChange={e => setQueueInput(e.target.value)}
+            placeholder="default"
+            className="w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm"
+          />
+          <datalist id="start-queues">
+            {knownQueues.map(q => <option key={q} value={q} />)}
+          </datalist>
+          <p className="mt-1 text-xs text-slate-400">
+            Only a worker on this queue runs the execution. It defaults to the workflow's queue.
+          </p>
+        </div>
+
+        <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">
             Dispatch key <span className="font-normal text-slate-400">(optional)</span>
           </label>

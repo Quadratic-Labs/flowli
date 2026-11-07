@@ -71,6 +71,9 @@ class WorkflowRef:
     name: str
     version: str
     fn: Callable[..., Any]
+    # Where a start that names no queue puts the execution. None: the
+    # engine's default queue.
+    queue: str | None = None
 
 
 class ChildStarter(Protocol):
@@ -372,7 +375,7 @@ class Context:
         *args: Any,
         name: str | None = None,
         key: str | None = None,
-        queue: str = "default",
+        queue: str | None = None,
         **kwargs: Any,
     ) -> Awaitable[Any]:
         if self._workflow_of is None:
@@ -382,7 +385,7 @@ class Context:
         # and 7). The function's name is a Python identifier, so it always can.
         name = name or str(getattr(workflow_fn, "__name__", None) or wf.name)
         fid = self._allocate(name, key)
-        return self._run_child(fid, name, wf, list(args), kwargs, queue)
+        return self._run_child(fid, name, wf, list(args), kwargs, queue or wf.queue or "default")
 
     def gather(self, *aws: Awaitable[Any]) -> Awaitable[list[Any]]:
         return asyncio.gather(*aws)

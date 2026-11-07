@@ -44,6 +44,22 @@ async def test_a_dispatch_key_converges(client):
     assert second.json()["deduplicated"] is True
 
 
+async def test_a_start_without_a_queue_goes_to_the_workflow_queue(client, engine):
+    r = await client.post(
+        "/executions", json={"workflow": "nightly", "version": "1"}, headers=auth()
+    )
+    assert (await engine.execution(r.json()["eid"])).queue == "batch"
+
+
+async def test_the_queue_of_a_start_wins_over_the_workflow_queue(client, engine):
+    r = await client.post(
+        "/executions",
+        json={"workflow": "nightly", "version": "1", "queue": "replay"},
+        headers=auth(),
+    )
+    assert (await engine.execution(r.json()["eid"])).queue == "replay"
+
+
 async def test_bad_arguments_are_422_with_the_errors(client):
     r = await client.post(
         "/executions",
