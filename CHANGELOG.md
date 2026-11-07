@@ -8,6 +8,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-07
+
 ### Added
 
 - A workflow can name its queue: `registry.workflow(name, version,
@@ -100,7 +102,8 @@ developed as Flowlet before this release.
 - A CI workflow: `ruff check`, `ruff format --check`, `mypy` and the
   tests of the three packages.
 
-[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.1.1
