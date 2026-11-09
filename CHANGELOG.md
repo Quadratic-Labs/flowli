@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- Every step lasted 0 ms in the flamegraph of the web application.
+  `frame.completed` and `frame.failed` carried the instant the step started,
+  for a step run in the workflow and for a `RUN_STEP` task alike. They now
+  carry the instant it ended.
+
 ## [0.3.1] - 2026-11-07
 
 ### Added
