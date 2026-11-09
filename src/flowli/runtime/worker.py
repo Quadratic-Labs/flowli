@@ -407,11 +407,13 @@ class Worker:
                 result = await result
         except Exception as exc:
             failed = Failed.from_exception(exc)
+            prov = replace(prov, at=self.engine.clock())  # the instant the step ended
             await self.ports.journal.append(
                 ref.eid, Entry.frame_failed(prov, ref.fid, attempt, failed)
             )
             body = {"status": "failed", "error": unstructure(failed)}
         else:
+            prov = replace(prov, at=self.engine.clock())  # the instant the step ended
             await self.ports.journal.append(
                 ref.eid, Entry.frame_completed(prov, ref.fid, attempt, result)
             )

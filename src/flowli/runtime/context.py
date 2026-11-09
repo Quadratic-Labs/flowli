@@ -16,7 +16,7 @@ import random as _random
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any, Literal, Protocol
 
@@ -448,6 +448,9 @@ class Context:
             )
 
             ok, outcome, exc = await self._execute(fid, attempt, thunk)
+            # The step took time: its outcome carries the instant it ended, not
+            # the one it started, so a reader derives its duration from the two.
+            prov = replace(prov, at=self._clock())
             if ok:
                 await self._append(Entry.frame_completed(prov, fid, attempt, outcome))
                 return outcome

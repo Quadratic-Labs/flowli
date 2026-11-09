@@ -1,3 +1,4 @@
+import sys
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -254,6 +255,31 @@ async def test_start_runs_to_completion(backend, engine, worker):
     assert doc.released and doc.state == {"status": "completed"}
     created = (await engine.execution(eid)).created_by
     assert created.actor == HUMAN
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+async def test_a_step_outcome_carries_the_instant_the_step_ended(backend, engine, worker, outcome):
+    """Regression: frame.completed and frame.failed reused the provenance of
+    frame.started, so every step lasted 0 ms in the flamegraph."""
+
+    def slow() -> str:
+        backend.clock.advance(timedelta(seconds=3))
+        if outcome == "failed":
+            raise NonRetryableError("boom")
+        return "done"
+
+    @engine.workflow("slow", "1")
+    async def slow_wf(ctx):
+        await ctx.step(slow, name="slow")
+        return "ok"
+
+    eid = await engine.start(slow_wf, by=HUMAN)
+    await drain(worker)
+    entries = [s.item for s in await engine.journal(eid) if s.item.fid == "root/slow#0"]
+    started = next(e for e in entries if e.type == EntryType.FRAME_STARTED)
+    ended = next(e for e in entries if e.type == f"frame.{outcome}")
+    assert started.provenance.at == T0
+    assert ended.provenance.at == T0 + timedelta(seconds=3)
 
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "suspended"])
@@ -1231,6 +1257,53 @@ def detached_boom(a, b):
 
 async def detached_greet(*, greeting="hi"):
     return greeting
+
+
+_DETACHED_CLOCK: list = []
+
+
+def slow_detached(fail: bool):
+    _DETACHED_CLOCK[0].advance(timedelta(seconds=4))
+    if fail:
+        raise ValueError("boom")
+    return "done"
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+async def test_a_detached_step_outcome_carries_the_instant_the_step_ended(
+    backend, engine, worker, outcome, monkeypatch
+):
+    """The same regression for a RUN_STEP task: the worker stamped its outcome
+    with the instant the step started."""
+    monkeypatch.setattr(sys.modules[__name__], "_DETACHED_CLOCK", [backend.clock])
+
+    @engine.workflow("w", "1")
+    async def w(ctx):
+        return 1
+
+    eid = await engine.start(w, by=HUMAN)
+    fid = "root/slow:1"
+    await engine.enqueue(
+        Task(
+            queue="default",
+            kind=TaskKind.RUN_STEP,
+            target=FrameRef(eid, fid),
+            reason="delegate",
+            enqueued_by=engine.provenance(HUMAN),
+            key=fid,
+            payload={
+                "fn": f"{__name__}:slow_detached",
+                "args": [outcome == "failed"],
+                "name": "slow",
+            },
+        )
+    )
+    await _run_until_step_reports(backend, worker, FrameRef(eid, fid).step_channel)
+
+    entries = [s.item for s in await backend.journal.read(eid) if s.item.fid == fid]
+    started = next(e for e in entries if e.type == EntryType.FRAME_STARTED)
+    ended = next(e for e in entries if e.type == f"frame.{outcome}")
+    assert ended.provenance.at == started.provenance.at + timedelta(seconds=4)
 
 
 async def _run_until_step_reports(backend, worker, step_channel):
