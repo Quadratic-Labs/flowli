@@ -1,3 +1,3 @@
 """flowli: a journaled coroutine execution stack on CairnDB."""
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"

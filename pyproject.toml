@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowli"
-version = "0.3.2"
+version = "0.3.3"
 description = "Workflow engine: a journaled coroutine execution stack on CairnDB"
 readme = "README.md"
 requires-python = ">=3.14"
