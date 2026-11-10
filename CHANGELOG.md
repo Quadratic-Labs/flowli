@@ -16,6 +16,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `frame.completed` and `frame.failed` carried the instant the step started,
   for a step run in the workflow and for a `RUN_STEP` task alike. They now
   carry the instant it ended.
+- The catalog dropped the `Annotated` metadata of a workflow's arguments: a
+  `Field(description=...)` or a `WithJsonSchema` never reached the schema.
+- The start form of the web application showed an enum argument as a text
+  field when its schema was a `$ref` into `$defs` (a Python `Enum`), a
+  `const` (a one-value `Literal`) or an optional enum. It is now a select.
 
 ## [0.3.1] - 2026-11-07
 
