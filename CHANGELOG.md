@@ -8,6 +8,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-10
+
+### Fixed
+
+- The catalog dropped the `Annotated` metadata of a workflow's arguments: a
+  `Field(description=...)` or a `WithJsonSchema` never reached the schema.
+- The start form of the web application showed an enum argument as a text
+  field when its schema was a `$ref` into `$defs` (a Python `Enum`), a
+  `const` (a one-value `Literal`) or an optional enum. It is now a select.
+
 ## [0.3.2] - 2026-11-09
 
 ### Fixed
@@ -16,11 +26,6 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
   `frame.completed` and `frame.failed` carried the instant the step started,
   for a step run in the workflow and for a `RUN_STEP` task alike. They now
   carry the instant it ended.
-- The catalog dropped the `Annotated` metadata of a workflow's arguments: a
-  `Field(description=...)` or a `WithJsonSchema` never reached the schema.
-- The start form of the web application showed an enum argument as a text
-  field when its schema was a `$ref` into `$defs` (a Python `Enum`), a
-  `const` (a one-value `Literal`) or an optional enum. It is now a select.
 
 ## [0.3.1] - 2026-11-07
 
@@ -116,7 +121,8 @@ developed as Flowlet before this release.
 - A CI workflow: `ruff check`, `ruff format --check`, `mypy` and the
   tests of the three packages.
 
-[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Quadratic-Labs/flowli/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.2
 [0.3.1]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Quadratic-Labs/flowli/releases/tag/v0.3.0
