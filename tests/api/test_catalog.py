@@ -202,7 +202,9 @@ def test_annotated_arguments_keep_their_metadata_in_the_schema():
     async def annotated(
         ctx,
         path: Annotated[str, Field(description="Where the file is")],
-        provider: Annotated[Provider, WithJsonSchema({"type": "string", "enum": ["a", "b"]})] = Provider.A,
+        provider: Annotated[
+            Provider, WithJsonSchema({"type": "string", "enum": ["a", "b"]})
+        ] = Provider.A,
         mode: Provider = Provider.B,
     ) -> str:
         return "ok"
@@ -214,6 +216,10 @@ def test_annotated_arguments_keep_their_metadata_in_the_schema():
     assert properties["provider"]["default"] == "a"
     # A plain enum stays a `$ref` into `$defs`: the web application follows it
     assert properties["mode"]["$ref"] == "#/$defs/Provider"
-    assert catalog.validate("annotated", "1", {"path": "/x"}) == {"path": "/x", "provider": "a", "mode": "b"}
+    assert catalog.validate("annotated", "1", {"path": "/x"}) == {
+        "path": "/x",
+        "provider": "a",
+        "mode": "b",
+    }
     with pytest.raises(ValidationError):
         catalog.validate("annotated", "1", {"path": "/x", "provider": "c"})
