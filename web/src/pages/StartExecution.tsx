@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Play } from 'lucide-react';
-import { api, ApiError, type JsonSchemaProperty } from '@/lib/api';
+import { api, ApiError, type JsonSchema, type JsonSchemaProperty } from '@/lib/api';
 
 /** A form built from the workflow's JSON Schema, which the service derives
  *  from the signature. The service checks the arguments again and answers 422
@@ -33,7 +33,7 @@ export default function StartExecution() {
     mutationFn: () => api.start({
       workflow: name,
       version,
-      args: coerce(values, workflow.data?.schema?.properties ?? {}),
+      args: coerce(values, resolveProperties(workflow.data?.schema)),
       queue: queue.trim() || undefined,
       dispatch_key: dispatchKey.trim() || undefined,
     }),
@@ -41,7 +41,7 @@ export default function StartExecution() {
   });
 
   const schema = workflow.data?.schema;
-  const properties = Object.entries(schema?.properties ?? {});
+  const properties = Object.entries(resolveProperties(schema));
   const required = new Set(schema?.required ?? []);
   const fieldErrors = start.error instanceof ApiError ? start.error.problem.errors ?? [] : [];
 
@@ -134,6 +134,38 @@ export default function StartExecution() {
         ><Play size={16} /> {start.isPending ? 'Starting…' : 'Start'}</button>
       </form>
     </div>
+  );
+}
+
+/** The definition a `$ref` names in the schema's `$defs`, as pydantic writes
+ *  an enum. The property's own keys (default, description) win over the
+ *  definition's. */
+function deref(property: JsonSchemaProperty, defs: JsonSchema['$defs']): JsonSchemaProperty {
+  const name = property.$ref?.match(/^#\/\$defs\/(.+)$/)?.[1];
+  const target = name !== undefined ? defs?.[name] as JsonSchemaProperty | undefined : undefined;
+  if (!target) return property;
+  const own = { ...property };
+  delete own.$ref;
+  return { ...target, ...own };
+}
+
+/** A property with its references resolved, its `const` as a one-option
+ *  enum, and the enum of an optional argument (`anyOf` with null) lifted, so
+ *  that an enum argument is a select whatever its form. */
+function resolve(property: JsonSchemaProperty, defs: JsonSchema['$defs']): JsonSchemaProperty {
+  let resolved = deref(property, defs);
+  if (resolved.anyOf) {
+    const anyOf = resolved.anyOf.map(x => deref(x, defs));
+    const choice = anyOf.find(x => x.enum || x.const !== undefined);
+    resolved = { ...resolved, anyOf, ...(choice && { type: choice.type, enum: choice.enum ?? [choice.const] }) };
+  }
+  if (!resolved.enum && resolved.const !== undefined) resolved = { ...resolved, enum: [resolved.const] };
+  return resolved;
+}
+
+function resolveProperties(schema: JsonSchema | null | undefined): Record<string, JsonSchemaProperty> {
+  return Object.fromEntries(
+    Object.entries(schema?.properties ?? {}).map(([key, p]) => [key, resolve(p, schema?.$defs)]),
   );
 }
 
