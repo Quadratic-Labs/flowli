@@ -101,6 +101,9 @@ export interface JsonSchemaProperty {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  const?: unknown;
+  /** A reference into the schema's `$defs`, as pydantic writes an enum. */
+  $ref?: string;
   anyOf?: JsonSchemaProperty[];
   items?: JsonSchemaProperty;
 }

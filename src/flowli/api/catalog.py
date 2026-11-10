@@ -58,7 +58,9 @@ def _model(name: str, fn: Any) -> Any | None:
     argument list is worse than an unchecked one, because it looks checked.
     """
     try:
-        hints = get_type_hints(fn)
+        # With the extras, `Annotated` metadata reaches the schema: a
+        # `Field(description=...)` or a `WithJsonSchema` on an argument.
+        hints = get_type_hints(fn, include_extras=True)
     except Exception:
         return None
     parameters = list(inspect.signature(fn).parameters.values())[1:]

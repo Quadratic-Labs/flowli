@@ -5,6 +5,7 @@ import inspect
 import pytest
 
 from flowli.api import ApiConfig, Catalog, StaticAuthenticator, create_app
+from flowli.api.catalog import ValidationError
 from flowli.domain import WorkflowNotRegistered
 from flowli.runtime import Registry, WorkflowRef
 
@@ -181,3 +182,38 @@ def test_description_is_the_full_docstring_only_when_there_is_more_than_a_summar
     summary_only = catalog.entry("oneline", "1")
     assert summary_only.summary == "Just one line."
     assert summary_only.description is None
+
+
+def test_annotated_arguments_keep_their_metadata_in_the_schema():
+    """`Annotated` metadata is part of the schema: a field's description, and
+    a `WithJsonSchema` that inlines an enum a client renders as a choice."""
+    from enum import StrEnum
+    from typing import Annotated
+
+    from pydantic import Field, WithJsonSchema
+
+    class Provider(StrEnum):
+        A = "a"
+        B = "b"
+
+    reg = Registry()
+
+    @reg.workflow("annotated", "1")
+    async def annotated(
+        ctx,
+        path: Annotated[str, Field(description="Where the file is")],
+        provider: Annotated[Provider, WithJsonSchema({"type": "string", "enum": ["a", "b"]})] = Provider.A,
+        mode: Provider = Provider.B,
+    ) -> str:
+        return "ok"
+
+    catalog = Catalog(reg)
+    properties = catalog.entry("annotated", "1").schema["properties"]
+    assert properties["path"]["description"] == "Where the file is"
+    assert properties["provider"]["enum"] == ["a", "b"]
+    assert properties["provider"]["default"] == "a"
+    # A plain enum stays a `$ref` into `$defs`: the web application follows it
+    assert properties["mode"]["$ref"] == "#/$defs/Provider"
+    assert catalog.validate("annotated", "1", {"path": "/x"}) == {"path": "/x", "provider": "a", "mode": "b"}
+    with pytest.raises(ValidationError):
+        catalog.validate("annotated", "1", {"path": "/x", "provider": "c"})
